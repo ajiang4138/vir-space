@@ -1,5 +1,12 @@
+'use client';
+
+import { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { CollaborativeCanvas } from '../components/CollaborativeCanvas';
+import { SyncStatusIndicator } from '../components/SyncStatusIndicator';
 import { Badge, Button, Card, StatusBadge } from '../components/ui';
+import { SyncEngine } from '../modules/workspace-sync/SyncEngine';
+import { useCollaborativeCanvas } from '../modules/workspace-sync/useCollaborativeCanvas';
 import { useUIStore } from '../store/useUIStore';
 
 export function WorkspaceViewPage() {
@@ -11,6 +18,24 @@ export function WorkspaceViewPage() {
     transferSessions,
     systemStatus,
   } = useUIStore();
+  const currentRoomId = currentRoom?.id ?? null;
+
+  const syncEngine = useMemo(() => {
+    if (!currentRoomId || !currentPeerName) {
+      return null;
+    }
+    return new SyncEngine(currentRoomId, currentPeerName);
+  }, [currentPeerName, currentRoomId]);
+
+  const canvasState = useCollaborativeCanvas(
+    currentRoom && currentPeerName && syncEngine
+      ? {
+          roomId: currentRoom.id,
+          peerId: currentPeerName,
+          syncEngine,
+        }
+      : null,
+  );
 
   if (!currentRoom) {
     return (
@@ -25,6 +50,18 @@ export function WorkspaceViewPage() {
     );
   }
 
+  if (!canvasState) {
+    return (
+      <div className="mx-auto max-w-2xl">
+        <Card title="Initializing Workspace">
+          <p className="mb-4 text-slate-600">
+            Setting up collaborative workspace...
+          </p>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -34,9 +71,19 @@ export function WorkspaceViewPage() {
             Room ID: <span className="font-mono text-sm">{currentRoom.id}</span>
           </p>
         </div>
-        {currentRoom.isPrivate && (
-          <Badge variant="warning">Private Room</Badge>
-        )}
+        <div className="flex items-center gap-3">
+          {currentRoom.isPrivate && (
+            <Badge variant="warning">Private Room</Badge>
+          )}
+          {canvasState.recoveryPhase !== 'stable' && canvasState.recoveryPhase !== 'recovered' && (
+            <Badge variant="info">Recovery: {canvasState.recoveryPhase}</Badge>
+          )}
+          <SyncStatusIndicator
+            syncStatus={canvasState.syncStatus}
+            pendingOperations={canvasState.pendingOperations}
+            isConverged={canvasState.isConverged}
+          />
+        </div>
       </div>
 
       {systemStatus !== 'connected' && systemStatus !== 'authenticated' && (
@@ -52,14 +99,15 @@ export function WorkspaceViewPage() {
         {/* Collaborative Canvas Area */}
         <div className="lg:col-span-2">
           <Card title="Collaborative Canvas" className="h-full">
-            <div className="flex h-80 items-center justify-center rounded-lg border-2 border-dashed border-slate-300 bg-slate-50">
-              <div className="text-center">
-                <div className="mb-3 text-4xl">📐</div>
-                <p className="text-slate-600">Collaborative workspace area</p>
-                <p className="mt-1 text-sm text-slate-500">
-                  Real-time drawing and editing will render here
-                </p>
-              </div>
+            <div className="h-96 w-full">
+              <CollaborativeCanvas
+                canvasState={canvasState.canvasState}
+                operations={canvasState.operations}
+                syncStatus={canvasState.syncStatus}
+                peerId={currentPeerName}
+                pendingOperations={canvasState.pendingOperations}
+                isConverged={canvasState.isConverged}
+              />
             </div>
           </Card>
         </div>
@@ -138,11 +186,31 @@ export function WorkspaceViewPage() {
         </div>
       </div>
 
+      {/* Canvas Controls and Help */}
+      <Card title="Canvas Controls" className="bg-blue-50">
+        <div className="grid gap-4 md:grid-cols-2">
+          <div>
+            <h3 className="font-semibold text-slate-900">Canvas Actions</h3>
+            <ul className="mt-2 space-y-1 text-sm text-slate-600">
+              <li>🖱️ <strong>Click on canvas</strong> to add new shapes</li>
+              <li>🔄 <strong>Drag shapes</strong> to move them around</li>
+              <li>🗑️ <strong>Press Delete</strong> to remove selected shapes</li>
+              <li>📍 <strong>Click shapes</strong> to select/deselect</li>
+            </ul>
+          </div>
+          <div>
+            <h3 className="font-semibold text-slate-900">Sync Status</h3>
+            <p className="mt-2 text-sm text-slate-600">
+              All changes are synchronized in real-time across connected peers. 
+              The status indicator shows the current synchronization state.
+            </p>
+          </div>
+        </div>
+      </Card>
+
       {/* Transfer Status/Log Panel */}
-      <Card title={`Transfers (${transferSessions.length})`}>
-        {transferSessions.length === 0 ? (
-          <p className="text-sm text-slate-600">No active transfers</p>
-        ) : (
+      {transferSessions.length > 0 && (
+        <Card title={`Transfers (${transferSessions.length})`}>
           <div className="space-y-3">
             {transferSessions.map((session) => (
               <div
@@ -170,7 +238,9 @@ export function WorkspaceViewPage() {
                           : 'info'
                     }
                   >
-                    {session.status}
+                    {session.status === 'completed' && session.verificationStatus === 'verified'
+                      ? 'verified'
+                      : session.status}
                   </Badge>
                 </div>
 
@@ -187,11 +257,17 @@ export function WorkspaceViewPage() {
                     </p>
                   </div>
                 )}
+
+                {session.error && (
+                  <p className="mt-2 text-xs text-red-700">
+                    {session.error}
+                  </p>
+                )}
               </div>
             ))}
           </div>
-        )}
-      </Card>
+        </Card>
+      )}
 
       <div className="rounded-lg bg-blue-50 p-4">
         <p className="mb-3 text-sm font-semibold text-blue-900">

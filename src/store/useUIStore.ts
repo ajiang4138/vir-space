@@ -1,5 +1,11 @@
 import { createContext, useCallback, useContext, useState } from 'react';
-import { FileMetadata, Peer, Room, TransferSession, WorkspaceState } from '../models/types';
+import {
+    Peer,
+    Room,
+    SharedFileMetadata,
+    TransferSession,
+    WorkspaceState,
+} from '../models/types';
 
 export type SystemStatus =
   | 'idle'
@@ -25,7 +31,7 @@ export interface UIState {
   currentPeerName: string;
   knownPeers: Peer[];
   workspaceState: WorkspaceState | null;
-  sharedFiles: FileMetadata[];
+  sharedFiles: SharedFileMetadata[];
   transferSessions: TransferSession[];
   systemStatus: SystemStatus;
   statusMessages: StatusMessage[];
@@ -41,9 +47,10 @@ export interface UIStore extends UIState {
   removeKnownPeer: (peerId: string) => void;
   setWorkspaceState: (state: WorkspaceState) => void;
   updateWorkspaceState: (updates: Partial<WorkspaceState>) => void;
-  addSharedFile: (file: FileMetadata) => void;
+  addSharedFile: (file: SharedFileMetadata) => void;
   removeSharedFile: (fileId: string) => void;
-  updateSharedFile: (fileId: string, updates: Partial<FileMetadata>) => void;
+  updateSharedFile: (fileId: string, updates: Partial<SharedFileMetadata>) => void;
+  replaceSharedFiles: (files: SharedFileMetadata[]) => void;
   addTransferSession: (session: TransferSession) => void;
   updateTransferSession: (sessionId: string, updates: Partial<TransferSession>) => void;
   removeTransferSession: (sessionId: string) => void;
@@ -151,7 +158,7 @@ export function useUIStoreImpl(): UIStore {
     []
   );
 
-  const addSharedFile = useCallback((file: FileMetadata) => {
+  const addSharedFile = useCallback((file: SharedFileMetadata) => {
     setState((s) => ({
       ...s,
       sharedFiles: s.sharedFiles.some((f) => f.id === file.id)
@@ -168,7 +175,7 @@ export function useUIStoreImpl(): UIStore {
   }, []);
 
   const updateSharedFile = useCallback(
-    (fileId: string, updates: Partial<FileMetadata>) => {
+    (fileId: string, updates: Partial<SharedFileMetadata>) => {
       setState((s) => ({
         ...s,
         sharedFiles: s.sharedFiles.map((f) =>
@@ -178,6 +185,13 @@ export function useUIStoreImpl(): UIStore {
     },
     []
   );
+
+  const replaceSharedFiles = useCallback((files: SharedFileMetadata[]) => {
+    setState((s) => ({
+      ...s,
+      sharedFiles: files,
+    }));
+  }, []);
 
   const addTransferSession = useCallback((session: TransferSession) => {
     setState((s) => ({
@@ -272,6 +286,7 @@ export function useUIStoreImpl(): UIStore {
     addSharedFile,
     removeSharedFile,
     updateSharedFile,
+    replaceSharedFiles,
     addTransferSession,
     updateTransferSession,
     removeTransferSession,

@@ -104,6 +104,35 @@ describe('RoomPeerManager', () => {
       const membership = manager.getLocalMembership(room.id);
       expect(membership?.peers.has(peer2.id)).toBe(true);
     });
+
+    it('should recover membership from snapshots after churn', async () => {
+      const room = manager.createRoom('Test Room', owner, false);
+      await manager.joinRoom(room.id, peer2);
+
+      for (let i = 0; i < 3; i += 1) {
+        manager.simulatePeerDisconnection(room.id, peer2.id);
+        manager.simulatePeerReconnection(room.id, peer2.id, peer2);
+      }
+
+      const snapshot = manager.getMembershipSnapshot(room.id);
+      expect(snapshot).not.toBeNull();
+
+      if (!snapshot) {
+        return;
+      }
+
+      manager.handleMembershipEvent({
+        type: 'peer-left',
+        roomId: room.id,
+        peerId: peer2.id,
+        timestamp: new Date().toISOString(),
+      });
+
+      manager.applyMembershipSnapshot(snapshot);
+      const membership = manager.getLocalMembership(room.id);
+      expect(membership?.peers.has(peer2.id)).toBe(true);
+      expect(membership?.peerStatuses.get(peer2.id)).toBe('online');
+    });
   });
 
   describe('event subscription', () => {

@@ -1,10 +1,12 @@
-import type { Peer, Room } from '../../models/types';
+import type { AuthenticationMethod, Peer, Room } from '../../models/types';
 import {
+    AuthenticationError,
     InMemoryRoomPeerManager,
     MembershipEvent,
     MembershipEventHandler,
     RoomLogger,
     RoomMembership,
+    type JoinRoomOptions,
     type RoomPeerManager,
 } from './RoomPeerManager';
 
@@ -32,15 +34,26 @@ export class RoomManager {
   }
 
   /**
-   * Creates a new room.
+   * Creates a new room with optional authentication.
    */
-  createRoom(name: string, owner: Peer, isPrivate: boolean = false): Room {
+  createRoom(
+    name: string,
+    owner: Peer,
+    isPrivate: boolean = false,
+    authMethod?: AuthenticationMethod,
+  ): Room {
     try {
-      const room = this.roomPeerManager.createRoom(name, owner, isPrivate);
+      const room = this.roomPeerManager.createRoom(
+        name,
+        owner,
+        isPrivate,
+        authMethod,
+      );
       RoomLogger.info('Room created successfully', {
         roomId: room.id,
         roomName: name,
         ownerId: owner.id,
+        authMethod: authMethod || 'none',
       });
       return room;
     } catch (error) {
@@ -69,11 +82,15 @@ export class RoomManager {
   }
 
   /**
-   * Joins a room.
+   * Joins a room with optional authentication credential.
    */
-  async joinRoom(roomId: string, peer: Peer): Promise<Room> {
+  async joinRoom(
+    roomId: string,
+    peer: Peer,
+    options?: JoinRoomOptions,
+  ): Promise<Room> {
     try {
-      const room = await this.roomPeerManager.joinRoom(roomId, peer);
+      const room = await this.roomPeerManager.joinRoom(roomId, peer, options);
       RoomLogger.info('Successfully joined room', {
         roomId,
         peerId: peer.id,
@@ -81,11 +98,20 @@ export class RoomManager {
       });
       return room;
     } catch (error) {
-      RoomLogger.error('Failed to join room', {
-        error: error instanceof Error ? error.message : String(error),
-        roomId,
-        peerId: peer.id,
-      });
+      if (error instanceof AuthenticationError) {
+        RoomLogger.warn('Authentication failed during room join', {
+          roomId,
+          peerId: peer.id,
+          errorCode: error.code,
+          lockout: error.remainingLockout,
+        });
+      } else {
+        RoomLogger.error('Failed to join room', {
+          error: error instanceof Error ? error.message : String(error),
+          roomId,
+          peerId: peer.id,
+        });
+      }
       throw error;
     }
   }
@@ -105,6 +131,95 @@ export class RoomManager {
       });
       throw error;
     }
+  }
+
+  /**
+   * Sets a password for a room (room owner only).
+   */
+  setRoomPassword(roomId: string, password: string): void {
+    try {
+      this.roomPeerManager.setRoomPassword(roomId, password);
+      RoomLogger.info('Room password set', { roomId });
+    } catch (error) {
+      RoomLogger.error('Failed to set room password', {
+        error: error instanceof Error ? error.message : String(error),
+        roomId,
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Sets a shared secret for a room.
+   */
+  setRoomSharedSecret(roomId: string, secret: string): void {
+    try {
+      this.roomPeerManager.setRoomSharedSecret(roomId, secret);
+      RoomLogger.info('Room shared secret set', { roomId });
+    } catch (error) {
+      RoomLogger.error('Failed to set room shared secret', {
+        error: error instanceof Error ? error.message : String(error),
+        roomId,
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Generates and adds an invite token to a room.
+   */
+  addRoomInviteToken(roomId: string, expiresIn?: number): string {
+    try {
+      const token = this.roomPeerManager.addRoomInviteToken(roomId, expiresIn);
+      RoomLogger.info('Invite token created', { roomId, expiresInMs: expiresIn });
+      return token;
+    } catch (error) {
+      RoomLogger.error('Failed to create invite token', {
+        error: error instanceof Error ? error.message : String(error),
+        roomId,
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Authenticates a peer for a room.
+   */
+  authenticateForRoom(roomId: string, peerId: string, credential: string): boolean {
+    try {
+      const authorized = this.roomPeerManager.authenticateForRoom(
+        roomId,
+        peerId,
+        credential,
+      );
+      if (authorized) {
+        RoomLogger.info('Peer authenticated for room', { roomId, peerId });
+      } else {
+        RoomLogger.warn('Peer authentication failed', { roomId, peerId });
+      }
+      return authorized;
+    } catch (error) {
+      RoomLogger.error('Error during authentication', {
+        error: error instanceof Error ? error.message : String(error),
+        roomId,
+        peerId,
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Gets the authentication method for a room.
+   */
+  getRoomAuthMethod(roomId: string): string | null {
+    return this.roomPeerManager.getRoomAuthMethod(roomId);
+  }
+
+  /**
+   * Checks if a room is password protected.
+   */
+  isRoomPasswordProtected(roomId: string): boolean {
+    return this.roomPeerManager.isRoomPasswordProtected(roomId);
   }
 
   /**
@@ -175,6 +290,24 @@ export class RoomManager {
         eventType: event.type,
       });
     }
+  }
+
+  getMembershipSnapshot(roomId: string) {
+    return this.roomPeerManager.getMembershipSnapshot(roomId);
+  }
+
+  applyMembershipSnapshot(snapshot: {
+    roomId: string;
+    ownerPeerId: string;
+    peers: Peer[];
+    statuses: Record<string, 'online' | 'idle' | 'offline' | 'disconnected'>;
+    generatedAt: string;
+  }): void {
+    this.roomPeerManager.applyMembershipSnapshot(snapshot);
+  }
+
+  resynchronizeMembership(roomId: string, requesterPeerId: string): void {
+    this.roomPeerManager.resynchronizeMembership(roomId, requesterPeerId);
   }
 
   /**
