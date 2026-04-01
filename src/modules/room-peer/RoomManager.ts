@@ -65,14 +65,10 @@ export class RoomManager {
     }
   }
 
-  /**
-   * Discovers available rooms.
-   */
   async discoverRooms(): Promise<Room[]> {
     try {
-      const rooms = await this.roomPeerManager.discoverRooms();
-      RoomLogger.debug('Rooms discovered', { count: rooms.length });
-      return rooms;
+      RoomLogger.debug('Room discovery is disabled');
+      return [];
     } catch (error) {
       RoomLogger.error('Failed to discover rooms', {
         error: error instanceof Error ? error.message : String(error),
@@ -142,22 +138,6 @@ export class RoomManager {
       RoomLogger.info('Room password set', { roomId });
     } catch (error) {
       RoomLogger.error('Failed to set room password', {
-        error: error instanceof Error ? error.message : String(error),
-        roomId,
-      });
-      throw error;
-    }
-  }
-
-  /**
-   * Sets a shared secret for a room.
-   */
-  setRoomSharedSecret(roomId: string, secret: string): void {
-    try {
-      this.roomPeerManager.setRoomSharedSecret(roomId, secret);
-      RoomLogger.info('Room shared secret set', { roomId });
-    } catch (error) {
-      RoomLogger.error('Failed to set room shared secret', {
         error: error instanceof Error ? error.message : String(error),
         roomId,
       });

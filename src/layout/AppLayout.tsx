@@ -3,11 +3,9 @@ import { NavLink, Outlet } from 'react-router-dom';
 const navItems = [
   { to: '/', label: 'Landing' },
   { to: '/create-room', label: 'Create Room' },
-  { to: '/discover-room', label: 'Discover Room' },
   { to: '/join-room', label: 'Join Room' },
   { to: '/workspace', label: 'Workspace' },
   { to: '/shared-files', label: 'Shared Files' },
-  { to: '/peer-presence', label: 'Peer Presence' },
 ];
 
 export function AppLayout() {

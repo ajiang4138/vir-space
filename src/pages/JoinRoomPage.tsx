@@ -272,18 +272,10 @@ export function JoinRoomPage() {
             />
           ) : (
             <TextInput
-              label={
-                joinState.authMethod === 'shared-secret'
-                  ? 'Shared Secret'
-                  : 'Room Password'
-              }
+              label={joinState.authMethod === 'invite-token' ? 'Invite Token' : 'Room Password'}
               name="credential"
-              type="password"
-              placeholder={`Enter the ${
-                joinState.authMethod === 'shared-secret'
-                  ? 'shared secret'
-                  : 'password'
-              }`}
+              type={joinState.authMethod === 'invite-token' ? 'text' : 'password'}
+              placeholder={`Enter the ${joinState.authMethod === 'invite-token' ? 'invite token' : 'password'}`}
               value={formData.credential}
               onChange={handleChange}
               error={errors.credential}

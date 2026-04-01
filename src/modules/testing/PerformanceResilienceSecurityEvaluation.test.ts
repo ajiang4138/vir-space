@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 import type { CanvasElement, FileMetadata, Peer } from '../../models/types';
 import { ChunkedFileTransferEngine, InMemoryFileTransferTransport, type FileTransferProgress } from '../file-transfer/FileTransferEngine';
 import { SharedFileDirectorySync, type DirectorySyncMessage } from '../file-transfer/SharedFileDirectorySync';
-import { SyncEngine } from '../workspace-sync/SyncEngine';
-import { DecentralizedWorkspaceSyncService } from '../workspace-sync/WorkspaceSyncService';
 import { AuthenticationError, InMemoryRoomPeerManager } from '../room-peer/RoomPeerManager';
 import { TransportEncryptionManager } from '../security/TransportEncryption';
+import { SyncEngine } from '../workspace-sync/SyncEngine';
+import { DecentralizedWorkspaceSyncService } from '../workspace-sync/WorkspaceSyncService';
 
 interface MetricStats {
   minMs: number;
@@ -68,7 +68,7 @@ async function measureRoomLifecycleMetrics(trials: number) {
     const joiner = makePeer(`joiner-${i}`);
 
     const createStart = performance.now();
-    const room = manager.createRoom(`room-${i}`, owner, false, 'public');
+    const room = manager.createRoom(`room-${i}`, owner, true);
     createLatencies.push(performance.now() - createStart);
 
     const discoverStart = performance.now();
@@ -265,7 +265,7 @@ async function measureMembershipChurnTrial(seed: number): Promise<DisruptionTria
   const manager = new InMemoryRoomPeerManager();
   const owner = makePeer(`owner-r-${seed}`);
   const churnPeer = makePeer(`churn-r-${seed}`);
-  const room = manager.createRoom(`membership-room-${seed}`, owner, false, 'public');
+  const room = manager.createRoom(`membership-room-${seed}`, owner, true);
 
   const startedAt = performance.now();
   await manager.joinRoom(room.id, churnPeer);

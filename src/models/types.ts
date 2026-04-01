@@ -1,14 +1,12 @@
 export type PeerStatus = 'online' | 'idle' | 'offline';
 
 // ==================== Authentication Types ====================
-export type AuthenticationMethod = 'password' | 'shared-secret' | 'invite-token' | 'public';
+export type AuthenticationMethod = 'password' | 'invite-token';
 
 export interface RoomAuthConfig {
   method: AuthenticationMethod;
   // For password method
   passwordHash?: string;
-  // For shared secret method
-  secretHash?: string;
   // For invite token method
   inviteTokens?: Map<string, { createdAt: string; expiresAt?: string; usedAt?: string; usedByPeerId?: string }>;
   // Authorization settings

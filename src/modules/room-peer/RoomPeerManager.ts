@@ -64,7 +64,6 @@ export interface RoomPeerManager {
     isPrivate: boolean,
     authMethod?: AuthenticationMethod,
   ): Room;
-  discoverRooms(): Promise<Room[]>;
   joinRoom(roomId: string, peer: Peer, options?: JoinRoomOptions): Promise<Room>;
   authenticateForRoom(
     roomId: string,
@@ -94,7 +93,6 @@ export interface RoomPeerManager {
   resynchronizeMembership(roomId: string, requesterPeerId: string): void;
   getRoomMetadata(roomId: string): Room | null;
   setRoomPassword(roomId: string, password: string): void;
-  setRoomSharedSecret(roomId: string, secret: string): void;
   addRoomInviteToken(roomId: string, expiresIn?: number): string;
   getRoomAuthMethod(roomId: string): string | null;
   isRoomPasswordProtected(roomId: string): boolean;
@@ -154,7 +152,7 @@ export class InMemoryRoomPeerManager implements RoomPeerManager {
     const authService = this.getAuthService();
 
     // Set up auth config based on method
-    const authConfig = authMethod && authMethod !== 'public'
+    const authConfig = authMethod
       ? authService.createAuthConfig(authMethod)
       : undefined;
 
@@ -203,15 +201,9 @@ export class InMemoryRoomPeerManager implements RoomPeerManager {
     return room;
   }
 
-  /**
-   * Discovers available rooms (simulated - returns all non-private rooms or rooms with known peers).
-   */
   async discoverRooms(): Promise<Room[]> {
-    RoomLogger.debug('Discovering rooms', { totalRooms: this.roomRegistry.size });
-
-    return Array.from(this.roomRegistry.values()).filter(
-      (room) => !room.isPrivate || room.peers.length > 0, // Simple filter: non-private or has peers
-    );
+    RoomLogger.debug('Room discovery is disabled');
+    return [];
   }
 
   /**
@@ -356,30 +348,6 @@ export class InMemoryRoomPeerManager implements RoomPeerManager {
 
     this.roomRegistry.set(roomId, room);
     RoomLogger.info('Room password set', { roomId });
-  }
-
-  /**
-   * Sets a shared secret for a room.
-   */
-  setRoomSharedSecret(roomId: string, secret: string): void {
-    const room = this.roomRegistry.get(roomId);
-    if (!room) {
-      RoomLogger.error('Room not found for setRoomSharedSecret', { roomId });
-      return;
-    }
-
-    const authService = this.getAuthService();
-
-    if (!room.authConfig) {
-      room.authConfig = authService.createAuthConfig('shared-secret');
-    }
-
-    room.authConfig.method = 'shared-secret';
-    room.authConfig.secretHash = authService.hashSharedSecret(secret);
-    room.authConfig.requireAuthForJoin = true;
-
-    this.roomRegistry.set(roomId, room);
-    RoomLogger.info('Room shared secret set', { roomId });
   }
 
   /**

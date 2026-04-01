@@ -7,7 +7,7 @@ import type {
 
 /**
  * AuthenticationService manages room authentication and access control.
- * Supports: password, shared-secret, invite-token, and public rooms.
+ * Supports: password and invite-token rooms.
  */
 export class AuthenticationService {
   private authAttempts = new Map<string, AuthAttempt[]>(); // peerId -> attempts
@@ -134,22 +134,6 @@ export class AuthenticationService {
     return true;
   }
 
-  // ==================== Shared Secret Methods ====================
-
-  /**
-   * Hashes a shared secret similarly to passwords.
-   */
-  hashSharedSecret(secret: string): string {
-    return this.hashPassword(secret); // Use same hashing mechanism
-  }
-
-  /**
-   * Verifies a shared secret against stored hash.
-   */
-  verifySharedSecret(secret: string, hash: string): boolean {
-    return this.verifyPassword(secret, hash); // Use same verification
-  }
-
   // ==================== Authentication Flow ====================
 
   /**
@@ -161,8 +145,8 @@ export class AuthenticationService {
     peerId: string,
     roomId: string,
   ): AuthenticationResult {
-    // If no auth config, room is public
-    if (!authConfig || authConfig.method === 'public') {
+    // If no auth config, allow access for backwards-compatible internal flows.
+    if (!authConfig) {
       return {
         authorized: true,
         timestamp: new Date().toISOString(),
@@ -189,12 +173,6 @@ export class AuthenticationService {
         case 'password':
           authorized = authConfig.passwordHash
             ? this.verifyPassword(credential || '', authConfig.passwordHash)
-            : false;
-          break;
-
-        case 'shared-secret':
-          authorized = authConfig.secretHash
-            ? this.verifySharedSecret(credential || '', authConfig.secretHash)
             : false;
           break;
 
@@ -343,7 +321,7 @@ export class AuthenticationService {
   createAuthConfig(method: AuthenticationMethod): RoomAuthConfig {
     return {
       method,
-      requireAuthForJoin: method !== 'public',
+      requireAuthForJoin: true,
       maxAttempts: 5,
       lockoutDurationMs: 5 * 60 * 1000, // 5 minutes
     };

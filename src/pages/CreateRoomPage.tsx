@@ -5,7 +5,7 @@ import { getRoomManager } from '../modules/room-peer/RoomManager';
 import { RoomLogger } from '../modules/room-peer/RoomPeerManager';
 import { useUIStore } from '../store/useUIStore';
 
-type AuthMethod = 'public' | 'password' | 'shared-secret' | 'invite-token';
+type AuthMethod = 'password' | 'invite-token';
 
 export function CreateRoomPage() {
   const navigate = useNavigate();
@@ -15,7 +15,7 @@ export function CreateRoomPage() {
   const [loading, setLoading] = useState(false);
   const [formData, setFormData] = useState({
     roomName: '',
-    authMethod: 'public' as AuthMethod,
+    authMethod: 'password' as AuthMethod,
     credential: '',
     confirmCredential: '',
   });
@@ -41,50 +41,23 @@ export function CreateRoomPage() {
       newErrors.roomName = 'Room name must be 100 characters or less';
     }
 
-    // Validate credential based on auth method
-    if (formData.authMethod !== 'public') {
+    // Validate password fields
+    if (formData.authMethod === 'password') {
       if (!formData.credential.trim()) {
-        newErrors.credential = `${
-          formData.authMethod === 'invite-token'
-            ? 'Generate invite'
-            : formData.authMethod === 'shared-secret'
-              ? 'Shared secret'
-              : 'Password'
-        } is required`;
+        newErrors.credential = 'Password is required';
       }
 
-      // For password and shared-secret, validate confirmation
-      if (
-        formData.authMethod !== 'invite-token' &&
-        formData.credential !== formData.confirmCredential
-      ) {
-        newErrors.confirmCredential = 'Credentials do not match';
+      if (formData.credential !== formData.confirmCredential) {
+        newErrors.confirmCredential = 'Passwords do not match';
       }
 
-      // Validate password minimum length
-      if (
-        formData.authMethod === 'password' &&
-        formData.credential.length < 4
-      ) {
+      if (formData.credential.length < 4) {
         newErrors.credential = 'Password must be at least 4 characters';
       }
     }
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
-  };
-
-  const generateInviteToken = () => {
-    const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    let token = '';
-    for (let i = 0; i < 8; i++) {
-      token += characters.charAt(Math.floor(Math.random() * characters.length));
-    }
-    setFormData((prev) => ({
-      ...prev,
-      credential: token,
-      confirmCredential: '',
-    }));
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -110,8 +83,8 @@ export function CreateRoomPage() {
       const room = roomManager.createRoom(
         formData.roomName,
         ownerPeer,
-        formData.authMethod !== 'public', // isPrivate
-        formData.authMethod !== 'public' ? formData.authMethod : undefined,
+        true,
+        formData.authMethod,
       );
 
       RoomLogger.info('Room created from UI', {
@@ -119,21 +92,13 @@ export function CreateRoomPage() {
         authMethod: formData.authMethod,
       });
 
+      let inviteToken: string | null = null;
+
       // Set up authentication based on method
-      if (
-        formData.authMethod === 'password' ||
-        formData.authMethod === 'shared-secret'
-      ) {
-        if (formData.authMethod === 'password') {
-          roomManager.setRoomPassword(room.id, formData.credential);
-        } else {
-          roomManager.setRoomSharedSecret(room.id, formData.credential);
-        }
+      if (formData.authMethod === 'password') {
+        roomManager.setRoomPassword(room.id, formData.credential);
       } else if (formData.authMethod === 'invite-token') {
-        // Ensure invite token is set up for the room
-        if (!formData.credential) {
-          roomManager.addRoomInviteToken(room.id);
-        }
+        inviteToken = roomManager.addRoomInviteToken(room.id);
       }
 
       // Set current room in store
@@ -146,12 +111,8 @@ export function CreateRoomPage() {
       let message = `Room "${room.name}" created successfully!`;
       if (formData.authMethod === 'password') {
         message += ' Password-protected.';
-      } else if (formData.authMethod === 'shared-secret') {
-        message += ' Secret-protected.';
       } else if (formData.authMethod === 'invite-token') {
-        message += ` Invite code: ${formData.credential}`;
-      } else {
-        message += ' Public access.';
+        message += ` Invite code: ${inviteToken || 'generated'}`;
       }
 
       store.addStatusMessage({
@@ -182,12 +143,8 @@ export function CreateRoomPage() {
 
   const getAuthMethodDescription = (method: AuthMethod): string => {
     switch (method) {
-      case 'public':
-        return 'Anyone can discover and join this room';
       case 'password':
-        return 'Joiners must provide the password';
-      case 'shared-secret':
-        return 'Joiners must provide the shared secret';
+        return 'Joiners must provide a password';
       case 'invite-token':
         return 'Only those with invite codes can join';
       default:
@@ -215,7 +172,7 @@ export function CreateRoomPage() {
             Access Control Method
           </label>
           <div className="space-y-2">
-            {(['public', 'password', 'shared-secret', 'invite-token'] as AuthMethod[]).map(
+            {(['password', 'invite-token'] as AuthMethod[]).map(
               (method) => (
                 <label key={method} className="flex items-start gap-3">
                   <input
@@ -241,84 +198,47 @@ export function CreateRoomPage() {
         </div>
 
         {/* Conditional Credential Input */}
-        {formData.authMethod !== 'public' && (
-          <div className="space-y-3 border-t pt-3">
-            {formData.authMethod === 'invite-token' ? (
-              <>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-2">
-                    Invite Code
-                  </label>
-                  <div className="flex gap-2">
-                    <div className="flex-1 rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-mono">
-                      {formData.credential || 'Click Generate'}
-                    </div>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      onClick={generateInviteToken}
-                      disabled={loading}
-                    >
-                      Generate
-                    </Button>
-                  </div>
-                  <p className="mt-1 text-xs text-slate-600">
-                    Share this code with people you want to invite
-                  </p>
-                  {errors.credential && (
-                    <p className="mt-1 text-xs text-red-600">{errors.credential}</p>
-                  )}
-                </div>
-              </>
-            ) : (
-              <>
-                <TextInput
-                  label={
-                    formData.authMethod === 'shared-secret'
-                      ? 'Shared Secret'
-                      : 'Password'
-                  }
-                  name="credential"
-                  type="password"
-                  placeholder={`Enter a secure ${
-                    formData.authMethod === 'shared-secret'
-                      ? 'secret'
-                      : 'password'
-                  }`}
-                  value={formData.credential}
-                  onChange={handleChange}
-                  error={errors.credential}
-                  required
-                />
-
-                <TextInput
-                  label={`Confirm ${
-                    formData.authMethod === 'shared-secret'
-                      ? 'Secret'
-                      : 'Password'
-                  }`}
-                  name="confirmCredential"
-                  type="password"
-                  placeholder="Re-enter to confirm"
-                  value={formData.confirmCredential}
-                  onChange={handleChange}
-                  error={errors.confirmCredential}
-                  required
-                />
-              </>
-            )}
-
-            <div className="rounded-lg bg-amber-50 p-3">
-              <p className="text-xs font-semibold text-amber-900">
-                🔐 Security Note:
-              </p>
-              <p className="mt-1 text-xs text-amber-800">
-                Keep your {formData.authMethod === 'invite-token' ? 'codes' : 'credentials'}{' '}
-                private. Only share with trusted participants.
-              </p>
+        <div className="space-y-3 border-t pt-3">
+          {formData.authMethod === 'invite-token' ? (
+            <div className="rounded-lg bg-slate-50 p-4 text-sm text-slate-700">
+              An invite code will be generated when you create the room.
             </div>
+          ) : (
+            <>
+              <TextInput
+                label="Password"
+                name="credential"
+                type="password"
+                placeholder="Enter a secure password"
+                value={formData.credential}
+                onChange={handleChange}
+                error={errors.credential}
+                required
+              />
+
+              <TextInput
+                label="Confirm Password"
+                name="confirmCredential"
+                type="password"
+                placeholder="Re-enter to confirm"
+                value={formData.confirmCredential}
+                onChange={handleChange}
+                error={errors.confirmCredential}
+                required
+              />
+            </>
+          )}
+
+          <div className="rounded-lg bg-amber-50 p-3">
+            <p className="text-xs font-semibold text-amber-900">
+              🔐 Security Note:
+            </p>
+            <p className="mt-1 text-xs text-amber-800">
+              Keep your {formData.authMethod === 'invite-token' ? 'code' : 'password'} private.
+              Only share with trusted participants.
+            </p>
           </div>
-        )}
+        </div>
 
         {/* Help Text */}
         <div className="rounded-lg bg-blue-50 p-3">

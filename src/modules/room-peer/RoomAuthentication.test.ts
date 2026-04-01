@@ -105,27 +105,9 @@ describe('AuthenticationService', () => {
     });
   });
 
-  // ==================== Shared Secret Tests ====================
-  describe('Shared Secret', () => {
-    it('should hash and verify shared secret', () => {
-      const secret = 'shared-secret-value';
-      const hash = authService.hashSharedSecret(secret);
-
-      expect(authService.verifySharedSecret(secret, hash)).toBe(true);
-    });
-
-    it('should reject incorrect shared secret', () => {
-      const secret = 'shared-secret-value';
-      const wrong = 'wrong-secret';
-      const hash = authService.hashSharedSecret(secret);
-
-      expect(authService.verifySharedSecret(wrong, hash)).toBe(false);
-    });
-  });
-
   // ==================== Authentication Flow Tests ====================
   describe('Authentication Flow', () => {
-    it('should authorize for public rooms (no auth config)', () => {
+    it('should authorize when no auth config is set', () => {
       const result = authService.authenticatePeerForRoom(
         undefined,
         'any-credential',
@@ -303,23 +285,22 @@ describe('Room Authentication Integration', () => {
     };
   });
 
-  // ==================== Public Room Tests ====================
-  describe('Public Rooms', () => {
-    it('should allow joining public room without credentials', async () => {
-      const room = roomManager.createRoom('Public Room', ownerPeer, false, 'public');
+  // ==================== Unconfigured Room Tests ====================
+  describe('Unconfigured Rooms', () => {
+    it('should allow joining a room without credentials', async () => {
+      const room = roomManager.createRoom('Room Without Auth', ownerPeer, true);
 
       const result = await roomManager.joinRoom(room.id, joiningPeer);
 
       expect(result.peers.some((p) => p.id === joiningPeer.id)).toBe(true);
     });
 
-    it('should be discoverable in public rooms list', async () => {
-      roomManager.createRoom('Public Room', ownerPeer, false, 'public');
+    it('should not return discovered rooms', async () => {
+      roomManager.createRoom('Room Without Auth', ownerPeer, true);
 
       const rooms = await roomManager.discoverRooms();
 
-      expect(rooms.length).toBeGreaterThan(0);
-      expect(rooms.some((r) => r.name === 'Public Room')).toBe(true);
+      expect(rooms).toEqual([]);
     });
   });
 
@@ -443,39 +424,6 @@ describe('Room Authentication Integration', () => {
     });
   });
 
-  // ==================== Shared Secret Rooms ====================
-  describe('Shared Secret Rooms', () => {
-    it('should require shared secret to join', async () => {
-      const room = roomManager.createRoom(
-        'Secret Room',
-        ownerPeer,
-        true,
-        'shared-secret',
-      );
-      roomManager.setRoomSharedSecret(room.id, 'my-secret');
-
-      await expect(
-        roomManager.joinRoom(room.id, joiningPeer),
-      ).rejects.toThrow(AuthenticationError);
-    });
-
-    it('should allow join with correct secret', async () => {
-      const room = roomManager.createRoom(
-        'Secret Room',
-        ownerPeer,
-        true,
-        'shared-secret',
-      );
-      roomManager.setRoomSharedSecret(room.id, 'my-secret');
-
-      const result = await roomManager.joinRoom(room.id, joiningPeer, {
-        credential: 'my-secret',
-      });
-
-      expect(result.peers.some((p) => p.id === joiningPeer.id)).toBe(true);
-    });
-  });
-
   // ==================== Authentication Query Tests ====================
   describe('Authentication Queries', () => {
     it('should report auth method for room', () => {
@@ -506,10 +454,9 @@ describe('Room Authentication Integration', () => {
 
     it('should return false for non-password rooms', () => {
       const room = roomManager.createRoom(
-        'Public',
+        'Unconfigured',
         ownerPeer,
-        false,
-        'public',
+        true,
       );
 
       const protected_ = roomManager.isRoomPasswordProtected(room.id);

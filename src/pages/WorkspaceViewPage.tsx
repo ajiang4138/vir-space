@@ -4,7 +4,7 @@ import { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { CollaborativeCanvas } from '../components/CollaborativeCanvas';
 import { SyncStatusIndicator } from '../components/SyncStatusIndicator';
-import { Badge, Button, Card, StatusBadge } from '../components/ui';
+import { Badge, Button, Card } from '../components/ui';
 import { SyncEngine } from '../modules/workspace-sync/SyncEngine';
 import { useCollaborativeCanvas } from '../modules/workspace-sync/useCollaborativeCanvas';
 import { useUIStore } from '../store/useUIStore';
@@ -95,7 +95,7 @@ export function WorkspaceViewPage() {
         </div>
       )}
 
-      <div className="grid gap-6 lg:grid-cols-4">
+      <div className="grid gap-6 lg:grid-cols-3">
         {/* Collaborative Canvas Area */}
         <div className="lg:col-span-2">
           <Card title="Collaborative Canvas" className="h-full">
@@ -108,54 +108,6 @@ export function WorkspaceViewPage() {
                 pendingOperations={canvasState.pendingOperations}
                 isConverged={canvasState.isConverged}
               />
-            </div>
-          </Card>
-        </div>
-
-        {/* Peer Presence Panel */}
-        <div>
-          <Card title={`Peers (${currentRoom.peers.length})`} className="h-full">
-            <div className="space-y-3">
-              {currentRoom.peers.length === 0 ? (
-                <p className="text-sm text-slate-600">No peers in room</p>
-              ) : (
-                currentRoom.peers.map((peer) => (
-                  <div
-                    key={peer.id}
-                    className="rounded-lg border border-slate-200 bg-slate-50 p-3"
-                  >
-                    <div className="flex items-start justify-between">
-                      <div>
-                        <p className="text-sm font-medium text-slate-900">
-                          {peer.displayName}
-                        </p>
-                        {peer.id === currentPeerName && (
-                          <p className="text-xs text-blue-600">(You)</p>
-                        )}
-                      </div>
-                      <StatusBadge status={peer.status} />
-                    </div>
-                    {peer.capabilities.length > 0 && (
-                      <div className="mt-2 flex flex-wrap gap-1">
-                        {peer.capabilities.slice(0, 2).map((cap) => (
-                          <Badge
-                            key={cap}
-                            variant="info"
-                            className="text-xs"
-                          >
-                            {cap}
-                          </Badge>
-                        ))}
-                        {peer.capabilities.length > 2 && (
-                          <Badge variant="info" className="text-xs">
-                            +{peer.capabilities.length - 2}
-                          </Badge>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                ))
-              )}
             </div>
           </Card>
         </div>
@@ -283,7 +235,7 @@ export function WorkspaceViewPage() {
           </p>
           <p>
             <span className="font-semibold">Room Privacy:</span>{' '}
-            {currentRoom.isPrivate ? 'Private' : 'Public'}
+            Private
           </p>
           <p>
             <span className="font-semibold">Created:</span>{' '}

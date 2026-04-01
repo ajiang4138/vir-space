@@ -24,12 +24,11 @@ export function LandingPage() {
         <div className="mb-8 rounded-lg bg-slate-50 p-6">
           <h3 className="mb-3 font-semibold text-slate-900">Getting Started</h3>
           <p className="mb-4 text-slate-700">
-            Create a new room to invite peers, discover existing rooms in your network,
-            or join an existing room with an invite code.
+            Create a private room for your team or join an existing room with a room ID or invite code.
           </p>
         </div>
 
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <button
             onClick={() => navigate('/create-room')}
             className="flex flex-col items-start gap-3 rounded-lg border border-slate-300 bg-white p-6 transition hover:bg-slate-50 hover:shadow-md"
@@ -37,18 +36,7 @@ export function LandingPage() {
             <div className="text-2xl">✨</div>
             <h4 className="font-semibold text-slate-900">Create Room</h4>
             <p className="text-sm text-slate-600">
-              Start a new collaborative workspace
-            </p>
-          </button>
-
-          <button
-            onClick={() => navigate('/discover-room')}
-            className="flex flex-col items-start gap-3 rounded-lg border border-slate-300 bg-white p-6 transition hover:bg-slate-50 hover:shadow-md"
-          >
-            <div className="text-2xl">🔍</div>
-            <h4 className="font-semibold text-slate-900">Discover Rooms</h4>
-            <p className="text-sm text-slate-600">
-              Browse available public rooms
+              Start a new private collaborative workspace
             </p>
           </button>
 
@@ -59,7 +47,7 @@ export function LandingPage() {
             <div className="text-2xl">🚪</div>
             <h4 className="font-semibold text-slate-900">Join Room</h4>
             <p className="text-sm text-slate-600">
-              Join with a room code or invite
+              Join with a room ID or invite code
             </p>
           </button>
         </div>
