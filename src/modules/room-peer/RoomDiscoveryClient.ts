@@ -42,6 +42,11 @@ interface DiscoveryServiceInfo {
 export class RoomDiscoveryClient {
   private baseUrl: string | null = null;
 
+  private static readonly DEFAULT_LOCAL_DISCOVERY_URLS = [
+    'http://127.0.0.1:47831',
+    'http://localhost:47831',
+  ] as const;
+
   private serializeRoom(room: Room): SerializedRoom {
     return {
       ...room,
@@ -85,6 +90,34 @@ export class RoomDiscoveryClient {
     return null;
   }
 
+  private getCandidateBaseUrls(): string[] {
+    const candidates = new Set<string>();
+
+    const configured = this.baseUrl?.trim();
+    if (configured) {
+      candidates.add(configured);
+    }
+
+    if (typeof window !== 'undefined') {
+      const discovery = window.virSpace?.discovery;
+      const runtimeUrl = discovery?.discoveryUrl?.trim();
+      if (runtimeUrl) {
+        candidates.add(runtimeUrl);
+      }
+
+      if (discovery?.discoveryPort) {
+        candidates.add(`http://127.0.0.1:${discovery.discoveryPort}`);
+        candidates.add(`http://localhost:${discovery.discoveryPort}`);
+      }
+
+      for (const fallback of RoomDiscoveryClient.DEFAULT_LOCAL_DISCOVERY_URLS) {
+        candidates.add(fallback);
+      }
+    }
+
+    return Array.from(candidates);
+  }
+
   getServiceInfo(): DiscoveryServiceInfo {
     const discoveryUrl = this.getBaseUrl();
     return {
@@ -94,78 +127,87 @@ export class RoomDiscoveryClient {
   }
 
   async listRooms(): Promise<DiscoveryRoomSummary[]> {
-    const baseUrl = this.getBaseUrl();
-    if (!baseUrl || typeof fetch !== 'function') {
+    if (typeof fetch !== 'function') {
       return [];
     }
 
-    try {
-      const response = await fetch(`${baseUrl}/rooms`);
-      if (!response.ok) {
-        return [];
+    for (const baseUrl of this.getCandidateBaseUrls()) {
+      try {
+        const response = await fetch(`${baseUrl}/rooms`);
+        if (!response.ok) {
+          continue;
+        }
+
+        const rooms = (await response.json()) as DiscoveryRoomSummary[];
+        if (rooms.length > 0) {
+          return rooms;
+        }
+      } catch {
+        // Try next candidate discovery endpoint.
       }
-
-      return (await response.json()) as DiscoveryRoomSummary[];
-    } catch {
-      return [];
     }
+
+    return [];
   }
 
   async getRoom(roomId: string): Promise<Room | null> {
-    const baseUrl = this.getBaseUrl();
-    if (!baseUrl || typeof fetch !== 'function') {
+    if (typeof fetch !== 'function') {
       return null;
     }
 
-    try {
-      const response = await fetch(`${baseUrl}/rooms/${encodeURIComponent(roomId)}`);
-      if (response.status === 404) {
-        return null;
-      }
+    for (const baseUrl of this.getCandidateBaseUrls()) {
+      try {
+        const response = await fetch(`${baseUrl}/rooms/${encodeURIComponent(roomId)}`);
+        if (response.status === 404) {
+          continue;
+        }
 
-      if (!response.ok) {
-        return null;
-      }
+        if (!response.ok) {
+          continue;
+        }
 
-      const record = (await response.json()) as DiscoveryRoomRecord;
-      return this.deserializeRoom(record.room);
-    } catch {
-      return null;
+        const record = (await response.json()) as DiscoveryRoomRecord;
+        return this.deserializeRoom(record.room);
+      } catch {
+        // Try next candidate discovery endpoint.
+      }
     }
+
+    return null;
   }
 
   async upsertRoom(room: Room): Promise<void> {
-    const baseUrl = this.getBaseUrl();
-    if (!baseUrl || typeof fetch !== 'function') {
+    if (typeof fetch !== 'function') {
       return;
     }
 
-    try {
-      await fetch(`${baseUrl}/rooms`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ room: this.serializeRoom(room), updatedAt: new Date().toISOString() }),
-      });
-    } catch {
-      // Discovery sync is best-effort.
-    }
+    const payload = JSON.stringify({ room: this.serializeRoom(room), updatedAt: new Date().toISOString() });
+
+    await Promise.allSettled(
+      this.getCandidateBaseUrls().map((baseUrl) =>
+        fetch(`${baseUrl}/rooms`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: payload,
+        }),
+      ),
+    );
   }
 
   async deleteRoom(roomId: string): Promise<void> {
-    const baseUrl = this.getBaseUrl();
-    if (!baseUrl || typeof fetch !== 'function') {
+    if (typeof fetch !== 'function') {
       return;
     }
 
-    try {
-      await fetch(`${baseUrl}/rooms/${encodeURIComponent(roomId)}`, {
-        method: 'DELETE',
-      });
-    } catch {
-      // Discovery sync is best-effort.
-    }
+    await Promise.allSettled(
+      this.getCandidateBaseUrls().map((baseUrl) =>
+        fetch(`${baseUrl}/rooms/${encodeURIComponent(roomId)}`, {
+          method: 'DELETE',
+        }),
+      ),
+    );
   }
 }
 

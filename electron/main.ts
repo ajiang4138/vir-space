@@ -236,6 +236,19 @@ async function startDiscoveryServer(): Promise<void> {
   });
 
   await new Promise<void>((resolve) => {
+    server.once('error', (error: NodeJS.ErrnoException) => {
+      if (error.code === 'EADDRINUSE') {
+        console.log(
+          `[Discovery] Registry port ${port} already in use. Reusing existing registry at ${getDiscoveryBaseUrl()}`,
+        );
+        resolve();
+        return;
+      }
+
+      console.error(`[Discovery] Failed to start registry on port ${port}`, error);
+      resolve();
+    });
+
     server.listen(port, '0.0.0.0', () => {
       console.log(`[Discovery] Registry listening on ${getDiscoveryBaseUrl()}`);
       resolve();
