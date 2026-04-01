@@ -56,6 +56,10 @@ export function useRoomMembershipIntegration() {
 
       switch (event.type) {
         case 'peer-joined': {
+          if (event.peerId === store.currentPeerId) {
+            break;
+          }
+
           if (event.peer && event.roomId === store.currentRoomId) {
             store.addKnownPeer(event.peer);
             store.addStatusMessage({
@@ -72,6 +76,10 @@ export function useRoomMembershipIntegration() {
         }
 
         case 'peer-left': {
+          if (event.peerId === store.currentPeerId) {
+            break;
+          }
+
           if (event.roomId === store.currentRoomId) {
             store.removeKnownPeer(event.peerId);
             store.addStatusMessage({
@@ -85,6 +93,10 @@ export function useRoomMembershipIntegration() {
         }
 
         case 'peer-disconnected': {
+          if (event.peerId === store.currentPeerId) {
+            break;
+          }
+
           if (event.roomId === store.currentRoomId) {
             store.updatePeer(event.peerId, { status: 'offline' });
             store.addStatusMessage({
@@ -100,6 +112,10 @@ export function useRoomMembershipIntegration() {
         }
 
         case 'peer-reconnected': {
+          if (event.peerId === store.currentPeerId) {
+            break;
+          }
+
           if (event.peer && event.roomId === store.currentRoomId) {
             store.updatePeer(event.peerId, {
               status: event.peer.status,
@@ -118,6 +134,10 @@ export function useRoomMembershipIntegration() {
         }
 
         case 'peer-status-changed': {
+          if (event.peerId === store.currentPeerId) {
+            break;
+          }
+
           if (event.peer && event.roomId === store.currentRoomId) {
             store.updatePeer(event.peerId, {
               status: event.peer.status,
@@ -132,18 +152,6 @@ export function useRoomMembershipIntegration() {
         }
 
         case 'room-created': {
-          if (event.peer) {
-            const room = roomManager.current?.getRoomMetadata(event.roomId);
-            if (room) {
-              store.setCurrentRoom(room);
-              store.addStatusMessage({
-                type: 'success',
-                message: 'Room created successfully',
-                duration: 3000,
-              });
-              RoomLogger.info('UI updated: Room created');
-            }
-          }
           break;
         }
 

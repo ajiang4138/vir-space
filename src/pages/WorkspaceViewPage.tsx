@@ -13,6 +13,7 @@ export function WorkspaceViewPage() {
   const navigate = useNavigate();
   const {
     currentRoom,
+    currentPeerId,
     currentPeerName,
     sharedFiles,
     transferSessions,
@@ -21,17 +22,17 @@ export function WorkspaceViewPage() {
   const currentRoomId = currentRoom?.id ?? null;
 
   const syncEngine = useMemo(() => {
-    if (!currentRoomId || !currentPeerName) {
+    if (!currentRoomId || !currentPeerId) {
       return null;
     }
-    return new SyncEngine(currentRoomId, currentPeerName);
-  }, [currentPeerName, currentRoomId]);
+    return new SyncEngine(currentRoomId, currentPeerId);
+  }, [currentPeerId, currentRoomId]);
 
   const canvasState = useCollaborativeCanvas(
-    currentRoom && currentPeerName && syncEngine
+    currentRoom && currentPeerId && syncEngine
       ? {
           roomId: currentRoom.id,
-          peerId: currentPeerName,
+          peerId: currentPeerId,
           syncEngine,
         }
       : null,
@@ -104,7 +105,7 @@ export function WorkspaceViewPage() {
                 canvasState={canvasState.canvasState}
                 operations={canvasState.operations}
                 syncStatus={canvasState.syncStatus}
-                peerId={currentPeerName}
+                peerId={currentPeerId ?? currentPeerName}
                 pendingOperations={canvasState.pendingOperations}
                 isConverged={canvasState.isConverged}
               />

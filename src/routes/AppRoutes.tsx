@@ -81,6 +81,7 @@ export function AppRoutes() {
           <Route path="/" element={<LandingPage />} />
           <Route path="/create-room" element={<CreateRoomPage />} />
           <Route path="/join-room" element={<JoinRoomPage />} />
+          <Route path="/join-room/:roomId" element={<JoinRoomPage />} />
           <Route path="/workspace" element={<WorkspaceViewPage />} />
           <Route path="/shared-files" element={<SharedFilePanelPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />

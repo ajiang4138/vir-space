@@ -1,15 +1,14 @@
 import { identify } from '@libp2p/identify';
 import { kadDHT } from '@libp2p/kad-dht';
-import { mdns } from '@libp2p/mdns';
 import { mplex } from '@libp2p/mplex';
 import { noise } from '@libp2p/noise';
 import { ping } from '@libp2p/ping';
 import { tcp } from '@libp2p/tcp';
 import { webSockets } from '@libp2p/websockets';
-import { EventEmitter } from 'events';
+import all from 'it-all';
 import type { Libp2p } from 'libp2p';
 import { createLibp2p } from 'libp2p';
-import { all as bytesAll } from 'uint8arrays';
+import { concat as concatUint8Arrays } from 'uint8arrays/concat';
 import {
     TransportEncryptionManager,
     type EncryptedPayloadEnvelope,
@@ -102,8 +101,48 @@ export interface NetworkingStats {
   reconnectionAttempts: number;
 }
 
+type NetworkingEventListener = (event: NetworkingEvent) => void;
+
+class BrowserEventBus {
+  private listeners = new Map<NetworkingEventType, Set<NetworkingEventListener>>();
+
+  on(event: NetworkingEventType, listener: NetworkingEventListener): void {
+    const existing = this.listeners.get(event);
+    if (existing) {
+      existing.add(listener);
+      return;
+    }
+
+    this.listeners.set(event, new Set([listener]));
+  }
+
+  off(event: NetworkingEventType, listener: NetworkingEventListener): void {
+    const existing = this.listeners.get(event);
+    if (!existing) {
+      return;
+    }
+
+    existing.delete(listener);
+    if (existing.size === 0) {
+      this.listeners.delete(event);
+    }
+  }
+
+  emit(event: NetworkingEventType, payload: NetworkingEvent): void {
+    const existing = this.listeners.get(event);
+    if (!existing) {
+      return;
+    }
+
+    for (const listener of existing) {
+      listener(payload);
+    }
+  }
+}
+
 // ==================== Libp2p-based Networking Layer ====================
-export class LibP2PNetworkingLayer extends EventEmitter implements INetworkingLayer {
+export class LibP2PNetworkingLayer implements INetworkingLayer {
+  private eventEmitter = new BrowserEventBus();
   private node: Libp2p | null = null;
   private localPeerId: string = '';
   private peerConnections = new Map<string, PeerConnectionState>();
@@ -125,9 +164,7 @@ export class LibP2PNetworkingLayer extends EventEmitter implements INetworkingLa
     { urls: ['stun:stun1.l.google.com:19302'] },
   ];
 
-  constructor() {
-    super();
-  }
+  constructor() {}
 
   /**
    * Configures a shared per-room secret used for payload encryption.
@@ -167,7 +204,7 @@ export class LibP2PNetworkingLayer extends EventEmitter implements INetworkingLa
         transports: [tcp(), webSockets()],
         streamMuxers: [mplex()],
         connectionEncryption: [noise()],
-        peerDiscovery: [mdns()],
+        peerDiscovery: [],
         services: {
           identify: identify(),
           ping: ping(),
@@ -373,6 +410,14 @@ export class LibP2PNetworkingLayer extends EventEmitter implements INetworkingLa
     return this.roomPeerConnections.get(roomId) || [];
   }
 
+  on(event: NetworkingEventType, listener: (event: NetworkingEvent) => void): void {
+    this.eventEmitter.on(event, listener);
+  }
+
+  off(event: NetworkingEventType, listener: (event: NetworkingEvent) => void): void {
+    this.eventEmitter.off(event, listener);
+  }
+
   /**
    * Gets the local peer ID
    */
@@ -486,10 +531,11 @@ export class LibP2PNetworkingLayer extends EventEmitter implements INetworkingLa
     }
 
     try {
-      await this.node.handle(LibP2PNetworkingLayer.MESSAGE_PROTOCOL, async ({ stream }) => {
+      await this.node.handle(LibP2PNetworkingLayer.MESSAGE_PROTOCOL, async (stream) => {
         try {
-          const rawData = await bytesAll(stream.source);
-          const dataStr = new TextDecoder().decode(bytesAll(rawData));
+          const chunks = (await all(stream.source)) as Uint8Array[];
+          const dataBytes = concatUint8Arrays(chunks);
+          const dataStr = new TextDecoder().decode(dataBytes);
           const message = JSON.parse(dataStr) as P2PMessage;
           if (!this.transportEncryption.isEncryptedEnvelope(message.data)) {
             throw new Error(`Inbound payload for room ${message.roomId} was not encrypted`);
@@ -617,7 +663,7 @@ export class LibP2PNetworkingLayer extends EventEmitter implements INetworkingLa
       roomId: event.roomId,
     });
 
-    this.emit(event.type, event);
+    this.eventEmitter.emit(event.type, event);
   }
 
   private initializeTransportSecurity(): void {
@@ -704,7 +750,7 @@ export class LibP2PNetworkingLayer extends EventEmitter implements INetworkingLa
  * WebSocket-based networking layer for backward compatibility and alternative transport
  */
 export class WebSocketNetworkingLayer implements INetworkingLayer {
-  private eventEmitter = new EventEmitter();
+  private eventEmitter = new BrowserEventBus();
   private ws: WebSocket | null = null;
   private localPeerId: string = '';
   private endpoint: string = '';

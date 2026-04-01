@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Button, Form, TextInput } from '../components/ui';
 import type { Peer, Room } from '../models/types';
 import { getRoomManager } from '../modules/room-peer/RoomManager';
@@ -15,11 +15,16 @@ interface JoinState {
 
 export function JoinRoomPage() {
   const navigate = useNavigate();
+  const { roomId: roomIdFromPath } = useParams<{ roomId?: string }>();
+  const [searchParams] = useSearchParams();
   const store = useUIStore();
   const roomManager = getRoomManager();
+  const initialDiscoveryUrl = roomManager.getDiscoveryUrl() ?? '';
 
   const [loading, setLoading] = useState(false);
-  const [formData, setFormData] = useState({ roomId: '', credential: '' });
+  const [discovering, setDiscovering] = useState(false);
+  const [discoveredRooms, setDiscoveredRooms] = useState<Room[]>([]);
+  const [formData, setFormData] = useState({ roomId: '', credential: '', discoveryUrl: initialDiscoveryUrl });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [joinState, setJoinState] = useState<JoinState>({
     step: 'initial',
@@ -42,7 +47,65 @@ export function JoinRoomPage() {
     }
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
-  }
+  };
+
+  useEffect(() => {
+    if (formData.discoveryUrl.trim()) {
+      roomManager.setDiscoveryUrl(formData.discoveryUrl.trim());
+    }
+  }, [formData.discoveryUrl, roomManager]);
+
+  useEffect(() => {
+    const roomIdFromQuery = searchParams.get('roomId') || '';
+    const discoveryUrlFromQuery = searchParams.get('discoveryUrl') || '';
+    const urlRoomId = roomIdFromPath || roomIdFromQuery;
+
+    if (!urlRoomId && !discoveryUrlFromQuery) {
+      return;
+    }
+
+    setFormData((prev) => ({
+      ...prev,
+      roomId: urlRoomId || prev.roomId,
+      discoveryUrl: discoveryUrlFromQuery || prev.discoveryUrl,
+    }));
+
+    if (discoveryUrlFromQuery) {
+      roomManager.setDiscoveryUrl(discoveryUrlFromQuery);
+    }
+  }, [roomIdFromPath, roomManager, searchParams]);
+
+  const handleDiscoverRooms = async () => {
+    if (!formData.discoveryUrl.trim()) {
+      setErrors((prev) => ({ ...prev, discoveryUrl: 'Discovery server URL is required to search for rooms' }));
+      return;
+    }
+
+    setDiscovering(true);
+    try {
+      roomManager.setDiscoveryUrl(formData.discoveryUrl.trim());
+      const rooms = await roomManager.discoverRooms();
+      setDiscoveredRooms(rooms);
+      if (rooms.length === 0) {
+        store.addStatusMessage({
+          type: 'info',
+          message: 'No rooms were found on the discovery server.',
+          duration: 2500,
+        });
+      }
+    } catch (error) {
+      RoomLogger.error('Failed to discover rooms', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      store.addStatusMessage({
+        type: 'error',
+        message: 'Unable to reach the discovery server.',
+        duration: 3000,
+      });
+    } finally {
+      setDiscovering(false);
+    }
+  };
 
   const handleInitialJoin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -50,6 +113,10 @@ export function JoinRoomPage() {
 
     setLoading(true);
     try {
+      if (formData.discoveryUrl.trim()) {
+        roomManager.setDiscoveryUrl(formData.discoveryUrl.trim());
+      }
+
       if (!store.currentPeerId) {
         throw new Error('Current peer ID not set');
       }
@@ -126,6 +193,10 @@ export function JoinRoomPage() {
 
     setLoading(true);
     try {
+      if (formData.discoveryUrl.trim()) {
+        roomManager.setDiscoveryUrl(formData.discoveryUrl.trim());
+      }
+
       if (!store.currentPeerId) {
         throw new Error('Current peer ID not set');
       }
@@ -157,7 +228,7 @@ export function JoinRoomPage() {
             duration: 5000,
           });
           setJoinState({ step: 'initial', roomId: '', attempts: 0 });
-          setFormData({ roomId: '', credential: '' });
+          setFormData((prev) => ({ ...prev, roomId: '', credential: '' }));
         } else {
           setErrors({
             credential: `Invalid credential (attempt ${newAttempts}/5)`,
@@ -211,7 +282,7 @@ export function JoinRoomPage() {
 
   const handleReset = () => {
     setJoinState({ step: 'initial', roomId: '', attempts: 0 });
-    setFormData({ roomId: '', credential: '' });
+    setFormData({ roomId: '', credential: '', discoveryUrl: initialDiscoveryUrl });
     setErrors({});
   };
 
@@ -228,6 +299,44 @@ export function JoinRoomPage() {
             error={errors.roomId}
             required
           />
+
+          <TextInput
+            label="Discovery Server URL"
+            name="discoveryUrl"
+            placeholder="http://192.168.1.10:47831"
+            value={formData.discoveryUrl}
+            onChange={handleChange}
+            error={errors.discoveryUrl}
+          />
+
+          <div className="flex gap-3">
+            <Button type="button" variant="secondary" onClick={handleDiscoverRooms} loading={discovering}>
+              Find Rooms
+            </Button>
+            <p className="self-center text-xs text-slate-500">
+              Use the discovery server address from the host device.
+            </p>
+          </div>
+
+          {discoveredRooms.length > 0 && (
+            <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <p className="text-sm font-semibold text-slate-900">Discovered Rooms</p>
+              {discoveredRooms.map((room) => (
+                <button
+                  key={room.id}
+                  type="button"
+                  onClick={() => setFormData((prev) => ({ ...prev, roomId: room.id }))}
+                  className="flex w-full items-center justify-between rounded-md border border-slate-200 bg-white px-3 py-2 text-left hover:bg-slate-50"
+                >
+                  <div>
+                    <p className="font-medium text-slate-900">{room.name}</p>
+                    <p className="text-xs text-slate-500">{room.id}</p>
+                  </div>
+                  <span className="text-xs text-slate-500">{room.isPrivate ? 'Private' : 'Public'}</span>
+                </button>
+              ))}
+            </div>
+          )}
 
           <div className="rounded-lg bg-blue-50 p-3">
             <p className="text-sm text-blue-900">

@@ -1,4 +1,5 @@
 import type { AuthenticationMethod, Peer, Room } from '../../models/types';
+import { getRoomDiscoveryClient } from './RoomDiscoveryClient';
 import {
     AuthenticationError,
     InMemoryRoomPeerManager,
@@ -18,6 +19,7 @@ export class RoomManager {
   private roomPeerManager: RoomPeerManager;
   private unsubscribeFromEvents: (() => void) | null = null;
   private externalEventHandlers: MembershipEventHandler[] = [];
+  private readonly discoveryClient = getRoomDiscoveryClient();
 
   constructor() {
     this.roomPeerManager = new InMemoryRoomPeerManager();
@@ -49,6 +51,7 @@ export class RoomManager {
         isPrivate,
         authMethod,
       );
+      void this.discoveryClient.upsertRoom(room);
       RoomLogger.info('Room created successfully', {
         roomId: room.id,
         roomName: name,
@@ -67,8 +70,22 @@ export class RoomManager {
 
   async discoverRooms(): Promise<Room[]> {
     try {
-      RoomLogger.debug('Room discovery is disabled');
-      return [];
+      const rooms = await this.discoveryClient.listRooms();
+      RoomLogger.debug('Room discovery completed', { roomCount: rooms.length });
+      return rooms.map((summary) => ({
+        id: summary.id,
+        name: summary.name,
+        ownerPeerId: summary.ownerPeerId,
+        peers: [],
+        createdAt: summary.createdAt,
+        isPrivate: summary.isPrivate,
+        authConfig: summary.authMethod
+          ? {
+              method: summary.authMethod as AuthenticationMethod,
+              requireAuthForJoin: true,
+            }
+          : undefined,
+      }));
     } catch (error) {
       RoomLogger.error('Failed to discover rooms', {
         error: error instanceof Error ? error.message : String(error),
@@ -86,13 +103,23 @@ export class RoomManager {
     options?: JoinRoomOptions,
   ): Promise<Room> {
     try {
-      const room = await this.roomPeerManager.joinRoom(roomId, peer, options);
+      let room = this.roomPeerManager.getRoomMetadata(roomId);
+      if (!room) {
+        const remoteRoom = await this.discoveryClient.getRoom(roomId);
+        if (remoteRoom) {
+          this.roomPeerManager.importRoom(remoteRoom);
+          room = remoteRoom;
+        }
+      }
+
+      const joinedRoom = await this.roomPeerManager.joinRoom(roomId, peer, options);
+      void this.discoveryClient.upsertRoom(joinedRoom);
       RoomLogger.info('Successfully joined room', {
         roomId,
         peerId: peer.id,
         displayName: peer.displayName,
       });
-      return room;
+      return joinedRoom;
     } catch (error) {
       if (error instanceof AuthenticationError) {
         RoomLogger.warn('Authentication failed during room join', {
@@ -118,6 +145,12 @@ export class RoomManager {
   async leaveRoom(roomId: string, peerId: string): Promise<void> {
     try {
       await this.roomPeerManager.leaveRoom(roomId, peerId);
+      const room = this.roomPeerManager.getRoomMetadata(roomId);
+      if (room) {
+        void this.discoveryClient.upsertRoom(room);
+      } else {
+        void this.discoveryClient.deleteRoom(roomId);
+      }
       RoomLogger.info('Successfully left room', { roomId, peerId });
     } catch (error) {
       RoomLogger.error('Failed to leave room', {
@@ -135,6 +168,10 @@ export class RoomManager {
   setRoomPassword(roomId: string, password: string): void {
     try {
       this.roomPeerManager.setRoomPassword(roomId, password);
+      const room = this.roomPeerManager.getRoomMetadata(roomId);
+      if (room) {
+        void this.discoveryClient.upsertRoom(room);
+      }
       RoomLogger.info('Room password set', { roomId });
     } catch (error) {
       RoomLogger.error('Failed to set room password', {
@@ -151,6 +188,10 @@ export class RoomManager {
   addRoomInviteToken(roomId: string, expiresIn?: number): string {
     try {
       const token = this.roomPeerManager.addRoomInviteToken(roomId, expiresIn);
+      const room = this.roomPeerManager.getRoomMetadata(roomId);
+      if (room) {
+        void this.discoveryClient.upsertRoom(room);
+      }
       RoomLogger.info('Invite token created', { roomId, expiresInMs: expiresIn });
       return token;
     } catch (error) {
@@ -193,6 +234,27 @@ export class RoomManager {
    */
   getRoomAuthMethod(roomId: string): string | null {
     return this.roomPeerManager.getRoomAuthMethod(roomId);
+  }
+
+  setDiscoveryUrl(discoveryUrl: string | null): void {
+    this.discoveryClient.setBaseUrl(discoveryUrl);
+  }
+
+  getDiscoveryUrl(): string | null {
+    return this.discoveryClient.getBaseUrl();
+  }
+
+  getDiscoveryInfo(): { discoveryUrl: string | null; available: boolean } {
+    return this.discoveryClient.getServiceInfo();
+  }
+
+  async refreshRemoteRoom(roomId: string): Promise<Room | null> {
+    const room = await this.discoveryClient.getRoom(roomId);
+    if (room) {
+      this.roomPeerManager.importRoom(room);
+    }
+
+    return room;
   }
 
   /**

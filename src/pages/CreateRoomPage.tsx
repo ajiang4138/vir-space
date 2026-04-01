@@ -11,6 +11,7 @@ export function CreateRoomPage() {
   const navigate = useNavigate();
   const store = useUIStore();
   const roomManager = getRoomManager();
+  const discoveryUrl = roomManager.getDiscoveryUrl();
 
   const [loading, setLoading] = useState(false);
   const [formData, setFormData] = useState({
@@ -20,6 +21,7 @@ export function CreateRoomPage() {
     confirmCredential: '',
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [joinUrl, setJoinUrl] = useState<string>('');
 
   const handleChange = (
     e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>
@@ -114,6 +116,18 @@ export function CreateRoomPage() {
       } else if (formData.authMethod === 'invite-token') {
         message += ` Invite code: ${inviteToken || 'generated'}`;
       }
+      if (discoveryUrl) {
+        message += ` Discovery URL: ${discoveryUrl}`;
+      }
+
+      const shareUrlBase =
+        typeof window !== 'undefined'
+          ? `${window.location.origin}/join-room/${encodeURIComponent(room.id)}`
+          : `/join-room/${encodeURIComponent(room.id)}`;
+      const shareUrl = discoveryUrl
+        ? `${shareUrlBase}?discoveryUrl=${encodeURIComponent(discoveryUrl)}`
+        : shareUrlBase;
+      setJoinUrl(shareUrl);
 
       store.addStatusMessage({
         type: 'success',
@@ -246,6 +260,23 @@ export function CreateRoomPage() {
             💡 You can change the access control method later if needed.
           </p>
         </div>
+
+        {discoveryUrl && (
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+            <p className="font-semibold text-slate-900">Discovery Server</p>
+            <p className="mt-1 break-all">{discoveryUrl}</p>
+            <p className="mt-1 text-xs text-slate-500">
+              Share this with other devices so they can discover and join this room.
+            </p>
+          </div>
+        )}
+
+        {joinUrl && (
+          <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
+            <p className="font-semibold">Room Join URL</p>
+            <p className="mt-1 break-all text-xs">{joinUrl}</p>
+          </div>
+        )}
 
         {/* Actions */}
         <div className="flex gap-3 pt-2">
