@@ -9,11 +9,11 @@
  */
 
 import type {
-  CanvasElement,
-  CanvasOperation,
-  CanvasOperationType,
-  WorkspaceOperation,
-  WorkspaceStateV2,
+    CanvasElement,
+    CanvasOperation,
+    CanvasOperationType,
+    WorkspaceOperation,
+    WorkspaceStateV2,
 } from '../../models/types';
 import { SyncEngine } from './SyncEngine';
 

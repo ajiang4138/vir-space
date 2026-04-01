@@ -11,9 +11,9 @@ import type { Libp2p } from 'libp2p';
 import { createLibp2p } from 'libp2p';
 import { all as bytesAll } from 'uint8arrays';
 import {
-  TransportEncryptionManager,
-  type EncryptedPayloadEnvelope,
-  type TransportSecurityReport,
+    TransportEncryptionManager,
+    type EncryptedPayloadEnvelope,
+    type TransportSecurityReport,
 } from '../security/TransportEncryption';
 
 // ==================== Networking Events ====================

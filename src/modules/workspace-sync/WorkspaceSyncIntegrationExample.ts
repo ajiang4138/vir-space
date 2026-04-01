@@ -21,15 +21,15 @@ import type {
     WorkspaceStateV2,
 } from '../../models/types';
 import {
-  LibP2PNetworkingLayer,
-  type INetworkingLayer,
-  type NetworkingEvent,
-  type NetworkingEventType,
-  type NetworkingStats,
-  type P2PMessage,
-  type PeerConnectionState,
-  type RoomPeerConnection,
-  type SignalingMessage,
+    LibP2PNetworkingLayer,
+    type INetworkingLayer,
+    type NetworkingEvent,
+    type NetworkingEventType,
+    type NetworkingStats,
+    type P2PMessage,
+    type PeerConnectionState,
+    type RoomPeerConnection,
+    type SignalingMessage,
 } from '../networking/NetworkingLayer';
 import { DecentralizedWorkspaceSyncService } from './WorkspaceSyncService';
 
@@ -49,7 +49,7 @@ export class WorkspaceSyncIntegrationManager {
   private messageSequence = 0;
 
   // Sync scheduling
-  private syncIntervals = new Map<string, ReturnType<typeof window.setInterval>>();
+  private syncIntervals = new Map<string, ReturnType<typeof setInterval>>();
   private readonly SYNC_INTERVAL_MS = 500; // Send sync messages every 500ms
   private readonly SNAPSHOT_INTERVAL_MS = 5000; // Send snapshots every 5s
 
@@ -190,7 +190,7 @@ export class WorkspaceSyncIntegrationManager {
     }
 
     // Periodic sync of delta messages
-    const syncIntervalId = window.setInterval(async () => {
+    const syncIntervalId = setInterval(async () => {
       try {
         if (!this.currentRoom) return;
 
@@ -210,7 +210,7 @@ export class WorkspaceSyncIntegrationManager {
     this.syncIntervals.set(roomId, syncIntervalId);
 
     // Periodic snapshot sharing (every 5s)
-    const snapshotIntervalId = window.setInterval(async () => {
+    const snapshotIntervalId = setInterval(async () => {
       try {
         if (!this.currentRoom) return;
 

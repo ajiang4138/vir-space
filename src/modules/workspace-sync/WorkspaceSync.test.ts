@@ -13,10 +13,10 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import type {
-  CanvasElement,
-  PeerPresenceMetadata,
-  SyncMessage,
-  WorkspaceStateV2,
+    CanvasElement,
+    PeerPresenceMetadata,
+    SyncMessage,
+    WorkspaceStateV2,
 } from '../../models/types';
 import { CRDTStateManager } from './CRDTStateManager';
 import { SyncEngine } from './SyncEngine';
