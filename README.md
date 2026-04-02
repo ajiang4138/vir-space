@@ -70,6 +70,8 @@ npm run dev:server
 
 Server defaults to `ws://localhost:8787`.
 
+If you open `http://localhost:8787` in a browser, you are testing plain HTTP (not WebSocket). Use `ws://localhost:8787` in the app's signaling URL field.
+
 ### 2. Start first desktop client
 
 In terminal B:

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 
 type ClientMessage =
@@ -53,7 +54,12 @@ interface ClientContext {
 const PORT = Number(process.env.PORT ?? 8787);
 const rooms = new Map<string, Set<ClientContext>>();
 
-const wss = new WebSocketServer({ port: PORT });
+const httpServer = createServer((req, res) => {
+  res.writeHead(200, { "Content-Type": "text/plain" });
+  res.end("Vir Space signaling server is running. Use ws://localhost:8787 from the client.\n");
+});
+
+const wss = new WebSocketServer({ noServer: true });
 
 function sendTo(client: ClientContext, message: ServerMessage): void {
   if (client.socket.readyState === WebSocket.OPEN) {
@@ -225,4 +231,12 @@ wss.on("connection", (socket) => {
   });
 });
 
-console.log(`Signaling server listening on ws://localhost:${PORT}`);
+httpServer.on("upgrade", (request, socket, head) => {
+  wss.handleUpgrade(request, socket, head, (ws) => {
+    wss.emit("connection", ws, request);
+  });
+});
+
+httpServer.listen(PORT, () => {
+  console.log(`Signaling server listening on ws://localhost:${PORT}`);
+});
