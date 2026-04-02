@@ -1,8 +1,9 @@
-node_modules
+node_modules/
+dist/
+dist-electron/
+.vscode/
 .DS_Store
-dist
-dist-electron
-release
-*.log
-.env
-.vscode
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
