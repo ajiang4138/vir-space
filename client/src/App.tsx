@@ -4,7 +4,7 @@ import { DebugLog } from "./components/DebugLog";
 import { JoinForm } from "./components/JoinForm";
 import { SignalingClient } from "./lib/signaling";
 import { WebRtcPeerManager } from "./lib/webrtc";
-import { ChatMessage, ConnectionStatus, PeerSummary, ServerSignalMessage } from "./types";
+import { ChatMessage, ConnectionStatus, PeerSummary } from "./types";
 
 const defaultSignalingUrl = "ws://localhost:8787";
 
@@ -97,6 +97,21 @@ export default function App(): JSX.Element {
           addEvent("peer disconnected");
         }
       },
+      onStatusChange: (nextStatus) => {
+        if (nextStatus === "connected") {
+          setStatus("peer connected");
+          return;
+        }
+
+        if (nextStatus === "connecting") {
+          setStatus("connecting to peer");
+          return;
+        }
+
+        if (nextStatus === "disconnected" || nextStatus === "failed" || nextStatus === "closed") {
+          setStatus("signaling connected");
+        }
+      },
     });
 
     signalingRef.current = new SignalingClient({
@@ -117,84 +132,70 @@ export default function App(): JSX.Element {
       onError: (message) => {
         addEvent(`error: ${message}`);
       },
-      onMessage: async (message: ServerSignalMessage) => {
-        if (message.type === "joined") {
-          roomIdRef.current = message.roomId;
-          localIdRef.current = message.senderId;
-          setJoined(true);
-          setStatus("signaling connected");
-          addEvent("joined room");
+      onJoined: async (message) => {
+        roomIdRef.current = message.roomId;
+        localIdRef.current = message.senderId;
+        setJoined(true);
+        setStatus("signaling connected");
+        addEvent("joined room");
 
-          if (message.existingPeers.length > 0) {
-            remotePeerRef.current = message.existingPeers[0];
-            setStatus("connecting to peer");
-            await tryStartNegotiation();
-          }
-          return;
-        }
-
-        if (message.type === "peer-joined") {
-          remotePeerRef.current = {
-            senderId: message.senderId,
-            displayName: message.displayName,
-          };
+        if (message.existingPeers.length > 0) {
+          remotePeerRef.current = message.existingPeers[0];
           setStatus("connecting to peer");
-          addEvent(`peer joined: ${message.displayName}`);
           await tryStartNegotiation();
-          return;
         }
-
-        if (message.type === "offer") {
-          addEvent("received offer");
-          remotePeerRef.current = {
-            senderId: message.senderId,
-            displayName: remotePeerRef.current?.displayName ?? "Peer",
-          };
-          setStatus("connecting to peer");
-          negotiationStartedRef.current = true;
-          try {
-            const answer = await webrtcRef.current?.handleRemoteOffer(message.sdp);
-            if (answer) {
-              signalingRef.current?.sendAnswer(message.roomId, message.senderId, answer);
-            }
-          } catch {
-            addEvent("error: failed to handle offer");
+      },
+      onPeerJoined: async (message) => {
+        remotePeerRef.current = {
+          senderId: message.senderId,
+          displayName: message.displayName,
+        };
+        setStatus("connecting to peer");
+        addEvent(`peer joined: ${message.displayName}`);
+        await tryStartNegotiation();
+      },
+      onOffer: async (message) => {
+        addEvent("received offer");
+        remotePeerRef.current = {
+          senderId: message.senderId,
+          displayName: remotePeerRef.current?.displayName ?? "Peer",
+        };
+        setStatus("connecting to peer");
+        negotiationStartedRef.current = true;
+        try {
+          const answer = await webrtcRef.current?.handleRemoteOffer(message.sdp);
+          if (answer) {
+            signalingRef.current?.sendAnswer(message.roomId, message.senderId, answer);
           }
-          return;
+        } catch {
+          addEvent("error: failed to handle offer");
         }
-
-        if (message.type === "answer") {
-          addEvent("received answer");
-          try {
-            await webrtcRef.current?.handleRemoteAnswer(message.sdp);
-          } catch {
-            addEvent("error: failed to handle answer");
-          }
-          return;
+      },
+      onAnswer: async (message) => {
+        addEvent("received answer");
+        try {
+          await webrtcRef.current?.handleRemoteAnswer(message.sdp);
+        } catch {
+          addEvent("error: failed to handle answer");
         }
-
-        if (message.type === "ice-candidate") {
-          addEvent("received ICE candidate");
-          try {
-            await webrtcRef.current?.addIceCandidate(message.candidate);
-          } catch {
-            addEvent("error: failed to add ICE candidate");
-          }
-          return;
+      },
+      onIceCandidate: async (message) => {
+        addEvent("received ICE candidate");
+        try {
+          await webrtcRef.current?.addIceCandidate(message.candidate);
+        } catch {
+          addEvent("error: failed to add ICE candidate");
         }
-
-        if (message.type === "peer-left") {
-          addEvent("peer disconnected");
-          setStatus("signaling connected");
-          remotePeerRef.current = null;
-          negotiationStartedRef.current = false;
-          webrtcRef.current?.close();
-          return;
-        }
-
-        if (message.type === "error") {
-          addEvent(`error: ${message.message}`);
-        }
+      },
+      onPeerLeft: () => {
+        addEvent("peer disconnected");
+        setStatus("signaling connected");
+        remotePeerRef.current = null;
+        negotiationStartedRef.current = false;
+        webrtcRef.current?.close();
+      },
+      onServerError: (message) => {
+        addEvent(`error: ${message.message}`);
       },
     });
 
