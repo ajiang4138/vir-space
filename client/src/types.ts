@@ -1,37 +1,75 @@
+export type ParticipantRole = "host" | "guest";
+
 export type ConnectionStatus =
   | "disconnected"
+  | "signaling disconnected"
   | "signaling connected"
+  | "waiting for guest"
+  | "connecting to host"
   | "connecting to peer"
-  | "peer connected";
+  | "peer connected"
+  | "guest left"
+  | "room closed by host"
+  | "host disconnected, session ended";
 
-export interface PeerSummary {
-  senderId: string;
+export interface ParticipantSummary {
+  peerId: string;
   displayName: string;
+  role: ParticipantRole;
 }
 
-export interface JoinPayload {
+export interface RoomActionPayload {
   roomId: string;
   displayName: string;
 }
 
+export interface RoomStatePayload {
+  roomId: string;
+  hostPeerId: string;
+  hostDisplayName: string;
+  status: "active" | "closed";
+  participants: ParticipantSummary[];
+}
+
 export type ClientSignalMessage =
-  | ({ type: "join" } & JoinPayload)
+  | ({ type: "create-room" } & RoomActionPayload)
+  | ({ type: "join-room" } & RoomActionPayload)
+  | { type: "leave-room"; roomId: string }
+  | { type: "end-room"; roomId: string }
   | { type: "offer"; roomId: string; targetId: string; sdp: RTCSessionDescriptionInit }
   | { type: "answer"; roomId: string; targetId: string; sdp: RTCSessionDescriptionInit }
   | { type: "ice-candidate"; roomId: string; targetId: string; candidate: RTCIceCandidateInit };
 
 export type ServerSignalMessage =
   | {
-      type: "joined";
+      type: "room-created";
       roomId: string;
-      senderId: string;
-      existingPeers: PeerSummary[];
+      peerId: string;
+      role: ParticipantRole;
+      room: RoomStatePayload;
     }
   | {
-      type: "peer-joined";
+      type: "room-joined";
       roomId: string;
-      senderId: string;
-      displayName: string;
+      peerId: string;
+      role: ParticipantRole;
+      room: RoomStatePayload;
+    }
+  | {
+      type: "room-state";
+      room: RoomStatePayload;
+    }
+  | {
+      type: "participant-joined";
+      roomId: string;
+      participant: ParticipantSummary;
+      room: RoomStatePayload;
+    }
+  | {
+      type: "participant-left";
+      roomId: string;
+      peerId: string;
+      room: RoomStatePayload;
     }
   | {
       type: "offer";
@@ -54,11 +92,18 @@ export type ServerSignalMessage =
   | {
       type: "peer-left";
       roomId: string;
-      senderId: string;
+      peerId: string;
+    }
+  | {
+      type: "room-closed";
+      roomId: string;
+      reason: "host-ended" | "host-disconnected";
+      message: string;
     }
   | {
       type: "error";
       roomId?: string;
+      code?: string;
       message: string;
     };
 

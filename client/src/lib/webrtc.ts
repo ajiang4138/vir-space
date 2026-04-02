@@ -116,17 +116,29 @@ export class WebRtcPeerManager {
 
   close(): void {
     if (this.dataChannel) {
+      this.dataChannel.onopen = null;
+      this.dataChannel.onclose = null;
+      this.dataChannel.onmessage = null;
       this.dataChannel.close();
       this.dataChannel = null;
     }
 
     if (this.pc) {
+      this.pc.onicecandidate = null;
+      this.pc.onconnectionstatechange = null;
+      this.pc.onnegotiationneeded = null;
+      this.pc.ondatachannel = null;
       this.pc.close();
       this.pc = null;
     }
 
     this.pendingRemoteIceCandidates = [];
     this.handlers.onStatusChange?.("closed");
+  }
+
+  resetForNextPeer(): void {
+    this.close();
+    this.handlers.onStatusChange?.("idle");
   }
 
   private bindDataChannel(channel: RTCDataChannel): void {

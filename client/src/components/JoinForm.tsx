@@ -2,27 +2,39 @@ import { FormEvent, useState } from "react";
 
 interface JoinFormProps {
   defaultSignalingUrl: string;
-  joiningDisabled: boolean;
-  onJoin: (payload: { signalingUrl: string; roomId: string; displayName: string }) => void;
+  roomActionDisabled: boolean;
+  onCreateRoom: (payload: { signalingUrl: string; roomId: string; displayName: string }) => void;
+  onJoinRoom: (payload: { signalingUrl: string; roomId: string; displayName: string }) => void;
 }
 
-export function JoinForm({ defaultSignalingUrl, joiningDisabled, onJoin }: JoinFormProps): JSX.Element {
+export function JoinForm({
+  defaultSignalingUrl,
+  roomActionDisabled,
+  onCreateRoom,
+  onJoinRoom,
+}: JoinFormProps): JSX.Element {
   const [signalingUrl, setSignalingUrl] = useState(defaultSignalingUrl);
   const [roomId, setRoomId] = useState("room-1");
   const [displayName, setDisplayName] = useState("");
 
-  const submit = (event: FormEvent) => {
+  const buildPayload = () => ({
+    signalingUrl: signalingUrl.trim(),
+    roomId: roomId.trim(),
+    displayName: displayName.trim(),
+  });
+
+  const submitCreate = (event: FormEvent) => {
     event.preventDefault();
-    onJoin({
-      signalingUrl: signalingUrl.trim(),
-      roomId: roomId.trim(),
-      displayName: displayName.trim(),
-    });
+    onCreateRoom(buildPayload());
+  };
+
+  const clickJoin = () => {
+    onJoinRoom(buildPayload());
   };
 
   return (
-    <form className="card form" onSubmit={submit}>
-      <h2>Join Room</h2>
+    <form className="card form" onSubmit={submitCreate}>
+      <h2>Create or Join Room</h2>
 
       <label>
         Signaling Server URL
@@ -31,7 +43,7 @@ export function JoinForm({ defaultSignalingUrl, joiningDisabled, onJoin }: JoinF
           onChange={(e) => setSignalingUrl(e.target.value)}
           placeholder="ws://localhost:8787"
           required
-          disabled={joiningDisabled}
+          disabled={roomActionDisabled}
         />
       </label>
 
@@ -42,7 +54,7 @@ export function JoinForm({ defaultSignalingUrl, joiningDisabled, onJoin }: JoinF
           onChange={(e) => setRoomId(e.target.value)}
           placeholder="room-1"
           required
-          disabled={joiningDisabled}
+          disabled={roomActionDisabled}
         />
       </label>
 
@@ -53,13 +65,18 @@ export function JoinForm({ defaultSignalingUrl, joiningDisabled, onJoin }: JoinF
           onChange={(e) => setDisplayName(e.target.value)}
           placeholder="Alice"
           required
-          disabled={joiningDisabled}
+          disabled={roomActionDisabled}
         />
       </label>
 
-      <button type="submit" disabled={joiningDisabled}>
-        Join Room
-      </button>
+      <div className="form-actions">
+        <button type="submit" disabled={roomActionDisabled}>
+          Create Room
+        </button>
+        <button type="button" disabled={roomActionDisabled} onClick={clickJoin}>
+          Join Room
+        </button>
+      </div>
     </form>
   );
 }

@@ -26,7 +26,13 @@ body {
 .right-col {
   display: grid;
   gap: 16px;
-  grid-template-rows: 1fr minmax(220px, 280px);
+  grid-template-rows: auto 1fr minmax(220px, 280px);
+}
+
+.top-panels {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
 }
 
 .card {
@@ -45,6 +51,13 @@ body {
 .app-header p {
   margin: 8px 0 10px;
   color: #3f5560;
+}
+
+.session-banner {
+  margin: 10px 0 0;
+  color: #314b57;
+  font-size: 0.95rem;
+  font-weight: 600;
 }
 
 .status {
@@ -75,6 +88,20 @@ body {
   color: #0d5f30;
 }
 
+.status.waiting-for-guest,
+.status.guest-left {
+  background: #fff6d8;
+  color: #825200;
+}
+
+.status.connecting-to-host,
+.status.host-disconnected-session-ended,
+.status.room-closed-by-host,
+.status.signaling-disconnected {
+  background: #deefff;
+  color: #114b7a;
+}
+
 .form {
   display: grid;
   gap: 12px;
@@ -83,9 +110,17 @@ body {
 
 .form h2,
 .chat h2,
-.debug-log h2 {
+.debug-log h2,
+.room-info h2,
+.participant-list h2 {
   margin: 0;
   font-size: 1.1rem;
+}
+
+.form-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }
 
 label {
@@ -115,6 +150,10 @@ button {
   color: #fff;
   font-weight: 600;
   cursor: pointer;
+}
+
+button.danger {
+  background: #bf2a2a;
 }
 
 button:disabled,
@@ -173,6 +212,58 @@ input:disabled {
   gap: 8px;
 }
 
+.room-info dl {
+  margin: 10px 0 0;
+  display: grid;
+  gap: 8px;
+}
+
+.room-info dl div {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 8px;
+}
+
+.room-info dt {
+  color: #5a6f79;
+  font-size: 0.9rem;
+}
+
+.room-info dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+.room-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.participant-list ul {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.participant-list li {
+  border: 1px solid #dbe5e8;
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  background: #f8fbff;
+}
+
+.participant-list .meta {
+  color: #3f5560;
+  font-size: 0.9rem;
+  text-transform: capitalize;
+}
+
 .debug-log ul {
   margin: 8px 0 0;
   padding-left: 20px;
@@ -192,7 +283,11 @@ input:disabled {
   }
 
   .right-col {
-    grid-template-rows: auto auto;
+    grid-template-rows: auto auto auto;
+  }
+
+  .top-panels {
+    grid-template-columns: 1fr;
   }
 
   .chat {

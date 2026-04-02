@@ -1,11 +1,15 @@
-import { ClientSignalMessage, JoinPayload, ServerSignalMessage } from "../types";
+import { ClientSignalMessage, RoomActionPayload, ServerSignalMessage } from "../types";
 
-type JoinedMessage = Extract<ServerSignalMessage, { type: "joined" }>;
-type PeerJoinedMessage = Extract<ServerSignalMessage, { type: "peer-joined" }>;
+type RoomCreatedMessage = Extract<ServerSignalMessage, { type: "room-created" }>;
+type RoomJoinedMessage = Extract<ServerSignalMessage, { type: "room-joined" }>;
+type RoomStateMessage = Extract<ServerSignalMessage, { type: "room-state" }>;
+type ParticipantJoinedMessage = Extract<ServerSignalMessage, { type: "participant-joined" }>;
+type ParticipantLeftMessage = Extract<ServerSignalMessage, { type: "participant-left" }>;
 type OfferMessage = Extract<ServerSignalMessage, { type: "offer" }>;
 type AnswerMessage = Extract<ServerSignalMessage, { type: "answer" }>;
 type IceCandidateMessage = Extract<ServerSignalMessage, { type: "ice-candidate" }>;
 type PeerLeftMessage = Extract<ServerSignalMessage, { type: "peer-left" }>;
+type RoomClosedMessage = Extract<ServerSignalMessage, { type: "room-closed" }>;
 type ErrorMessage = Extract<ServerSignalMessage, { type: "error" }>;
 
 type MaybeAsyncHandler<T> = (message: T) => void | Promise<void>;
@@ -15,12 +19,16 @@ interface SignalingHandlers {
   onClose: () => void;
   onError: (message: string) => void;
   onMessage?: MaybeAsyncHandler<ServerSignalMessage>;
-  onJoined?: MaybeAsyncHandler<JoinedMessage>;
-  onPeerJoined?: MaybeAsyncHandler<PeerJoinedMessage>;
+  onRoomCreated?: MaybeAsyncHandler<RoomCreatedMessage>;
+  onRoomJoined?: MaybeAsyncHandler<RoomJoinedMessage>;
+  onRoomState?: MaybeAsyncHandler<RoomStateMessage>;
+  onParticipantJoined?: MaybeAsyncHandler<ParticipantJoinedMessage>;
+  onParticipantLeft?: MaybeAsyncHandler<ParticipantLeftMessage>;
   onOffer?: MaybeAsyncHandler<OfferMessage>;
   onAnswer?: MaybeAsyncHandler<AnswerMessage>;
   onIceCandidate?: MaybeAsyncHandler<IceCandidateMessage>;
   onPeerLeft?: MaybeAsyncHandler<PeerLeftMessage>;
+  onRoomClosed?: MaybeAsyncHandler<RoomClosedMessage>;
   onServerError?: MaybeAsyncHandler<ErrorMessage>;
 }
 
@@ -59,11 +67,33 @@ export class SignalingClient {
     this.socket = null;
   }
 
-  joinRoom(payload: JoinPayload): void {
+  createRoom(payload: RoomActionPayload): void {
     this.send({
-      type: "join",
+      type: "create-room",
       roomId: payload.roomId,
       displayName: payload.displayName,
+    });
+  }
+
+  joinRoom(payload: RoomActionPayload): void {
+    this.send({
+      type: "join-room",
+      roomId: payload.roomId,
+      displayName: payload.displayName,
+    });
+  }
+
+  leaveRoom(roomId: string): void {
+    this.send({
+      type: "leave-room",
+      roomId,
+    });
+  }
+
+  endRoom(roomId: string): void {
+    this.send({
+      type: "end-room",
+      roomId,
     });
   }
 
@@ -94,15 +124,33 @@ export class SignalingClient {
     }
 
     switch (message.type) {
-      case "joined":
-        if (this.handlers.onJoined) {
-          void this.handlers.onJoined(message);
+      case "room-created":
+        if (this.handlers.onRoomCreated) {
+          void this.handlers.onRoomCreated(message);
         }
         return;
 
-      case "peer-joined":
-        if (this.handlers.onPeerJoined) {
-          void this.handlers.onPeerJoined(message);
+      case "room-joined":
+        if (this.handlers.onRoomJoined) {
+          void this.handlers.onRoomJoined(message);
+        }
+        return;
+
+      case "room-state":
+        if (this.handlers.onRoomState) {
+          void this.handlers.onRoomState(message);
+        }
+        return;
+
+      case "participant-joined":
+        if (this.handlers.onParticipantJoined) {
+          void this.handlers.onParticipantJoined(message);
+        }
+        return;
+
+      case "participant-left":
+        if (this.handlers.onParticipantLeft) {
+          void this.handlers.onParticipantLeft(message);
         }
         return;
 
@@ -127,6 +175,12 @@ export class SignalingClient {
       case "peer-left":
         if (this.handlers.onPeerLeft) {
           void this.handlers.onPeerLeft(message);
+        }
+        return;
+
+      case "room-closed":
+        if (this.handlers.onRoomClosed) {
+          void this.handlers.onRoomClosed(message);
         }
         return;
 
