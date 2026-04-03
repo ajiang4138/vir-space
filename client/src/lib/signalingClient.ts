@@ -5,6 +5,7 @@ type RoomJoinedMessage = Extract<ServerSignalMessage, { type: "room-joined" }>;
 type RoomStateMessage = Extract<ServerSignalMessage, { type: "room-state" }>;
 type ParticipantJoinedMessage = Extract<ServerSignalMessage, { type: "participant-joined" }>;
 type ParticipantLeftMessage = Extract<ServerSignalMessage, { type: "participant-left" }>;
+type ChatMessage = Extract<ServerSignalMessage, { type: "chat-message" }>;
 type OfferMessage = Extract<ServerSignalMessage, { type: "offer" }>;
 type AnswerMessage = Extract<ServerSignalMessage, { type: "answer" }>;
 type IceCandidateMessage = Extract<ServerSignalMessage, { type: "ice-candidate" }>;
@@ -24,6 +25,7 @@ interface SignalingHandlers {
   onRoomState?: MaybeAsyncHandler<RoomStateMessage>;
   onParticipantJoined?: MaybeAsyncHandler<ParticipantJoinedMessage>;
   onParticipantLeft?: MaybeAsyncHandler<ParticipantLeftMessage>;
+  onChatMessage?: MaybeAsyncHandler<ChatMessage>;
   onOffer?: MaybeAsyncHandler<OfferMessage>;
   onAnswer?: MaybeAsyncHandler<AnswerMessage>;
   onIceCandidate?: MaybeAsyncHandler<IceCandidateMessage>;
@@ -99,16 +101,25 @@ export class SignalingClient {
     });
   }
 
-  sendOffer(roomId: string, targetId: string, sdp: RTCSessionDescriptionInit): void {
-    this.send({ type: "offer", roomId, targetId, sdp });
+  sendChatMessage(roomId: string, text: string, senderDisplayName?: string): void {
+    this.send({
+      type: "chat-message",
+      roomId,
+      text,
+      senderDisplayName,
+    });
   }
 
-  sendAnswer(roomId: string, targetId: string, sdp: RTCSessionDescriptionInit): void {
-    this.send({ type: "answer", roomId, targetId, sdp });
+  sendOffer(roomId: string, targetPeerId: string, sdp: RTCSessionDescriptionInit): void {
+    this.send({ type: "offer", roomId, targetPeerId, sdp });
   }
 
-  sendIceCandidate(roomId: string, targetId: string, candidate: RTCIceCandidateInit): void {
-    this.send({ type: "ice-candidate", roomId, targetId, candidate });
+  sendAnswer(roomId: string, targetPeerId: string, sdp: RTCSessionDescriptionInit): void {
+    this.send({ type: "answer", roomId, targetPeerId, sdp });
+  }
+
+  sendIceCandidate(roomId: string, targetPeerId: string, candidate: RTCIceCandidateInit): void {
+    this.send({ type: "ice-candidate", roomId, targetPeerId, candidate });
   }
 
   private send(message: ClientSignalMessage): void {
@@ -153,6 +164,12 @@ export class SignalingClient {
       case "participant-left":
         if (this.handlers.onParticipantLeft) {
           void this.handlers.onParticipantLeft(message);
+        }
+        return;
+
+      case "chat-message":
+        if (this.handlers.onChatMessage) {
+          void this.handlers.onChatMessage(message);
         }
         return;
 

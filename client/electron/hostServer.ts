@@ -25,13 +25,14 @@ interface ActiveRoom {
   roomPassword: string;
   hostPeerId: string;
   hostDisplayName: string;
-  guestPeerId?: string;
-  guestDisplayName?: string;
-  status: "active" | "closed";
+  guestPeerId: string | null;
+  guestDisplayName: string | null;
+  status: "open" | "closed";
   participants: Map<string, ClientContext>;
 }
 
 const minimumRoomPasswordLength = 4;
+const maximumRoomParticipants = 6;
 
 function resolveLocalNetworkInfo(): LocalNetworkInfo {
   const addresses = new Set<string>();
@@ -189,6 +190,11 @@ export class HostRoomService {
             return;
           }
 
+          if (raw.type === "chat-message") {
+            this.handleChatMessage(client, raw);
+            return;
+          }
+
           if (raw.type === "offer" || raw.type === "answer" || raw.type === "ice-candidate") {
             this.handleRelay(client, raw);
             return;
@@ -231,7 +237,7 @@ export class HostRoomService {
 
     if (message.type === "end-room") {
       const room = this.activeRoom;
-      if (!room || room.roomId !== message.roomId || room.hostPeerId !== client.id || room.status !== "active") {
+      if (!room || room.roomId !== message.roomId || room.hostPeerId !== client.id || room.status !== "open") {
         this.sendError(client, "Only the active host can end the room", message.roomId);
         return;
       }
@@ -250,12 +256,7 @@ export class HostRoomService {
     }
 
     if (roomPassword.length < minimumRoomPasswordLength) {
-      this.sendError(
-        client,
-        `roomPassword must be at least ${minimumRoomPasswordLength} characters`,
-        roomId,
-        "ROOM_PASSWORD_TOO_SHORT",
-      );
+      this.sendError(client, `roomPassword must be at least ${minimumRoomPasswordLength} characters`, roomId, "ROOM_PASSWORD_TOO_SHORT");
       return;
     }
 
@@ -268,7 +269,7 @@ export class HostRoomService {
   }
 
   private createRoom(client: ClientContext, roomId: string, displayName: string, roomPassword: string): void {
-    if (this.activeRoom && this.activeRoom.status === "active") {
+    if (this.activeRoom && this.activeRoom.status === "open") {
       this.sendError(client, "A room is already active", roomId, "ROOM_EXISTS");
       return;
     }
@@ -282,7 +283,9 @@ export class HostRoomService {
       roomPassword,
       hostPeerId: client.id,
       hostDisplayName: displayName,
-      status: "active",
+      guestPeerId: null,
+      guestDisplayName: null,
+      status: "open",
       participants: new Map([[client.id, client]]),
     };
 
@@ -291,7 +294,7 @@ export class HostRoomService {
     this.sendTo(client, {
       type: "room-created",
       roomId,
-      peerId: client.id,
+      senderPeerId: client.id,
       role: "host",
       room: this.getRoomStatePayload(room),
     });
@@ -300,7 +303,7 @@ export class HostRoomService {
   private joinRoom(client: ClientContext, roomId: string, displayName: string, roomPassword: string): void {
     const room = this.activeRoom;
 
-    if (!room || room.roomId !== roomId || room.status !== "active") {
+    if (!room || room.roomId !== roomId || room.status !== "open") {
       this.sendError(client, "Room does not exist", roomId, room ? "ROOM_CLOSED" : "ROOM_NOT_FOUND");
       return;
     }
@@ -315,8 +318,8 @@ export class HostRoomService {
       return;
     }
 
-    if (room.participants.size >= 2) {
-      this.sendError(client, "Room is full (max 2 peers)", roomId, "ROOM_FULL");
+    if (room.participants.size >= maximumRoomParticipants) {
+      this.sendError(client, `Room is full (max ${maximumRoomParticipants} peers)`, roomId, "ROOM_FULL");
       return;
     }
 
@@ -331,7 +334,7 @@ export class HostRoomService {
     this.sendTo(client, {
       type: "room-joined",
       roomId,
-      peerId: client.id,
+      senderPeerId: client.id,
       role: "guest",
       room: roomState,
     });
@@ -357,12 +360,12 @@ export class HostRoomService {
     const room = this.activeRoom;
     const roomId = client.roomId;
 
-    if (!room || room.status !== "active" || roomId !== message.roomId) {
+    if (!room || room.status !== "open" || roomId !== message.roomId) {
       this.sendError(client, "You must join the room before sending signaling messages", message.roomId);
       return;
     }
 
-    const target = room.participants.get(message.targetId);
+    const target = room.participants.get(message.targetPeerId);
     if (!target || target.id === client.id) {
       this.sendError(client, "Target peer is not available", roomId);
       return;
@@ -372,7 +375,7 @@ export class HostRoomService {
       this.sendTo(target, {
         type: message.type,
         roomId,
-        senderId: client.id,
+        senderPeerId: client.id,
         sdp: message.sdp,
       });
       return;
@@ -381,9 +384,40 @@ export class HostRoomService {
     this.sendTo(target, {
       type: "ice-candidate",
       roomId,
-      senderId: client.id,
+      senderPeerId: client.id,
       candidate: message.candidate,
     });
+  }
+
+  private handleChatMessage(
+    client: ClientContext,
+    message: Extract<ClientSignalMessage, { type: "chat-message" }>,
+  ): void {
+    const room = this.activeRoom;
+    if (!room || room.status !== "open" || client.roomId !== message.roomId) {
+      this.sendError(client, "You must join the room before sending chat", message.roomId, "NOT_IN_ROOM");
+      return;
+    }
+
+    const senderDisplayName = client.displayName ?? message.senderDisplayName ?? "Peer";
+    const text = message.text.trim();
+    if (!text) {
+      return;
+    }
+
+    for (const member of room.participants.values()) {
+      if (member.id === client.id) {
+        continue;
+      }
+
+      this.sendTo(member, {
+        type: "chat-message",
+        roomId: room.roomId,
+        senderPeerId: client.id,
+        senderDisplayName,
+        text,
+      });
+    }
   }
 
   private handleClientDisconnect(client: ClientContext): void {
@@ -416,8 +450,8 @@ export class HostRoomService {
 
     room.participants.delete(client.id);
     if (room.guestPeerId === client.id) {
-      room.guestPeerId = undefined;
-      room.guestDisplayName = undefined;
+      room.guestPeerId = null;
+      room.guestDisplayName = null;
     }
 
     client.roomId = undefined;

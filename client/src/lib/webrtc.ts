@@ -16,6 +16,43 @@ interface WebRtcHandlers {
   onNegotiationNeeded?: () => void;
 }
 
+function parseCsv(value: string | undefined): string[] {
+  if (!value) {
+    return [];
+  }
+
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
+function resolveIceServers(): RTCIceServer[] {
+  const configuredStunUrls = parseCsv(import.meta.env.VITE_STUN_URLS);
+  const stunUrls = configuredStunUrls.length > 0 ? configuredStunUrls : ["stun:stun.l.google.com:19302"];
+
+  const iceServers: RTCIceServer[] = [{ urls: stunUrls }];
+
+  const turnUrls = parseCsv(import.meta.env.VITE_TURN_URLS);
+  if (turnUrls.length > 0) {
+    const username = import.meta.env.VITE_TURN_USERNAME;
+    const credential = import.meta.env.VITE_TURN_CREDENTIAL;
+
+    const turnServer: RTCIceServer = {
+      urls: turnUrls,
+    };
+
+    if (username && credential) {
+      turnServer.username = username;
+      turnServer.credential = credential;
+    }
+
+    iceServers.push(turnServer);
+  }
+
+  return iceServers;
+}
+
 export class WebRtcPeerManager {
   private pc: RTCPeerConnection | null = null;
   private dataChannel: RTCDataChannel | null = null;
@@ -29,7 +66,7 @@ export class WebRtcPeerManager {
     }
 
     const pc = new RTCPeerConnection({
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      iceServers: resolveIceServers(),
     });
 
     pc.onicecandidate = (event) => {

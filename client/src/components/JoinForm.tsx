@@ -1,4 +1,4 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 
 type SetupStep = "user-id" | "mode" | "create" | "join";
 
@@ -7,18 +7,15 @@ interface JoinFormProps {
   userIdDraft: string;
   currentUserId: string;
   roomActionDisabled: boolean;
-  defaultCreateRoomId: string;
-  defaultCreatePort: number;
-  defaultJoinHostAddress: string;
-  defaultJoinHostPort: number;
+  defaultBootstrapUrl: string;
   onUserIdDraftChange: (next: string) => void;
   onSubmitUserId: () => void;
   onChooseCreate: () => void;
   onChooseJoin: () => void;
   onBackToMode: () => void;
   onSwitchUser: () => void;
-  onCreateRoom: (payload: { roomId: string; roomPassword: string; hostPort?: number }) => void;
-  onJoinRoom: (payload: { roomId: string; roomPassword: string; hostAddress: string; hostPort: number }) => void;
+  onCreateRoom: (payload: { roomId: string; bootstrapUrl: string; roomPassword: string }) => void;
+  onJoinRoom: (payload: { roomId: string; bootstrapUrl: string; roomPassword: string }) => void;
 }
 
 function generateRoomId(): string {
@@ -33,10 +30,7 @@ export function JoinForm({
   userIdDraft,
   currentUserId,
   roomActionDisabled,
-  defaultCreateRoomId,
-  defaultCreatePort,
-  defaultJoinHostAddress,
-  defaultJoinHostPort,
+  defaultBootstrapUrl,
   onUserIdDraftChange,
   onSubmitUserId,
   onChooseCreate,
@@ -47,12 +41,18 @@ export function JoinForm({
   onJoinRoom,
 }: JoinFormProps): JSX.Element {
   const [createRoomId, setCreateRoomId] = useState(generateRoomId());
+  const [createBootstrapUrl, setCreateBootstrapUrl] = useState(defaultBootstrapUrl);
   const [createRoomPassword, setCreateRoomPassword] = useState("");
-  const [createHostPort, setCreateHostPort] = useState(String(defaultCreatePort));
-  const [joinRoomId, setJoinRoomId] = useState(defaultCreateRoomId);
+  const [joinRoomId, setJoinRoomId] = useState("");
+  const [joinBootstrapUrl, setJoinBootstrapUrl] = useState(defaultBootstrapUrl);
   const [joinRoomPassword, setJoinRoomPassword] = useState("");
-  const [joinHostAddress, setJoinHostAddress] = useState(defaultJoinHostAddress);
-  const [joinHostPort, setJoinHostPort] = useState(String(defaultJoinHostPort));
+
+  useEffect(() => {
+    if (defaultBootstrapUrl) {
+      setCreateBootstrapUrl(defaultBootstrapUrl);
+      setJoinBootstrapUrl(defaultBootstrapUrl);
+    }
+  }, [defaultBootstrapUrl]);
 
   const submitUserId = (event: FormEvent): void => {
     event.preventDefault();
@@ -61,11 +61,10 @@ export function JoinForm({
 
   const submitCreate = (event: FormEvent): void => {
     event.preventDefault();
-    const parsedPort = Number.parseInt(createHostPort.trim(), 10);
     onCreateRoom({
       roomId: createRoomId.trim(),
+      bootstrapUrl: createBootstrapUrl.trim(),
       roomPassword: createRoomPassword.trim(),
-      hostPort: Number.isFinite(parsedPort) ? parsedPort : undefined,
     });
   };
 
@@ -73,9 +72,8 @@ export function JoinForm({
     event.preventDefault();
     onJoinRoom({
       roomId: joinRoomId.trim(),
+      bootstrapUrl: joinBootstrapUrl.trim(),
       roomPassword: joinRoomPassword.trim(),
-      hostAddress: joinHostAddress.trim(),
-      hostPort: Number.parseInt(joinHostPort.trim(), 10) || defaultJoinHostPort,
     });
   };
 
@@ -90,7 +88,7 @@ export function JoinForm({
             <input
               value={userIdDraft}
               onChange={(event) => onUserIdDraftChange(event.target.value)}
-              placeholder="alice-01"
+              placeholder="username"
               required
               disabled={roomActionDisabled}
             />
@@ -134,6 +132,17 @@ export function JoinForm({
         </p>
         <form className="subform" onSubmit={submitCreate}>
           <label>
+            Bootstrap Signaling URL
+            <input
+              value={createBootstrapUrl}
+              onChange={(event) => setCreateBootstrapUrl(event.target.value)}
+              placeholder="ws://192.168.1.42:8787"
+              required
+              disabled={roomActionDisabled}
+            />
+          </label>
+
+          <label>
             Room ID
             <div className="inline-row">
               <input
@@ -160,21 +169,9 @@ export function JoinForm({
               type="password"
               value={createRoomPassword}
               onChange={(event) => setCreateRoomPassword(event.target.value)}
-              placeholder="Set a room password (min 4 chars)"
+              placeholder="Set a room password"
               minLength={minimumRoomPasswordLength}
               required
-              disabled={roomActionDisabled}
-            />
-          </label>
-
-          <label>
-            Host Port
-            <input
-              type="number"
-              min="1"
-              max="65535"
-              value={createHostPort}
-              onChange={(event) => setCreateHostPort(event.target.value)}
               disabled={roomActionDisabled}
             />
           </label>
@@ -200,6 +197,17 @@ export function JoinForm({
       </p>
       <form className="subform" onSubmit={submitJoin}>
         <label>
+          Bootstrap Signaling URL
+          <input
+            value={joinBootstrapUrl}
+            onChange={(event) => setJoinBootstrapUrl(event.target.value)}
+            placeholder="ws://192.168.1.42:8787"
+            required
+            disabled={roomActionDisabled}
+          />
+        </label>
+
+        <label>
           Room ID
           <input
             value={joinRoomId}
@@ -216,32 +224,9 @@ export function JoinForm({
             type="password"
             value={joinRoomPassword}
             onChange={(event) => setJoinRoomPassword(event.target.value)}
-            placeholder="Enter host room password (min 4 chars)"
+            placeholder="Enter room password"
             minLength={minimumRoomPasswordLength}
             required
-            disabled={roomActionDisabled}
-          />
-        </label>
-
-        <label>
-          Host Address
-          <input
-            value={joinHostAddress}
-            onChange={(event) => setJoinHostAddress(event.target.value)}
-            placeholder="127.0.0.1"
-            required
-            disabled={roomActionDisabled}
-          />
-        </label>
-
-        <label>
-          Host Port
-          <input
-            type="number"
-            min="1"
-            max="65535"
-            value={joinHostPort}
-            onChange={(event) => setJoinHostPort(event.target.value)}
             disabled={roomActionDisabled}
           />
         </label>

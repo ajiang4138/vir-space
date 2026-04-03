@@ -11,21 +11,22 @@ export type {
 } from "./shared/signaling";
 
 export type ConnectionStatus =
-  | "disconnected"
-  | "host service starting"
-  | "host service started"
-  | "host service stopped"
-  | "signaling disconnected"
-  | "signaling connected"
+  | "idle"
+  | "connecting to bootstrap server"
+  | "connected to bootstrap server"
+  | "room created"
   | "waiting for guest"
-  | "guest joined"
-  | "connecting to host"
-  | "connecting to peer"
+  | "joining room"
+  | "room joined"
+  | "peer connecting"
   | "peer connected"
   | "guest left"
-  | "room closed"
+  | "room closed by host"
   | "host disconnected"
-  | "host disconnected, session ended";
+  | "signaling disconnected"
+  | "invalid room password"
+  | "room full"
+  | "room not found";
 
 export interface ChatMessage {
   id: string;

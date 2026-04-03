@@ -10,9 +10,9 @@ export interface RoomStatePayload {
   roomId: string;
   hostPeerId: string;
   hostDisplayName: string;
-  guestPeerId?: string;
-  guestDisplayName?: string;
-  status: "active" | "closed";
+  guestPeerId: string | null;
+  guestDisplayName: string | null;
+  status: "open" | "closed";
   participants: ParticipantSummary[];
 }
 
@@ -27,22 +27,23 @@ export type ClientSignalMessage =
   | ({ type: "join-room" } & RoomActionPayload)
   | { type: "leave-room"; roomId: string }
   | { type: "end-room"; roomId: string }
-  | { type: "offer"; roomId: string; targetId: string; sdp: RTCSessionDescriptionInit }
-  | { type: "answer"; roomId: string; targetId: string; sdp: RTCSessionDescriptionInit }
-  | { type: "ice-candidate"; roomId: string; targetId: string; candidate: RTCIceCandidateInit };
+  | { type: "chat-message"; roomId: string; text: string; senderDisplayName?: string }
+  | { type: "offer"; roomId: string; targetPeerId: string; sdp: RTCSessionDescriptionInit }
+  | { type: "answer"; roomId: string; targetPeerId: string; sdp: RTCSessionDescriptionInit }
+  | { type: "ice-candidate"; roomId: string; targetPeerId: string; candidate: RTCIceCandidateInit };
 
 export type ServerSignalMessage =
   | {
       type: "room-created";
       roomId: string;
-      peerId: string;
+      senderPeerId: string;
       role: ParticipantRole;
       room: RoomStatePayload;
     }
   | {
       type: "room-joined";
       roomId: string;
-      peerId: string;
+      senderPeerId: string;
       role: ParticipantRole;
       room: RoomStatePayload;
     }
@@ -63,21 +64,28 @@ export type ServerSignalMessage =
       room: RoomStatePayload;
     }
   | {
+      type: "chat-message";
+      roomId: string;
+      senderPeerId: string;
+      senderDisplayName: string;
+      text: string;
+    }
+  | {
       type: "offer";
       roomId: string;
-      senderId: string;
+      senderPeerId: string;
       sdp: RTCSessionDescriptionInit;
     }
   | {
       type: "answer";
       roomId: string;
-      senderId: string;
+      senderPeerId: string;
       sdp: RTCSessionDescriptionInit;
     }
   | {
       type: "ice-candidate";
       roomId: string;
-      senderId: string;
+      senderPeerId: string;
       candidate: RTCIceCandidateInit;
     }
   | {

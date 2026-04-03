@@ -2,14 +2,17 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 
-type ClientMessage =
-  | { type: "create-room"; roomId: string; displayName: string }
-  | { type: "join-room"; roomId: string; displayName: string }
-  | { type: "leave-room"; roomId: string }
-  | { type: "end-room"; roomId: string }
-  | { type: "offer"; roomId: string; targetId: string; sdp: RTCSessionDescriptionInit }
-  | { type: "answer"; roomId: string; targetId: string; sdp: RTCSessionDescriptionInit }
-  | { type: "ice-candidate"; roomId: string; targetId: string; candidate: RTCIceCandidateInit };
+type SessionDescriptionPayload = {
+  type?: string;
+  sdp?: string;
+};
+
+type IceCandidatePayload = {
+  candidate?: string;
+  sdpMid?: string | null;
+  sdpMLineIndex?: number | null;
+  usernameFragment?: string | null;
+};
 
 type ParticipantRole = "host" | "guest";
 
@@ -23,29 +26,38 @@ interface RoomStatePayload {
   roomId: string;
   hostPeerId: string;
   hostDisplayName: string;
-  status: "active" | "closed";
+  guestPeerId: string | null;
+  guestDisplayName: string | null;
+  status: "open" | "closed";
   participants: ParticipantSummary[];
 }
+
+type ClientMessage =
+  | { type: "create-room"; roomId: string; displayName: string; roomPassword: string }
+  | { type: "join-room"; roomId: string; displayName: string; roomPassword: string }
+  | { type: "leave-room"; roomId: string }
+  | { type: "end-room"; roomId: string }
+  | { type: "chat-message"; roomId: string; text: string; senderDisplayName?: string }
+  | { type: "offer"; roomId: string; targetPeerId: string; sdp: SessionDescriptionPayload }
+  | { type: "answer"; roomId: string; targetPeerId: string; sdp: SessionDescriptionPayload }
+  | { type: "ice-candidate"; roomId: string; targetPeerId: string; candidate: IceCandidatePayload };
 
 type ServerMessage =
   | {
       type: "room-created";
       roomId: string;
-      peerId: string;
+      senderPeerId: string;
       role: ParticipantRole;
       room: RoomStatePayload;
     }
   | {
       type: "room-joined";
       roomId: string;
-      peerId: string;
+      senderPeerId: string;
       role: ParticipantRole;
       room: RoomStatePayload;
     }
-  | {
-      type: "room-state";
-      room: RoomStatePayload;
-    }
+  | { type: "room-state"; room: RoomStatePayload }
   | {
       type: "participant-joined";
       roomId: string;
@@ -59,16 +71,23 @@ type ServerMessage =
       room: RoomStatePayload;
     }
   | {
+      type: "chat-message";
+      roomId: string;
+      senderPeerId: string;
+      senderDisplayName: string;
+      text: string;
+    }
+  | {
       type: "offer" | "answer";
       roomId: string;
-      senderId: string;
-      sdp: RTCSessionDescriptionInit;
+      senderPeerId: string;
+      sdp: SessionDescriptionPayload;
     }
   | {
       type: "ice-candidate";
       roomId: string;
-      senderId: string;
-      candidate: RTCIceCandidateInit;
+      senderPeerId: string;
+      candidate: IceCandidatePayload;
     }
   | {
       type: "peer-left";
@@ -98,31 +117,37 @@ interface ClientContext {
 
 interface Room {
   roomId: string;
+  roomPassword: string;
   hostPeerId: string;
   hostDisplayName: string;
-  status: "active" | "closed";
+  guestPeerId: string | null;
+  guestDisplayName: string | null;
+  status: "open" | "closed";
   participants: Map<string, ClientContext>;
 }
 
 const PORT = Number(process.env.PORT ?? 8787);
-const MAX_ROOM_PARTICIPANTS = 2;
+const minimumRoomPasswordLength = 4;
+const maximumRoomParticipants = 6;
 const rooms = new Map<string, Room>();
 
-const httpServer = createServer((req, res) => {
+const httpServer = createServer((_req, res) => {
   res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("Vir Space signaling server is running. Use ws://localhost:8787 from the client.\n");
+  res.end("Vir Space bootstrap signaling server is running. Use ws://localhost:8787 from clients.\n");
 });
 
 const wss = new WebSocketServer({ noServer: true });
 
-function sendTo(client: ClientContext, message: ServerMessage): void {
-  if (client.socket.readyState === WebSocket.OPEN) {
-    client.socket.send(JSON.stringify(message));
+function sendTo(client: ClientContext | undefined, message: ServerMessage): void {
+  if (!client || client.socket.readyState !== WebSocket.OPEN) {
+    return;
   }
+
+  client.socket.send(JSON.stringify(message));
 }
 
-function sendError(client: ClientContext, message: string, roomId?: string): void {
-  sendTo(client, { type: "error", message, roomId });
+function sendError(client: ClientContext, message: string, roomId?: string, code?: string): void {
+  sendTo(client, { type: "error", message, roomId, code });
 }
 
 function getRoomStatePayload(room: Room): RoomStatePayload {
@@ -136,6 +161,8 @@ function getRoomStatePayload(room: Room): RoomStatePayload {
     roomId: room.roomId,
     hostPeerId: room.hostPeerId,
     hostDisplayName: room.hostDisplayName,
+    guestPeerId: room.guestPeerId,
+    guestDisplayName: room.guestDisplayName,
     status: room.status,
     participants,
   };
@@ -144,19 +171,11 @@ function getRoomStatePayload(room: Room): RoomStatePayload {
 function broadcastRoomState(room: Room): void {
   const roomState = getRoomStatePayload(room);
   for (const member of room.participants.values()) {
-    sendTo(member, {
-      type: "room-state",
-      room: roomState,
-    });
+    sendTo(member, { type: "room-state", room: roomState });
   }
 }
 
-function getTargetInRoom(room: Room, targetId: string): ClientContext | undefined {
-  return room.participants.get(targetId);
-}
-
 function closeRoom(room: Room, reason: "host-ended" | "host-disconnected"): void {
-  // Host is the room owner; ending/disconnecting host terminates the room for every participant.
   room.status = "closed";
   const roomState = getRoomStatePayload(room);
 
@@ -165,54 +184,53 @@ function closeRoom(room: Room, reason: "host-ended" | "host-disconnected"): void
       type: "room-closed",
       roomId: room.roomId,
       reason,
-      message:
-        reason === "host-ended" ? "Host ended the room" : "Host disconnected, session ended",
+      message: reason === "host-ended" ? "Host ended the room" : "Host disconnected",
     });
     sendTo(member, {
       type: "room-state",
       room: roomState,
     });
-  }
 
-  for (const member of room.participants.values()) {
     member.roomId = undefined;
     member.role = undefined;
   }
 
   room.participants.clear();
+  rooms.delete(room.roomId);
 }
 
 function leaveRoom(client: ClientContext, reason: "leave-request" | "disconnect"): void {
-  const { roomId } = client;
+  const roomId = client.roomId;
   if (!roomId) {
-    return undefined;
+    return;
   }
 
   const room = rooms.get(roomId);
+  client.roomId = undefined;
+
   if (!room) {
-    client.roomId = undefined;
     client.role = undefined;
     return;
   }
 
-  const wasHost = client.id === room.hostPeerId;
-
-  if (wasHost && room.status === "active") {
-    // Unexpected host socket close and explicit host leave both use the same shutdown path.
+  const isHost = room.hostPeerId === client.id;
+  if (isHost && room.status === "open") {
     closeRoom(room, reason === "leave-request" ? "host-ended" : "host-disconnected");
-    client.roomId = undefined;
     client.role = undefined;
     return;
   }
 
   if (!room.participants.has(client.id)) {
-    client.roomId = undefined;
     client.role = undefined;
     return;
   }
 
   room.participants.delete(client.id);
-  client.roomId = undefined;
+  if (room.guestPeerId === client.id) {
+    room.guestPeerId = null;
+    room.guestDisplayName = null;
+  }
+
   client.role = undefined;
 
   const roomState = getRoomStatePayload(room);
@@ -223,7 +241,6 @@ function leaveRoom(client: ClientContext, reason: "leave-request" | "disconnect"
       peerId: client.id,
       room: roomState,
     });
-
     sendTo(member, {
       type: "peer-left",
       roomId: room.roomId,
@@ -236,21 +253,11 @@ function leaveRoom(client: ClientContext, reason: "leave-request" | "disconnect"
   }
 }
 
-function createRoom(client: ClientContext, roomId: string, displayName: string): void {
+function createRoom(client: ClientContext, roomId: string, displayName: string, roomPassword: string): void {
   const existingRoom = rooms.get(roomId);
-  if (existingRoom?.status === "active") {
-    sendTo(client, {
-      type: "error",
-      roomId,
-      code: "ROOM_EXISTS",
-      message: "Room already exists",
-    });
+  if (existingRoom?.status === "open") {
+    sendError(client, "Room already exists", roomId, "ROOM_EXISTS");
     return;
-  }
-
-  // A closed room is considered terminated and can be recreated with the same ID.
-  if (existingRoom?.status === "closed") {
-    rooms.delete(roomId);
   }
 
   leaveRoom(client, "leave-request");
@@ -261,9 +268,12 @@ function createRoom(client: ClientContext, roomId: string, displayName: string):
 
   const room: Room = {
     roomId,
+    roomPassword,
     hostPeerId: client.id,
     hostDisplayName: displayName,
-    status: "active",
+    guestPeerId: null,
+    guestDisplayName: null,
+    status: "open",
     participants: new Map([[client.id, client]]),
   };
 
@@ -272,51 +282,36 @@ function createRoom(client: ClientContext, roomId: string, displayName: string):
   sendTo(client, {
     type: "room-created",
     roomId,
-    peerId: client.id,
+    senderPeerId: client.id,
     role: "host",
     room: getRoomStatePayload(room),
   });
 }
 
-function joinRoom(client: ClientContext, roomId: string, displayName: string): void {
+function joinRoom(client: ClientContext, roomId: string, displayName: string, roomPassword: string): void {
   const room = rooms.get(roomId);
   if (!room) {
-    sendTo(client, {
-      type: "error",
-      roomId,
-      code: "ROOM_NOT_FOUND",
-      message: "Room does not exist",
-    });
+    sendError(client, "Room does not exist", roomId, "ROOM_NOT_FOUND");
     return;
   }
 
-  if (room.status === "closed") {
-    sendTo(client, {
-      type: "error",
-      roomId,
-      code: "ROOM_CLOSED",
-      message: "Room is closed",
-    });
+  if (room.status !== "open") {
+    sendError(client, "Room is closed", roomId, "ROOM_CLOSED");
     return;
   }
 
   if (!room.participants.has(room.hostPeerId)) {
-    sendTo(client, {
-      type: "error",
-      roomId,
-      code: "HOST_MISSING",
-      message: "Room host is not active",
-    });
+    sendError(client, "Host is not connected", roomId, "HOST_MISSING");
     return;
   }
 
-  if (room.participants.size >= MAX_ROOM_PARTICIPANTS) {
-    sendTo(client, {
-      type: "error",
-      roomId,
-      code: "ROOM_FULL",
-      message: "Room is full (max 2 peers)",
-    });
+  if (room.roomPassword !== roomPassword) {
+    sendError(client, "Invalid room password", roomId, "ROOM_PASSWORD_INVALID");
+    return;
+  }
+
+  if (room.participants.size >= maximumRoomParticipants) {
+    sendError(client, `Room is full (max ${maximumRoomParticipants} peers)`, roomId, "ROOM_FULL");
     return;
   }
 
@@ -326,12 +321,15 @@ function joinRoom(client: ClientContext, roomId: string, displayName: string): v
   client.displayName = displayName;
   client.role = "guest";
   room.participants.set(client.id, client);
+  room.guestPeerId = client.id;
+  room.guestDisplayName = displayName;
 
   const roomState = getRoomStatePayload(room);
+
   sendTo(client, {
     type: "room-joined",
     roomId,
-    peerId: client.id,
+    senderPeerId: client.id,
     role: "guest",
     room: roomState,
   });
@@ -362,16 +360,7 @@ function handleRoomAction(
 ): void {
   if (message.type === "leave-room") {
     if (client.roomId !== message.roomId) {
-      const requestedRoom = rooms.get(message.roomId);
-      if (requestedRoom && requestedRoom.hostPeerId === client.id && requestedRoom.status === "active") {
-        // Defensive path: host requested leave with stale local room state, still terminate room.
-        closeRoom(requestedRoom, "host-ended");
-        client.roomId = undefined;
-        client.role = undefined;
-        return;
-      }
-
-      sendError(client, "Cannot leave a room you have not joined", message.roomId);
+      sendError(client, "Cannot leave a room you have not joined", message.roomId, "NOT_IN_ROOM");
       return;
     }
 
@@ -382,44 +371,39 @@ function handleRoomAction(
   if (message.type === "end-room") {
     const room = rooms.get(message.roomId);
     if (!room) {
-      sendTo(client, {
-        type: "error",
-        roomId: message.roomId,
-        code: "ROOM_NOT_FOUND",
-        message: "Room does not exist",
-      });
+      sendError(client, "Room does not exist", message.roomId, "ROOM_NOT_FOUND");
       return;
     }
 
-    if (room.hostPeerId !== client.id || room.status !== "active") {
-      sendTo(client, {
-        type: "error",
-        roomId: message.roomId,
-        code: "ONLY_HOST_CAN_END",
-        message: "Only the active host can end the room",
-      });
+    if (room.hostPeerId !== client.id || room.status !== "open") {
+      sendError(client, "Only host can end room", message.roomId, "ONLY_HOST_CAN_END");
       return;
     }
 
-    // Explicit host control for graceful room shutdown.
     closeRoom(room, "host-ended");
     return;
   }
 
   const roomId = message.roomId.trim();
   const displayName = message.displayName.trim();
+  const roomPassword = message.roomPassword.trim();
 
-  if (!roomId || !displayName) {
-    sendError(client, "roomId and displayName are required", roomId);
+  if (!roomId || !displayName || !roomPassword) {
+    sendError(client, "roomId, displayName, and roomPassword are required", roomId, "BAD_REQUEST");
+    return;
+  }
+
+  if (roomPassword.length < minimumRoomPasswordLength) {
+    sendError(client, `roomPassword must be at least ${minimumRoomPasswordLength} characters`, roomId, "ROOM_PASSWORD_TOO_SHORT");
     return;
   }
 
   if (message.type === "create-room") {
-    createRoom(client, roomId, displayName);
+    createRoom(client, roomId, displayName, roomPassword);
     return;
   }
 
-  joinRoom(client, roomId, displayName);
+  joinRoom(client, roomId, displayName, roomPassword);
 }
 
 function handleRelay(
@@ -428,19 +412,19 @@ function handleRelay(
 ): void {
   const roomId = client.roomId;
   if (!roomId || roomId !== message.roomId) {
-    sendError(client, "You must join the room before sending signaling messages", message.roomId);
+    sendError(client, "You must join room before signaling", message.roomId, "NOT_IN_ROOM");
     return;
   }
 
   const room = rooms.get(roomId);
-  if (!room || room.status !== "active") {
-    sendError(client, "Room is not active", roomId);
+  if (!room || room.status !== "open") {
+    sendError(client, "Room is not active", roomId, "ROOM_CLOSED");
     return;
   }
 
-  const target = getTargetInRoom(room, message.targetId);
+  const target = room.participants.get(message.targetPeerId);
   if (!target || target.id === client.id) {
-    sendError(client, "Target peer is not available", roomId);
+    sendError(client, "Target peer is not available", roomId, "TARGET_UNAVAILABLE");
     return;
   }
 
@@ -448,7 +432,7 @@ function handleRelay(
     sendTo(target, {
       type: message.type,
       roomId,
-      senderId: client.id,
+      senderPeerId: client.id,
       sdp: message.sdp,
     });
     return;
@@ -457,9 +441,46 @@ function handleRelay(
   sendTo(target, {
     type: "ice-candidate",
     roomId,
-    senderId: client.id,
+    senderPeerId: client.id,
     candidate: message.candidate,
   });
+}
+
+function handleChatMessage(
+  client: ClientContext,
+  message: Extract<ClientMessage, { type: "chat-message" }>,
+): void {
+  const roomId = client.roomId;
+  if (!roomId || roomId !== message.roomId) {
+    sendError(client, "You must join room before sending chat", message.roomId, "NOT_IN_ROOM");
+    return;
+  }
+
+  const room = rooms.get(roomId);
+  if (!room || room.status !== "open") {
+    sendError(client, "Room is not active", roomId, "ROOM_CLOSED");
+    return;
+  }
+
+  const text = message.text.trim();
+  if (!text) {
+    return;
+  }
+
+  const senderDisplayName = client.displayName ?? message.senderDisplayName ?? "Peer";
+  for (const member of room.participants.values()) {
+    if (member.id === client.id) {
+      continue;
+    }
+
+    sendTo(member, {
+      type: "chat-message",
+      roomId,
+      senderPeerId: client.id,
+      senderDisplayName,
+      text,
+    });
+  }
 }
 
 wss.on("connection", (socket) => {
@@ -471,13 +492,14 @@ wss.on("connection", (socket) => {
   socket.on("message", (data) => {
     try {
       const raw = JSON.parse(data.toString()) as ClientMessage;
-      if (
-        raw.type === "create-room" ||
-        raw.type === "join-room" ||
-        raw.type === "leave-room" ||
-        raw.type === "end-room"
-      ) {
+
+      if (raw.type === "create-room" || raw.type === "join-room" || raw.type === "leave-room" || raw.type === "end-room") {
         handleRoomAction(client, raw);
+        return;
+      }
+
+      if (raw.type === "chat-message") {
+        handleChatMessage(client, raw);
         return;
       }
 
@@ -486,9 +508,9 @@ wss.on("connection", (socket) => {
         return;
       }
 
-      sendError(client, "Unsupported message type");
+      sendError(client, "Unsupported message type", undefined, "BAD_REQUEST");
     } catch {
-      sendError(client, "Invalid JSON payload");
+      sendError(client, "Invalid JSON payload", undefined, "BAD_JSON");
     }
   });
 
@@ -508,5 +530,5 @@ httpServer.on("upgrade", (request, socket, head) => {
 });
 
 httpServer.listen(PORT, () => {
-  console.log(`Signaling server listening on ws://localhost:${PORT}`);
+  console.log(`Bootstrap signaling server listening on ws://localhost:${PORT}`);
 });

@@ -3,17 +3,16 @@ import { ChatMessage } from "../types";
 
 interface ChatPanelProps {
   messages: ChatMessage[];
-  canSend: boolean;
   onSend: (text: string) => void;
 }
 
-export function ChatPanel({ messages, canSend, onSend }: ChatPanelProps): JSX.Element {
+export function ChatPanel({ messages, onSend }: ChatPanelProps): JSX.Element {
   const [draft, setDraft] = useState("");
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const text = draft.trim();
-    if (!text || !canSend) {
+    if (!text) {
       return;
     }
 
@@ -41,10 +40,9 @@ export function ChatPanel({ messages, canSend, onSend }: ChatPanelProps): JSX.El
         <input
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
-          placeholder={canSend ? "Type a message" : "Connect to peer to chat"}
-          disabled={!canSend}
+          placeholder="Type a message"
         />
-        <button type="submit" disabled={!canSend}>
+        <button type="submit">
           Send
         </button>
       </form>

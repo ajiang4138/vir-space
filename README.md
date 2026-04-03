@@ -1,6 +1,6 @@
-# Vir Space - Milestone 2
+# Vir Space - Option A Bootstrap Signaling
 
-Electron desktop app with React + TypeScript where the room creator becomes a temporary host and runs the room coordination/signaling service inside the same app instance. WebRTC still carries chat traffic directly between the two peers.
+Electron desktop app with React + TypeScript. A minimal standalone WebSocket bootstrap/signaling server handles room coordination and WebRTC signaling relay. Chat traffic stays peer-to-peer over WebRTC RTCDataChannel.
 
 ## Project Structure
 
@@ -42,7 +42,7 @@ vir-space/
       index.ts
 ```
 
-The `server/` folder is legacy and is not required for the normal hosted-room flow.
+The `server/` folder is required for Option A and must be running for room create/join flow.
 
 ## Prerequisites
 
@@ -57,20 +57,29 @@ Run from the repo root:
 npm run install:all
 ```
 
-This installs the client dependencies only. The hosted-room flow does not require the standalone server during normal operation.
+This installs both client and server dependencies.
 
 ## Run
 
-### Single instance development
+### Start bootstrap signaling server
 
 Terminal A:
+
+```bash
+cd server
+npm run dev
+```
+
+### Start client
+
+Terminal B:
 
 ```bash
 cd client
 npm run dev
 ```
 
-This starts the Vite renderer and one Electron instance.
+Use multiple Electron instances if you want host/guest local testing.
 
 ### Two-instance local test
 
@@ -101,80 +110,58 @@ Use Terminal B as the host instance and Terminal C as the guest instance.
 
 1. Enter a display name.
 2. Enter a room ID.
-3. Optionally change the host port.
+3. Enter the bootstrap signaling URL (for example `ws://localhost:8787`).
 4. Click **Create Room**.
-5. The Electron main process starts a local ws signaling service.
-6. The renderer connects to that local service and creates the room.
-7. Share the host address, port, and room ID with the guest.
+5. The client connects to the bootstrap server.
+6. The server registers host ownership for that room.
+7. Host waits for guest.
 
 ### Guest join flow
 
 1. Enter a display name.
-2. Enter the host address, host port, and room ID.
+2. Enter the same bootstrap signaling URL and room ID.
 3. Click **Join Room**.
-4. The renderer connects directly to the host's ws endpoint.
-5. Signaling is relayed through the host app, and WebRTC negotiation begins.
+4. The server validates room exists and guest slot is available.
+5. Signaling is relayed through the bootstrap server, and WebRTC negotiation begins.
 
-## Hosted-Peer Architecture
+## Option A Architecture
 
-This milestone removes the dedicated central signaling server from normal use.
+- Dedicated bootstrap/signaling server uses `ws` and in-memory room state.
+- Server is not the chat transport; chat stays on RTCDataChannel.
+- Room creator is still host.
+- Max room size is 2 peers: one host and one guest.
+- No host migration.
+- If host disconnects or ends room, room closes immediately.
 
-- Every Electron instance contains both client behavior and host behavior.
-- The room creator is the temporary host.
-- The host app starts a local ws room-coordination service from the Electron main process.
-- Guests connect directly to that host service using host address + port + room ID.
-- The host is also a participant in the WebRTC chat.
-- Max room size stays at 2 peers: one host and one guest.
-- There is no host migration.
-- When the host leaves, the room ends.
+## Server Responsibilities
 
-## How One Node Acts as Both Server and Client
+- `create-room`
+- `join-room`
+- `end-room`
+- `leave-room`
+- relay `offer` / `answer` / `ice-candidate` within same room only
+- room lifecycle notifications: `participant-joined`, `participant-left`, `room-state`, `room-closed`
 
-The Electron main process owns the local ws server and exposes a minimal preload bridge for room lifecycle control.
+## Room Lifecycle
 
-- `startHostService(port?)` starts the host-owned ws service.
-- `stopHostService()` stops it and frees the port.
-- `getHostServiceStatus()` returns the current host-service state.
-- `getLocalNetworkInfo()` returns local IP candidates for sharing a room on the LAN.
+If host ends room or disconnects:
 
-The renderer still uses the normal WebSocket client API. When the user creates a room, the renderer first asks Electron main to start the host service, then connects to `ws://127.0.0.1:<port>` and sends `create-room`. When a guest joins, the renderer connects directly to the host's ws endpoint and sends `join-room`.
+1. Server marks room closed and broadcasts `room-closed`.
+2. Guest tears down WebRTC and clears room state.
+3. Host remains room owner semantics-wise; no host migration is attempted.
 
-## Create Room Flow
+If guest leaves or disconnects:
 
-The host enters display name, room ID, and optional port, then clicks **Create Room**.
-
-1. The Electron main process starts the local ws service.
-2. The renderer connects to the local service.
-3. The host sends `create-room`.
-4. The service records the host as the room creator and returns room state.
-5. The UI shows the room as open and waiting for a guest.
-6. The host shares the address, port, and room ID with the guest.
-
-## Join Room Flow
-
-The guest enters display name, host address, host port, and room ID, then clicks **Join Room**.
-
-1. The renderer opens a WebSocket connection directly to the host service.
-2. The guest sends `join-room`.
-3. The host validates that the room exists, is active, and has capacity.
-4. The service adds the guest, broadcasts the room state, and relays WebRTC signaling.
-5. The initiator is chosen deterministically from peer IDs so only one side sends the offer.
-
-## How Host Shutdown Works
-
-If the host clicks **End Room** or closes the app:
-
-1. The host service sends `room-closed` to the connected peer.
-2. The guest tears down WebRTC state and returns to a disconnected state.
-3. The host service stops and releases the port.
-4. If the host disappears unexpectedly, the guest sees the WebSocket disconnect and cleans up.
+1. Host receives `participant-left` and `peer-left`.
+2. Room remains open with empty guest slot.
 
 ## NPM Scripts
 
 ### Root
 
-- `npm run install:all` - install client dependencies
+- `npm run install:all` - install client and server dependencies
 - `npm run dev:client` - run renderer + Electron together for one instance
+- `npm run dev:server` - run bootstrap signaling server
 - `npm run build` - build the client app and Electron main/preload code
 
 ### Client (`client/package.json`)
@@ -190,7 +177,7 @@ If the host clicks **End Room** or closes the app:
 
 - Room size is limited to 2 peers.
 - There is no host migration or re-election.
-- There is no automatic discovery or NAT traversal.
-- Guests must manually enter the host address, port, and room ID.
-- This milestone assumes either localhost testing or a manually reachable LAN host.
+- There is no decentralized room discovery.
+- Peers need the same room ID and bootstrap URL.
+- TURN credentials are optional and must be supplied via environment variables for strict NAT scenarios.
 - Workspace sync, file transfer, and larger multi-peer topologies are not implemented yet.

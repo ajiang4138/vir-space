@@ -5,8 +5,10 @@ interface RoomInfoProps {
   yourName: string;
   yourRole: ParticipantRole;
   hostDisplayName: string;
-  hostEndpointLabel: string;
-  shareUrls: string[];
+  bootstrapUrl: string;
+  signalingStatus: string;
+  webRtcStatus: string;
+  roomStatus: string;
   inRoom: boolean;
   onLeaveRoom: () => void;
   onEndRoom: () => void;
@@ -17,8 +19,10 @@ export function RoomInfo({
   yourName,
   yourRole,
   hostDisplayName,
-  hostEndpointLabel,
-  shareUrls,
+  bootstrapUrl,
+  signalingStatus,
+  webRtcStatus,
+  roomStatus,
   inRoom,
   onLeaveRoom,
   onEndRoom,
@@ -48,31 +52,33 @@ export function RoomInfo({
               <dd>{hostDisplayName}</dd>
             </div>
             <div>
-              <dt>Host Endpoint</dt>
-              <dd>{hostEndpointLabel}</dd>
+              <dt>Bootstrap URL</dt>
+              <dd>{bootstrapUrl}</dd>
+            </div>
+            <div>
+              <dt>Room Status</dt>
+              <dd>{roomStatus}</dd>
+            </div>
+            <div>
+              <dt>Signaling</dt>
+              <dd>{signalingStatus}</dd>
+            </div>
+            <div>
+              <dt>WebRTC</dt>
+              <dd>{webRtcStatus}</dd>
             </div>
           </dl>
-
-          {yourRole === "host" && shareUrls.length > 0 ? (
-            <div className="share-box">
-              <h3>Share with guest</h3>
-              <ul>
-                {shareUrls.map((url) => (
-                  <li key={url}>{url}</li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
 
           <div className="room-actions">
             {yourRole === "host" ? (
               <button type="button" className="danger" onClick={onEndRoom}>
                 End Room
               </button>
-            ) : null}
-            <button type="button" onClick={onLeaveRoom}>
-              Leave Room
-            </button>
+            ) : (
+              <button type="button" onClick={onLeaveRoom}>
+                Leave Room
+              </button>
+            )}
           </div>
         </>
       ) : null}

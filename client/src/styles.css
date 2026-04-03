@@ -116,36 +116,39 @@ body {
   color: #911f1f;
 }
 
-.status.signaling-connected,
-.status.host-service-starting {
+.status.connecting-to-bootstrap-server,
+.status.connected-to-bootstrap-server,
+.status.joining-room,
+.status.room-created,
+.status.room-joined,
+.status.idle {
   background: #fff6d8;
   color: #825200;
 }
 
-.status.connecting-to-peer,
-.status.connecting-to-host {
+.status.peer-connecting,
+.status.host-disconnected {
   background: #deefff;
   color: #114b7a;
 }
 
 .status.peer-connected,
-.status.guest-joined,
-.status.host-service-started {
+.status.waiting-for-guest {
   background: #dcf8e6;
   color: #0d5f30;
 }
 
-.status.waiting-for-guest,
-.status.guest-left {
+.status.guest-left,
+.status.room-closed-by-host,
+.status.room-full,
+.status.room-not-found {
   background: #fff6d8;
   color: #825200;
 }
 
-.status.room-closed,
-.status.host-disconnected,
-.status.host-disconnected-session-ended {
-  background: #deefff;
-  color: #114b7a;
+.status.invalid-room-password {
+  background: #fdecea;
+  color: #911f1f;
 }
 
 .form {

@@ -1,68 +1,77 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChatPanel } from "./components/ChatPanel";
 import { DebugLog } from "./components/DebugLog";
 import { JoinForm } from "./components/JoinForm";
 import { ParticipantList } from "./components/ParticipantList";
 import { RoomInfo } from "./components/RoomInfo";
 import { SignalingClient } from "./lib/signalingClient";
-import { WebRtcPeerManager } from "./lib/webrtc";
+import { WebRtcPeerManager, type WebRtcStatus } from "./lib/webrtc";
 import type {
     ChatMessage,
     ConnectionStatus,
-    HostServiceInfo,
     ParticipantRole,
     ParticipantSummary,
     RoomStatePayload,
 } from "./types";
 
-const defaultCreatePort = 8787;
-const defaultJoinHostAddress = "127.0.0.1";
-const minimumRoomPasswordLength = 4;
-
 type RoomIntent = "create" | "join";
 type SetupStep = "user-id" | "mode" | "create" | "join";
-
-interface RoomEndpoint {
-  address: string;
-  port: number;
-  shareUrls: string[];
-}
+type SignalingConnectionState = "disconnected" | "connecting" | "connected";
 
 interface ActiveRoom {
   roomId: string;
   myPeerId: string;
   myDisplayName: string;
   myRole: ParticipantRole;
+  roomStatus: RoomStatePayload["status"];
   hostDisplayName: string;
   participants: ParticipantSummary[];
-  endpoint: RoomEndpoint;
 }
 
 interface PendingAction {
   intent: RoomIntent;
   roomId: string;
+  bootstrapUrl: string;
   displayName: string;
   roomPassword: string;
 }
+
+const defaultBootstrapUrl = import.meta.env.VITE_BOOTSTRAP_SIGNALING_URL ?? "ws://localhost:8787";
+const defaultHostPort = 8787;
+const minimumRoomPasswordLength = 4;
 
 function nowLabel(): string {
   return new Date().toLocaleTimeString();
 }
 
-function formatEndpoint(endpoint: RoomEndpoint | null): string {
-  if (!endpoint) {
-    return "-";
-  }
+function parsePortFromWsUrl(url: string): number {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") {
+      return defaultHostPort;
+    }
 
-  return `ws://${endpoint.address}:${endpoint.port}`;
+    if (!parsed.port) {
+      return defaultHostPort;
+    }
+
+    const port = Number.parseInt(parsed.port, 10);
+    if (!Number.isFinite(port) || port < 1 || port > 65535) {
+      return defaultHostPort;
+    }
+
+    return port;
+  } catch {
+    return defaultHostPort;
+  }
 }
 
-function buildFallbackEndpoint(address: string, port: number): RoomEndpoint {
-  return {
-    address,
-    port,
-    shareUrls: [`ws://${address}:${port}`],
-  };
+function isLoopbackHost(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+}
+
+function isWsProtocol(protocol: string): boolean {
+  return protocol === "ws:" || protocol === "wss:";
 }
 
 function buildActiveRoom(
@@ -70,35 +79,35 @@ function buildActiveRoom(
   myPeerId: string,
   myRole: ParticipantRole,
   myDisplayName: string,
-  endpoint: RoomEndpoint | null,
 ): ActiveRoom {
   return {
     roomId: roomState.roomId,
     myPeerId,
     myDisplayName,
     myRole,
+    roomStatus: roomState.status,
     hostDisplayName: roomState.hostDisplayName,
     participants: roomState.participants,
-    endpoint: endpoint ?? buildFallbackEndpoint(defaultJoinHostAddress, defaultCreatePort),
   };
 }
 
 export default function App(): JSX.Element {
-  const [status, setStatus] = useState<ConnectionStatus>("disconnected");
-  const [sessionBanner, setSessionBanner] = useState<string>("Disconnected");
+  const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [events, setEvents] = useState<string[]>([]);
   const [activeRoom, setActiveRoom] = useState<ActiveRoom | null>(null);
   const [setupStep, setSetupStep] = useState<SetupStep>("user-id");
   const [userIdDraft, setUserIdDraft] = useState("");
   const [currentUserId, setCurrentUserId] = useState("");
+  const [bootstrapUrl, setBootstrapUrl] = useState(defaultBootstrapUrl);
+  const [signalingState, setSignalingState] = useState<SignalingConnectionState>("disconnected");
+  const [webRtcStatus, setWebRtcStatus] = useState<WebRtcStatus>("idle");
 
   const activeRoomRef = useRef<ActiveRoom | null>(null);
   const currentUserIdRef = useRef("");
-  const connectionTargetRef = useRef<RoomEndpoint | null>(null);
-  const negotiationStartedRef = useRef(false);
   const pendingActionRef = useRef<PendingAction | null>(null);
-  const recentRoomClosureRef = useRef<"host-ended" | "host-disconnected" | null>(null);
+  const bootstrapUrlRef = useRef(defaultBootstrapUrl);
+  const negotiationStartedRef = useRef(false);
 
   const signalingRef = useRef<SignalingClient | null>(null);
   const webrtcRef = useRef<WebRtcPeerManager | null>(null);
@@ -112,9 +121,8 @@ export default function App(): JSX.Element {
     setActiveRoom(nextRoom);
   };
 
-  const setSessionState = (nextStatus: ConnectionStatus, banner: string = nextStatus): void => {
+  const setSessionState = (nextStatus: ConnectionStatus): void => {
     setStatus(nextStatus);
-    setSessionBanner(banner);
   };
 
   const cleanupPeerConnection = (): void => {
@@ -122,18 +130,55 @@ export default function App(): JSX.Element {
     negotiationStartedRef.current = false;
   };
 
-  const clearRoomState = (nextStatus: ConnectionStatus, banner: string): void => {
+  const clearRoomState = (nextStatus: ConnectionStatus): void => {
     cleanupPeerConnection();
     updateActiveRoom(null);
-    connectionTargetRef.current = null;
-    pendingActionRef.current = null;
-    setSessionState(nextStatus, banner);
+    setMessages([]);
+    setSessionState(nextStatus);
     setSetupStep(currentUserIdRef.current ? "mode" : "user-id");
+  };
+
+  const stopLocalHostService = async (): Promise<void> => {
+    try {
+      await window.electronApi.stopHostService();
+    } catch {
+      addEvent("error: failed to stop local host signaling service");
+    }
   };
 
   useEffect(() => {
     currentUserIdRef.current = currentUserId;
   }, [currentUserId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const primeBootstrapUrl = async (): Promise<void> => {
+      try {
+        const networkInfo = await window.electronApi.getLocalNetworkInfo();
+        if (cancelled) {
+          return;
+        }
+
+        const preferredAddress = networkInfo.preferredAddress;
+        if (preferredAddress && !isLoopbackHost(preferredAddress)) {
+          setBootstrapUrl(`ws://${preferredAddress}:${defaultHostPort}`);
+        }
+      } catch {
+        // Leave the current field value and rely on explicit prompt later.
+      }
+    };
+
+    void primeBootstrapUrl();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    bootstrapUrlRef.current = bootstrapUrl;
+  }, [bootstrapUrl]);
 
   const getRemoteParticipant = (): ParticipantSummary | null => {
     const room = activeRoomRef.current;
@@ -150,21 +195,26 @@ export default function App(): JSX.Element {
     myRole: ParticipantRole,
     myDisplayName: string,
   ): void => {
-    const nextRoom = buildActiveRoom(roomState, myPeerId, myRole, myDisplayName, connectionTargetRef.current);
+    const nextRoom = buildActiveRoom(roomState, myPeerId, myRole, myDisplayName);
     updateActiveRoom(nextRoom);
 
     if (roomState.status === "closed") {
-      setSessionState("room closed");
+      setSessionState(myRole === "guest" ? "host disconnected" : "room closed by host");
       return;
     }
 
     const remote = nextRoom.participants.find((participant) => participant.peerId !== myPeerId);
     if (!remote) {
-      setSessionState(myRole === "host" ? "waiting for guest" : "connecting to host");
+      setSessionState(myRole === "host" ? "waiting for guest" : "peer connecting");
       return;
     }
 
-    setSessionState(myRole === "guest" ? "connecting to host" : "connecting to peer");
+    if (webrtcRef.current?.isDataChannelOpen()) {
+      setSessionState("peer connected");
+      return;
+    }
+
+    setSessionState("peer connecting");
   };
 
   const tryStartNegotiation = async (): Promise<void> => {
@@ -181,7 +231,7 @@ export default function App(): JSX.Element {
     }
 
     negotiationStartedRef.current = true;
-    setSessionState(room.myRole === "guest" ? "connecting to host" : "connecting to peer");
+    setSessionState("peer connecting");
 
     try {
       const offer = await webrtcRef.current?.createOffer();
@@ -207,12 +257,11 @@ export default function App(): JSX.Element {
       },
       onDataChannelOpen: () => {
         setSessionState("peer connected");
-        addEvent("data channel open");
+        addEvent("peer connected via WebRTC data channel");
       },
       onDataChannelClose: () => {
         const room = activeRoomRef.current;
         if (!room) {
-          setSessionState("signaling connected");
           return;
         }
 
@@ -220,108 +269,68 @@ export default function App(): JSX.Element {
         if (!remote && room.myRole === "host") {
           setSessionState("waiting for guest");
         } else {
-          setSessionState(room.myRole === "guest" ? "connecting to host" : "connecting to peer");
+          setSessionState("peer connecting");
         }
 
-        addEvent("peer disconnected");
+        addEvent("peer data channel closed");
       },
       onDataMessage: (text) => {
-        const remoteName = getRemoteParticipant()?.displayName ?? "Peer";
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            author: remoteName,
-            text,
-            sentAt: nowLabel(),
-            own: false,
-          },
-        ]);
+        // Chat delivery is room-fanned via signaling to reach all participants.
+        addEvent(`received direct data-channel message: ${text}`);
       },
       onConnectionState: (state) => {
-        if (state === "failed" || state === "disconnected" || state === "closed") {
-          const room = activeRoomRef.current;
-          if (room) {
-            setSessionState(room.myRole === "guest" ? "connecting to host" : "connecting to peer");
-          } else {
-            setSessionState("signaling connected");
-          }
-
-          addEvent("peer disconnected");
+        if (state === "failed") {
+          addEvent("peer connection failed");
+          setSessionState("peer connecting");
         }
       },
       onStatusChange: (nextStatus) => {
-        if (nextStatus === "connected") {
-          setSessionState("peer connected");
-          return;
-        }
-
-        if (nextStatus === "connecting") {
-          const room = activeRoomRef.current;
-          setSessionState(room?.myRole === "guest" ? "connecting to host" : "connecting to peer");
-          return;
-        }
-
-        if (nextStatus === "disconnected" || nextStatus === "failed" || nextStatus === "closed") {
-          const room = activeRoomRef.current;
-          if (room) {
-            setSessionState(room.myRole === "guest" ? "connecting to host" : "connecting to peer");
-          } else {
-            setSessionState("signaling connected");
-          }
-        }
+        setWebRtcStatus(nextStatus);
       },
     });
 
     signalingRef.current = new SignalingClient({
       onOpen: () => {
-        setSessionState("signaling connected");
-        addEvent("connected to host ws endpoint");
+        setSignalingState("connected");
+        setSessionState("connected to bootstrap server");
+        addEvent("connected to bootstrap signaling server");
 
         const pending = pendingActionRef.current;
-        if (pending) {
-          if (pending.intent === "create") {
-            signalingRef.current?.createRoom({
-              roomId: pending.roomId,
-              displayName: pending.displayName,
-              roomPassword: pending.roomPassword,
-            });
-          } else {
-            signalingRef.current?.joinRoom({
-              roomId: pending.roomId,
-              displayName: pending.displayName,
-              roomPassword: pending.roomPassword,
-            });
-          }
-        }
-      },
-      onClose: () => {
-        const recentClosure = recentRoomClosureRef.current;
-        recentRoomClosureRef.current = null;
-
-        if (recentClosure) {
-          addEvent("signaling disconnected");
+        if (!pending) {
           return;
         }
 
+        if (pending.intent === "create") {
+          signalingRef.current?.createRoom({
+            roomId: pending.roomId,
+            displayName: pending.displayName,
+            roomPassword: pending.roomPassword,
+          });
+          return;
+        }
+
+        setSessionState("joining room");
+        signalingRef.current?.joinRoom({
+          roomId: pending.roomId,
+          displayName: pending.displayName,
+          roomPassword: pending.roomPassword,
+        });
+      },
+      onClose: () => {
+        setSignalingState("disconnected");
         addEvent("signaling disconnected");
 
         const room = activeRoomRef.current;
-        const pending = pendingActionRef.current;
+        pendingActionRef.current = null;
 
-        if (room) {
-          clearRoomState(
-            room.myRole === "guest" ? "host disconnected, session ended" : "host service stopped",
-            room.myRole === "guest" ? "host disconnected, session ended" : "host service stopped",
-          );
+        if (room?.myRole === "guest") {
+          clearRoomState("host disconnected");
           return;
         }
 
-        if (pending?.intent === "create") {
-          void window.electronApi.stopHostService();
-          pendingActionRef.current = null;
-          connectionTargetRef.current = null;
-          setSessionState("host service stopped");
+        if (room?.myRole === "host") {
+          void stopLocalHostService();
+          clearRoomState("signaling disconnected");
           return;
         }
 
@@ -330,26 +339,21 @@ export default function App(): JSX.Element {
       onError: (message) => {
         addEvent(`error: ${message}`);
       },
-      onRoomCreated: async (message) => {
+      onRoomCreated: (message) => {
         const pending = pendingActionRef.current;
         pendingActionRef.current = null;
         if (!pending) {
           return;
         }
 
-        const hostInfo = await window.electronApi.getHostServiceStatus();
-        const endpoint = hostInfo.localNetworkInfo
-          ? {
-              address: hostInfo.localNetworkInfo.preferredAddress,
-              port: hostInfo.port ?? defaultCreatePort,
-              shareUrls: hostInfo.wsUrls,
-            }
-          : buildFallbackEndpoint(defaultJoinHostAddress, hostInfo.port ?? defaultCreatePort);
-
-        connectionTargetRef.current = endpoint;
-        applyRoomState(message.room, message.peerId, message.role, pending.displayName);
-        setSessionState("waiting for guest");
-        addEvent(`room created: ${message.roomId} (host)`);
+        applyRoomState(message.room, message.senderPeerId, message.role, pending.displayName);
+        setSessionState("room created");
+        addEvent(`room created: ${message.roomId}`);
+        setTimeout(() => {
+          if (activeRoomRef.current?.myRole === "host") {
+            setSessionState("waiting for guest");
+          }
+        }, 0);
       },
       onRoomJoined: async (message) => {
         const pending = pendingActionRef.current;
@@ -358,9 +362,9 @@ export default function App(): JSX.Element {
           return;
         }
 
-        applyRoomState(message.room, message.peerId, message.role, pending.displayName);
-        setSessionState("guest joined");
-        addEvent(`room joined: ${message.roomId} (guest)`);
+        applyRoomState(message.room, message.senderPeerId, message.role, pending.displayName);
+        setSessionState("room joined");
+        addEvent(`room joined: ${message.roomId}`);
         await tryStartNegotiation();
       },
       onRoomState: async (message) => {
@@ -370,15 +374,13 @@ export default function App(): JSX.Element {
         }
 
         applyRoomState(message.room, room.myPeerId, room.myRole, room.myDisplayName);
+
         if (message.room.status === "closed") {
-          recentRoomClosureRef.current = recentRoomClosureRef.current ?? "host-ended";
-          clearRoomState(
-            recentRoomClosureRef.current === "host-disconnected" ? "host disconnected, session ended" : "room closed",
-            recentRoomClosureRef.current === "host-disconnected" ? "host disconnected, session ended" : "room closed",
-          );
-        } else {
-          await tryStartNegotiation();
+          clearRoomState(room.myRole === "guest" ? "host disconnected" : "room closed by host");
+          return;
         }
+
+        await tryStartNegotiation();
       },
       onParticipantJoined: async (message) => {
         const room = activeRoomRef.current;
@@ -387,11 +389,15 @@ export default function App(): JSX.Element {
         }
 
         applyRoomState(message.room, room.myPeerId, room.myRole, room.myDisplayName);
-        setSessionState("guest joined");
-        addEvent(`participant joined: ${message.participant.displayName} (${message.participant.role})`);
+        if (webrtcRef.current?.isDataChannelOpen()) {
+          setSessionState("peer connected");
+        } else {
+          setSessionState("peer connecting");
+        }
+        addEvent(`participant joined: ${message.participant.displayName}`);
         await tryStartNegotiation();
       },
-      onParticipantLeft: async (message) => {
+      onParticipantLeft: (message) => {
         const room = activeRoomRef.current;
         if (!room) {
           return;
@@ -399,28 +405,35 @@ export default function App(): JSX.Element {
 
         cleanupPeerConnection();
         applyRoomState(message.room, room.myPeerId, room.myRole, room.myDisplayName);
+
         if (room.myRole === "host") {
           setSessionState("guest left");
-        } else {
-          setSessionState("connecting to host");
-        }
-
-        addEvent(`participant left: ${message.peerId}`);
-      },
-      onOffer: async (message) => {
-        addEvent("received offer");
-        const room = activeRoomRef.current;
-        if (!room) {
+          addEvent("guest left the room");
           return;
         }
 
-        setSessionState(room.myRole === "guest" ? "connecting to host" : "connecting to peer");
+        setSessionState("peer connecting");
+      },
+      onChatMessage: (message) => {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            author: message.senderDisplayName || "Peer",
+            text: message.text,
+            sentAt: nowLabel(),
+            own: false,
+          },
+        ]);
+      },
+      onOffer: async (message) => {
+        addEvent("received offer");
         negotiationStartedRef.current = true;
 
         try {
           const answer = await webrtcRef.current?.handleRemoteOffer(message.sdp);
           if (answer) {
-            signalingRef.current?.sendAnswer(message.roomId, message.senderId, answer);
+            signalingRef.current?.sendAnswer(message.roomId, message.senderPeerId, answer);
           }
         } catch {
           addEvent("error: failed to handle offer");
@@ -435,7 +448,6 @@ export default function App(): JSX.Element {
         }
       },
       onIceCandidate: async (message) => {
-        addEvent("received ICE candidate");
         try {
           await webrtcRef.current?.addIceCandidate(message.candidate);
         } catch {
@@ -443,140 +455,154 @@ export default function App(): JSX.Element {
         }
       },
       onPeerLeft: () => {
-        addEvent("peer disconnected");
         cleanupPeerConnection();
-
-        const room = activeRoomRef.current;
-        if (!room) {
-          return;
-        }
-
-        if (room.myRole === "host") {
-          setSessionState("guest left");
-        } else {
-          setSessionState("connecting to host");
-        }
       },
       onRoomClosed: (message) => {
-        recentRoomClosureRef.current = message.reason;
         addEvent(`room closed: ${message.reason}`);
-        if (message.reason === "host-disconnected") {
-          clearRoomState("host disconnected, session ended", "host disconnected, session ended");
-        } else {
-          clearRoomState("room closed", "room closed");
+        if (message.reason === "host-ended") {
+          void stopLocalHostService();
         }
+        clearRoomState(message.reason === "host-disconnected" ? "host disconnected" : "room closed by host");
       },
-      onServerError: async (message) => {
-        const mapped = message.code === "ROOM_CLOSED" ? "room closed" : message.message;
+      onServerError: (message) => {
         addEvent(`error: ${message.message}`);
-        setSessionState(mapped === "room closed" ? "room closed" : "signaling disconnected", mapped);
 
-        if (!activeRoomRef.current && pendingActionRef.current?.intent === "create") {
-          pendingActionRef.current = null;
-          connectionTargetRef.current = null;
-          await window.electronApi.stopHostService();
-          setSessionState("host service stopped");
-          signalingRef.current?.disconnect();
+        if (message.code === "ROOM_FULL") {
+          setSessionState("room full");
+        } else if (message.code === "ROOM_NOT_FOUND") {
+          setSessionState("room not found");
+        } else if (message.code === "ROOM_CLOSED") {
+          setSessionState("room closed by host");
+        } else if (message.code === "ROOM_PASSWORD_INVALID" || message.code === "ROOM_PASSWORD_TOO_SHORT") {
+          setSessionState("invalid room password");
+        } else {
+          setSessionState("signaling disconnected");
         }
+
+        pendingActionRef.current = null;
       },
     });
 
     return () => {
       pendingActionRef.current = null;
-      recentRoomClosureRef.current = null;
       signalingRef.current?.disconnect();
       webrtcRef.current?.close();
-      void window.electronApi.stopHostService();
+      void stopLocalHostService();
     };
   }, []);
 
-  const statusClass = useMemo(() => status.toLowerCase().replace(/[^a-z0-9]+/g, "-"), [status]);
-
   const startRoomFlow = async (
     intent: RoomIntent,
-    payload:
-      | { roomId: string; roomPassword: string; hostPort?: number }
-      | { roomId: string; roomPassword: string; hostAddress: string; hostPort: number },
+    payload: { roomId: string; bootstrapUrl: string; roomPassword: string },
   ): Promise<void> => {
     const roomId = payload.roomId.trim();
+    const requestedBootstrapUrl = payload.bootstrapUrl.trim();
     const roomPassword = payload.roomPassword.trim();
     const displayName = currentUserId.trim();
 
-    if (!roomId || !roomPassword || !displayName) {
-      addEvent("error: room ID, room password, and user ID are required");
-      setSetupStep("user-id");
+    if (!roomId || !displayName || !requestedBootstrapUrl || !roomPassword) {
+      addEvent("error: bootstrap URL, room ID, display name, and room password are required");
       return;
     }
 
     if (roomPassword.length < minimumRoomPasswordLength) {
       addEvent(`error: room password must be at least ${minimumRoomPasswordLength} characters`);
-      setSessionState("disconnected", `password must be at least ${minimumRoomPasswordLength} characters`);
+      setSessionState("invalid room password");
       return;
     }
 
-    setMessages([]);
-    updateActiveRoom(null);
-    cleanupPeerConnection();
-    recentRoomClosureRef.current = null;
-    pendingActionRef.current = { intent, roomId, displayName, roomPassword };
-    setSessionState(intent === "create" ? "host service starting" : "connecting to host");
-
+    let resolvedBootstrapUrl = requestedBootstrapUrl;
     try {
-      if (intent === "create") {
-        const requestedPort = typeof payload.hostPort === "number" ? payload.hostPort : defaultCreatePort;
-        const hostInfo: HostServiceInfo = await window.electronApi.startHostService(requestedPort);
-        const port = hostInfo.port ?? requestedPort;
-        const preferredAddress = hostInfo.localNetworkInfo?.preferredAddress ?? defaultJoinHostAddress;
-
-        connectionTargetRef.current = {
-          address: preferredAddress,
-          port,
-          shareUrls: hostInfo.wsUrls.length > 0 ? hostInfo.wsUrls : [`ws://${preferredAddress}:${port}`],
-        };
-        addEvent(`host service started on port ${port}`);
-        setSessionState("host service started");
-
-        signalingRef.current?.connect(`ws://127.0.0.1:${port}`);
+      const parsed = new URL(requestedBootstrapUrl);
+      if (!isWsProtocol(parsed.protocol)) {
+        addEvent("error: bootstrap URL must use ws:// or wss://");
+        setSessionState("signaling disconnected");
         return;
       }
 
-      const joinPayload = payload as { roomId: string; roomPassword: string; hostAddress: string; hostPort: number };
-      const hostAddress = joinPayload.hostAddress.trim();
-      connectionTargetRef.current = buildFallbackEndpoint(hostAddress, joinPayload.hostPort);
-      addEvent(`joining ws://${hostAddress}:${joinPayload.hostPort}`);
-      signalingRef.current?.connect(`ws://${hostAddress}:${joinPayload.hostPort}`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to start or connect to host service";
-      addEvent(`error: ${message}`);
-      pendingActionRef.current = null;
-      connectionTargetRef.current = null;
-      cleanupPeerConnection();
-      setSessionState("disconnected", message);
+      if (isLoopbackHost(parsed.hostname) && intent === "create") {
+        try {
+          const networkInfo = await window.electronApi.getLocalNetworkInfo();
+          const preferredAddress = networkInfo.preferredAddress;
+          if (preferredAddress && !isLoopbackHost(preferredAddress)) {
+            parsed.hostname = preferredAddress;
+            resolvedBootstrapUrl = parsed.toString();
+          }
+        } catch {
+          // Fallback to manual prompt below.
+        }
+      }
+    } catch {
+      addEvent("error: invalid bootstrap URL format");
+      setSessionState("signaling disconnected");
+      return;
+    }
 
-      if (intent === "create") {
-        void window.electronApi.stopHostService();
+    try {
+      const parsedResolved = new URL(resolvedBootstrapUrl);
+      if (isLoopbackHost(parsedResolved.hostname)) {
+        const enteredIp = window.prompt("Enter host LAN IP address (example: 192.168.1.42)", "");
+        const cleanedIp = enteredIp?.trim() ?? "";
+        if (!cleanedIp) {
+          addEvent("error: host IP is required when localhost cannot be used");
+          setSessionState("signaling disconnected");
+          return;
+        }
+
+        parsedResolved.hostname = cleanedIp;
+        resolvedBootstrapUrl = parsedResolved.toString();
+      }
+    } catch {
+      addEvent("error: failed to resolve bootstrap URL");
+      setSessionState("signaling disconnected");
+      return;
+    }
+
+    setBootstrapUrl(resolvedBootstrapUrl);
+    setMessages([]);
+    cleanupPeerConnection();
+    updateActiveRoom(null);
+    pendingActionRef.current = { intent, roomId, bootstrapUrl: resolvedBootstrapUrl, displayName, roomPassword };
+    setSignalingState("connecting");
+    setSessionState("connecting to bootstrap server");
+
+    if (intent === "create") {
+      const requestedPort = parsePortFromWsUrl(resolvedBootstrapUrl);
+
+      try {
+        await window.electronApi.startHostService(requestedPort);
+        addEvent(`local host signaling service listening on port ${requestedPort}`);
+      } catch (error) {
+        pendingActionRef.current = null;
+        const message = error instanceof Error ? error.message : "failed to start local host signaling service";
+        addEvent(`error: ${message}`);
+        setSessionState("signaling disconnected");
+        return;
       }
     }
+
+    signalingRef.current?.connect(resolvedBootstrapUrl);
   };
 
-  const createRoom = (payload: { roomId: string; roomPassword: string; hostPort?: number }): void => {
+  const createRoom = (payload: { roomId: string; bootstrapUrl: string; roomPassword: string }): void => {
     void startRoomFlow("create", payload);
   };
 
-  const joinRoom = (payload: { roomId: string; roomPassword: string; hostAddress: string; hostPort: number }): void => {
+  const joinRoom = (payload: { roomId: string; bootstrapUrl: string; roomPassword: string }): void => {
     void startRoomFlow("join", payload);
   };
 
   const submitUserId = (): void => {
     const normalized = userIdDraft.trim();
     if (!normalized) {
-      addEvent("error: user ID is required");
+      addEvent("error: display name is required");
       return;
     }
 
     setCurrentUserId(normalized);
     setUserIdDraft(normalized);
     setSetupStep("mode");
+    setSessionState("idle");
     addEvent(`ready as ${normalized}`);
   };
 
@@ -586,18 +612,12 @@ export default function App(): JSX.Element {
 
   const leaveRoom = (): void => {
     const room = activeRoomRef.current;
-    if (!room) {
-      return;
-    }
-
-    if (room.myRole === "host") {
-      signalingRef.current?.endRoom(room.roomId);
-      addEvent("host requested room shutdown");
+    if (!room || room.myRole !== "guest") {
       return;
     }
 
     signalingRef.current?.leaveRoom(room.roomId);
-    clearRoomState("signaling connected", "left room");
+    clearRoomState("connected to bootstrap server");
     addEvent("left room");
   };
 
@@ -612,11 +632,13 @@ export default function App(): JSX.Element {
   };
 
   const sendMessage = (text: string): void => {
-    const sent = webrtcRef.current?.sendChatMessage(text) ?? false;
-    if (!sent) {
-      addEvent("error: data channel is not open");
+    const room = activeRoomRef.current;
+    if (!room) {
+      addEvent("warning: not currently in a room");
       return;
     }
+
+    signalingRef.current?.sendChatMessage(room.roomId, text, room.myDisplayName);
 
     setMessages((prev) => [
       ...prev,
@@ -630,7 +652,6 @@ export default function App(): JSX.Element {
     ]);
   };
 
-  const roomEndpointLabel = formatEndpoint(activeRoom?.endpoint ?? null);
   const inRoom = Boolean(activeRoom);
 
   return (
@@ -638,9 +659,8 @@ export default function App(): JSX.Element {
       {!inRoom ? (
         <section className="setup-page">
           <header className="app-header card">
-            <h1>Vir Space - Join Setup</h1>
-            <p>Sign in with a user ID, then choose whether to create or join a room.</p>
-            <div className={`status ${statusClass}`}>Status: {status}</div>
+            <h1>Vir Space - Host-Owned Signaling</h1>
+            <p>The room creator listens on a local signaling port; chat messages stay peer-to-peer over WebRTC.</p>
           </header>
 
           <div className="setup-page-content">
@@ -650,10 +670,7 @@ export default function App(): JSX.Element {
                 userIdDraft={userIdDraft}
                 currentUserId={currentUserId}
                 roomActionDisabled={Boolean(activeRoom)}
-                defaultCreateRoomId="room-1"
-                defaultCreatePort={defaultCreatePort}
-                defaultJoinHostAddress={defaultJoinHostAddress}
-                defaultJoinHostPort={defaultCreatePort}
+                defaultBootstrapUrl={bootstrapUrlRef.current}
                 onUserIdDraftChange={setUserIdDraft}
                 onSubmitUserId={submitUserId}
                 onChooseCreate={() => setSetupStep("create")}
@@ -673,8 +690,7 @@ export default function App(): JSX.Element {
         <section className="chatroom-page">
           <header className="app-header card">
             <h1>Vir Space - Chatroom</h1>
-            <p>Connected room session for host and guest messaging over WebRTC.</p>
-            <div className={`status ${statusClass}`}>Status: {status}</div>
+            <p>Signaling uses the host client listener. Chat messages stay on RTCDataChannel.</p>
           </header>
 
           <section className="chatroom-layout">
@@ -684,8 +700,10 @@ export default function App(): JSX.Element {
                 yourName={activeRoom?.myDisplayName ?? "-"}
                 yourRole={activeRoom?.myRole ?? "guest"}
                 hostDisplayName={activeRoom?.hostDisplayName ?? "-"}
-                hostEndpointLabel={roomEndpointLabel}
-                shareUrls={activeRoom?.myRole === "host" ? activeRoom.endpoint.shareUrls : []}
+                bootstrapUrl={bootstrapUrl}
+                signalingStatus={signalingState}
+                webRtcStatus={webRtcStatus}
+                roomStatus={activeRoom?.roomStatus ?? "closed"}
                 inRoom={Boolean(activeRoom)}
                 onLeaveRoom={leaveRoom}
                 onEndRoom={endRoom}
@@ -695,7 +713,6 @@ export default function App(): JSX.Element {
 
             <ChatPanel
               messages={messages}
-              canSend={status === "peer connected" && Boolean(webrtcRef.current?.isDataChannelOpen())}
               onSend={sendMessage}
             />
             <DebugLog events={events} />
