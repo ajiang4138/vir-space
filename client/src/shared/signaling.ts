@@ -22,6 +22,46 @@ export interface RoomActionPayload {
   roomPassword: string;
 }
 
+export type RoomDiscoveryAnnouncementType = "vir-space-room-announce";
+
+export interface RoomDiscoveryAnnouncement {
+  type: RoomDiscoveryAnnouncementType;
+  version: 1;
+  roomId: string;
+  hostDisplayName: string;
+  hostIp: string;
+  hostPort: number;
+  participantCount: number;
+  maxParticipants: number;
+  status: "open";
+  timestamp: number;
+  ttlSeconds: number;
+  nonce: string;
+}
+
+export interface RoomDiscoveryAnnouncementInput {
+  roomId: string;
+  hostDisplayName: string;
+  hostIp: string;
+  hostPort: number;
+  participantCount: number;
+  maxParticipants: number;
+  status: "open";
+  ttlSeconds?: number;
+}
+
+export interface RoomDiscoveryListenerStatusInfo {
+  status: "stopped" | "listening";
+  port: number | null;
+}
+
+export interface RoomDiscoveryAnnouncementStatusInfo {
+  status: "stopped" | "announcing";
+  discoveryPort: number | null;
+  intervalMs: number | null;
+  roomId: string | null;
+}
+
 export type ClientSignalMessage =
   | ({ type: "create-room" } & RoomActionPayload)
   | ({ type: "join-room" } & RoomActionPayload)

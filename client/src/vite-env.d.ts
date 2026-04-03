@@ -1,7 +1,14 @@
 /// <reference types="vite/client" />
 
 import type { FileManifest, PickedFileInfo, ReceiverTransferHandle } from "./shared/fileTransfer";
-import type { HostServiceInfo, LocalNetworkInfo } from "./shared/signaling";
+import type {
+  HostServiceInfo,
+  LocalNetworkInfo,
+  RoomDiscoveryAnnouncement,
+  RoomDiscoveryAnnouncementInput,
+  RoomDiscoveryAnnouncementStatusInfo,
+  RoomDiscoveryListenerStatusInfo,
+} from "./shared/signaling";
 
 interface ImportMetaEnv {
   readonly VITE_BOOTSTRAP_SIGNALING_URL?: string;
@@ -24,6 +31,18 @@ declare global {
       stopHostService: () => Promise<HostServiceInfo>;
       getHostServiceStatus: () => Promise<HostServiceInfo>;
       getLocalNetworkInfo: () => Promise<LocalNetworkInfo>;
+      startRoomDiscoveryListener: (requestedPort?: number) => Promise<RoomDiscoveryListenerStatusInfo>;
+      stopRoomDiscoveryListener: () => Promise<RoomDiscoveryListenerStatusInfo>;
+      getRoomDiscoveryListenerStatus: () => Promise<RoomDiscoveryListenerStatusInfo>;
+      startRoomDiscoveryAnnouncement: (payload: {
+        discoveryPort?: number;
+        intervalMs?: number;
+        announcement: RoomDiscoveryAnnouncementInput;
+      }) => Promise<RoomDiscoveryAnnouncementStatusInfo>;
+      stopRoomDiscoveryAnnouncement: () => Promise<RoomDiscoveryAnnouncementStatusInfo>;
+      getRoomDiscoveryAnnouncementStatus: () => Promise<RoomDiscoveryAnnouncementStatusInfo>;
+      onRoomDiscoveryAnnouncement: (callback: (announcement: RoomDiscoveryAnnouncement) => void) => () => void;
+      onRoomDiscoveryError: (callback: (message: string) => void) => () => void;
       selectFileForSharing: () => Promise<PickedFileInfo | null>;
       buildFileManifest: (filePath: string, roomId: string, senderPeerId: string, pieceSize: number) => Promise<FileManifest>;
       readFilePiece: (filePath: string, pieceIndex: number, pieceSize: number) => Promise<Uint8Array>;

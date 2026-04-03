@@ -1,7 +1,11 @@
 import { app, BrowserWindow, ipcMain } from "electron";
 import os from "node:os";
 import path from "node:path";
-import type { HostServiceInfo, LocalNetworkInfo } from "../src/shared/signaling.js";
+import type {
+  HostServiceInfo,
+  LocalNetworkInfo,
+  RoomDiscoveryAnnouncementInput,
+} from "../src/shared/signaling.js";
 import {
     buildFileManifest,
     createReceiverTransfer,
@@ -12,8 +16,21 @@ import {
     writeReceiverPiece,
 } from "./fileTransfer.js";
 import { HostRoomService } from "./hostServer.js";
+import { DEFAULT_ROOM_DISCOVERY_PORT, RoomDiscoveryService } from "./roomDiscovery.js";
 
 const hostService = new HostRoomService();
+const roomDiscoveryService = new RoomDiscoveryService({
+  onAnnouncement: (announcement) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send("room-discovery:announcement", announcement);
+    }
+  },
+  onError: (message) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send("room-discovery:error", message);
+    }
+  },
+});
 let isQuitting = false;
 
 function getLocalNetworkInfo(): LocalNetworkInfo {
@@ -74,6 +91,36 @@ ipcMain.handle("host-service:stop", async () => {
 ipcMain.handle("host-service:status", async () => hostService.getStatus());
 
 ipcMain.handle("host-service:network-info", async () => getLocalNetworkInfo());
+
+ipcMain.handle("room-discovery:start-listener", async (_event, requestedPort?: number) => {
+  return roomDiscoveryService.startListener(requestedPort ?? DEFAULT_ROOM_DISCOVERY_PORT);
+});
+
+ipcMain.handle("room-discovery:stop-listener", async () => {
+  await roomDiscoveryService.stopListener();
+  return roomDiscoveryService.getListenerStatus();
+});
+
+ipcMain.handle("room-discovery:listener-status", async () => roomDiscoveryService.getListenerStatus());
+
+ipcMain.handle(
+  "room-discovery:start-announcement",
+  async (
+    _event,
+    payload: {
+      discoveryPort?: number;
+      intervalMs?: number;
+      announcement: RoomDiscoveryAnnouncementInput;
+    },
+  ) => roomDiscoveryService.startAnnouncement(payload),
+);
+
+ipcMain.handle("room-discovery:stop-announcement", async () => {
+  await roomDiscoveryService.stopAnnouncement();
+  return roomDiscoveryService.getAnnouncementStatus();
+});
+
+ipcMain.handle("room-discovery:announcement-status", async () => roomDiscoveryService.getAnnouncementStatus());
 
 ipcMain.handle("file-transfer:select-file", async () => selectFileForSharing());
 
@@ -136,13 +183,26 @@ app.on("before-quit", (event) => {
   }
 
   const hostStatus = hostService.getStatus();
-  if (hostStatus.status === "stopped") {
+  const listenerStatus = roomDiscoveryService.getListenerStatus();
+  const announcementStatus = roomDiscoveryService.getAnnouncementStatus();
+  const hasActiveBackgroundService =
+    hostStatus.status !== "stopped"
+    || listenerStatus.status !== "stopped"
+    || announcementStatus.status !== "stopped";
+
+  if (!hasActiveBackgroundService) {
     return;
   }
 
   event.preventDefault();
   isQuitting = true;
-  void stopHostService("host-disconnected").finally(() => {
+  void (async () => {
+    if (hostStatus.status !== "stopped") {
+      await stopHostService("host-disconnected");
+    }
+
+    await roomDiscoveryService.stop();
+  })().finally(() => {
     app.quit();
   });
 });

@@ -3,12 +3,34 @@ export type {
     HostServiceInfo,
     HostServiceStatus,
     LocalNetworkInfo,
+    RoomDiscoveryAnnouncementInput,
+    RoomDiscoveryAnnouncementStatusInfo,
     ParticipantRole,
     ParticipantSummary,
+    RoomDiscoveryAnnouncement,
+    RoomDiscoveryAnnouncementType,
+    RoomDiscoveryListenerStatusInfo,
     RoomActionPayload,
     RoomStatePayload,
     ServerSignalMessage
 } from "./shared/signaling";
+
+export type DiscoveryListenerStatus = "stopped" | "listening" | "error";
+
+export interface DiscoveredRoomSummary {
+  roomId: string;
+  hostDisplayName: string;
+  hostIp: string;
+  hostPort: number;
+  participantCount: number;
+  maxParticipants: number;
+  status: "open";
+  timestamp: number;
+  ttlSeconds: number;
+  nonce: string;
+  lastSeenAt: number;
+  expiresAt: number;
+}
 
 export type ConnectionStatus =
   | "idle"
