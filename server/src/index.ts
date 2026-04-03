@@ -38,6 +38,8 @@ type ClientMessage =
   | { type: "leave-room"; roomId: string }
   | { type: "end-room"; roomId: string }
   | { type: "chat-message"; roomId: string; text: string; senderDisplayName?: string }
+  | { type: "whiteboard-update"; roomId: string; data: string; senderDisplayName?: string }
+  | { type: "editor-update"; roomId: string; data: string; senderDisplayName?: string }
   | { type: "offer"; roomId: string; targetPeerId: string; sdp: SessionDescriptionPayload }
   | { type: "answer"; roomId: string; targetPeerId: string; sdp: SessionDescriptionPayload }
   | { type: "ice-candidate"; roomId: string; targetPeerId: string; candidate: IceCandidatePayload };
@@ -76,6 +78,20 @@ type ServerMessage =
       senderPeerId: string;
       senderDisplayName: string;
       text: string;
+    }
+  | {
+      type: "whiteboard-update";
+      roomId: string;
+      senderPeerId: string;
+      senderDisplayName: string;
+      data: string;
+    }
+  | {
+      type: "editor-update";
+      roomId: string;
+      senderPeerId: string;
+      senderDisplayName: string;
+      data: string;
     }
   | {
       type: "offer" | "answer";
@@ -483,6 +499,66 @@ function handleChatMessage(
   }
 }
 
+function handleWhiteboardUpdate(
+  client: ClientContext,
+  message: Extract<ClientMessage, { type: "whiteboard-update" }>,
+): void {
+  const roomId = client.roomId;
+  if (!roomId || roomId !== message.roomId) {
+    return;
+  }
+
+  const room = rooms.get(roomId);
+  if (!room || room.status !== "open") {
+    return;
+  }
+
+  const senderDisplayName = client.displayName ?? message.senderDisplayName ?? "Peer";
+  for (const member of room.participants.values()) {
+    if (member.id === client.id) {
+      continue;
+    }
+
+    sendTo(member, {
+      type: "whiteboard-update",
+      roomId,
+      senderPeerId: client.id,
+      senderDisplayName,
+      data: message.data,
+    });
+  }
+}
+
+function handleEditorUpdate(
+  client: ClientContext,
+  message: Extract<ClientMessage, { type: "editor-update" }>,
+): void {
+  const roomId = client.roomId;
+  if (!roomId || roomId !== message.roomId) {
+    return;
+  }
+
+  const room = rooms.get(roomId);
+  if (!room || room.status !== "open") {
+    return;
+  }
+
+  const senderDisplayName = client.displayName ?? message.senderDisplayName ?? "Peer";
+  for (const member of room.participants.values()) {
+    if (member.id === client.id) {
+      continue;
+    }
+
+    sendTo(member, {
+      type: "editor-update",
+      roomId,
+      senderPeerId: client.id,
+      senderDisplayName,
+      data: message.data,
+    });
+  }
+}
+
 wss.on("connection", (socket) => {
   const client: ClientContext = {
     id: randomUUID(),
@@ -500,6 +576,16 @@ wss.on("connection", (socket) => {
 
       if (raw.type === "chat-message") {
         handleChatMessage(client, raw);
+        return;
+      }
+
+      if (raw.type === "whiteboard-update") {
+        handleWhiteboardUpdate(client, raw);
+        return;
+      }
+
+      if (raw.type === "editor-update") {
+        handleEditorUpdate(client, raw);
         return;
       }
 

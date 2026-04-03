@@ -28,6 +28,8 @@ export type ClientSignalMessage =
   | { type: "leave-room"; roomId: string }
   | { type: "end-room"; roomId: string }
   | { type: "chat-message"; roomId: string; text: string; senderDisplayName?: string }
+  | { type: "whiteboard-update"; roomId: string; data: string; senderDisplayName?: string }
+  | { type: "editor-update"; roomId: string; data: string; senderDisplayName?: string }
   | { type: "offer"; roomId: string; targetPeerId: string; sdp: RTCSessionDescriptionInit }
   | { type: "answer"; roomId: string; targetPeerId: string; sdp: RTCSessionDescriptionInit }
   | { type: "ice-candidate"; roomId: string; targetPeerId: string; candidate: RTCIceCandidateInit };
@@ -69,6 +71,20 @@ export type ServerSignalMessage =
       senderPeerId: string;
       senderDisplayName: string;
       text: string;
+    }
+  | {
+      type: "whiteboard-update";
+      roomId: string;
+      senderPeerId: string;
+      senderDisplayName: string;
+      data: string;
+    }
+  | {
+      type: "editor-update";
+      roomId: string;
+      senderPeerId: string;
+      senderDisplayName: string;
+      data: string;
     }
   | {
       type: "offer";

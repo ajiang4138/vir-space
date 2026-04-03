@@ -6,6 +6,8 @@ import { JoinForm } from "./components/JoinForm";
 import { ParticipantList } from "./components/ParticipantList";
 import { RoomInfo } from "./components/RoomInfo";
 import { TransferList } from "./components/TransferList";
+import { WhiteboardPanel } from "./components/WhiteboardPanel";
+import { TextEditorPanel } from "./components/TextEditorPanel";
 import {
   FileTransferManager,
   type FileTransferTransport
@@ -557,6 +559,13 @@ export default function App(): JSX.Element {
           },
         ]);
       },
+      onWhiteboardUpdate: (message) => {
+        // dispatch custom event for the whiteboard panel
+        document.dispatchEvent(new CustomEvent("whiteboard-update", { detail: message }));
+      },
+      onEditorUpdate: (message) => {
+        document.dispatchEvent(new CustomEvent("editor-update", { detail: message }));
+      },
       onOffer: async (message) => {
         addEvent(`received offer from ${message.senderPeerId}`);
 
@@ -905,6 +914,26 @@ export default function App(): JSX.Element {
               />
               <ParticipantList participants={activeRoom?.participants ?? []} currentPeerId={activeRoom?.myPeerId ?? ""} />
             </section>
+
+            {activeRoom && signalingRef.current && (
+              <>
+                <section className="whiteboard-row" style={{ height: "500px", width: "100%" }}>
+                  <WhiteboardPanel
+                    roomId={activeRoom.roomId}
+                    displayName={activeRoom.myDisplayName}
+                    signalingClient={signalingRef.current}
+                  />
+                </section>
+
+                <section className="editor-row" style={{ height: "500px", width: "100%", marginTop: "16px" }}>
+                  <TextEditorPanel
+                    roomId={activeRoom.roomId}
+                    displayName={activeRoom.myDisplayName}
+                    signalingClient={signalingRef.current}
+                  />
+                </section>
+              </>
+            )}
 
             <section className="file-panels">
               <FileSharePanel

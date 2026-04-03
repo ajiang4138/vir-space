@@ -201,6 +201,11 @@ export class HostRoomService {
             return;
           }
 
+          if (raw.type === "whiteboard-update") {
+            this.handleWhiteboardUpdate(client, raw);
+            return;
+          }
+
           if (raw.type === "offer" || raw.type === "answer" || raw.type === "ice-candidate") {
             this.handleRelay(client, raw);
             return;
@@ -422,6 +427,33 @@ export class HostRoomService {
         senderPeerId: client.id,
         senderDisplayName,
         text,
+      });
+    }
+  }
+
+  private handleWhiteboardUpdate(
+    client: ClientContext,
+    message: Extract<ClientSignalMessage, { type: "whiteboard-update" }>,
+  ): void {
+    const room = this.activeRoom;
+    if (!room || room.status !== "open" || client.roomId !== message.roomId) {
+      this.sendError(client, "You must join the room before sending whiteboard data", message.roomId, "NOT_IN_ROOM");
+      return;
+    }
+
+    const senderDisplayName = client.displayName ?? message.senderDisplayName ?? "Peer";
+
+    for (const member of room.participants.values()) {
+      if (member.id === client.id) {
+        continue;
+      }
+
+      this.sendTo(member, {
+        type: "whiteboard-update",
+        roomId: room.roomId,
+        senderPeerId: client.id,
+        senderDisplayName,
+        data: message.data,
       });
     }
   }
