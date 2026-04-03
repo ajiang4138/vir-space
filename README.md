@@ -1,48 +1,77 @@
-# Vir Space - Option A Bootstrap Signaling
+# Vir Space
 
-Electron desktop app with React + TypeScript. A minimal standalone WebSocket bootstrap/signaling server handles room coordination and WebRTC signaling relay. Chat traffic stays peer-to-peer over WebRTC RTCDataChannel.
+Vir Space is an Electron desktop chat app built with React + TypeScript.
 
-## Project Structure
+At the moment, it supports:
 
-```text
-vir-space/
-  package.json
-  README.md
-  client/
-    package.json
-    tsconfig.json
-    tsconfig.node.json
-    vite.config.ts
-    index.html
-    electron/
-      main.ts
-      preload.ts
-      hostServer.ts
-    src/
-      main.tsx
-      App.tsx
-      styles.css
-      types.ts
-      vite-env.d.ts
-      shared/
-        signaling.ts
-      lib/
-        signalingClient.ts
-        webrtc.ts
-      components/
-        JoinForm.tsx
-        ChatPanel.tsx
-        DebugLog.tsx
-        ParticipantList.tsx
-        RoomInfo.tsx
-  server/
-    package.json
-    tsconfig.json
-    src/
-      index.ts
-```
+- Room creation and joining with room password validation.
+- WebSocket-based signaling (room lifecycle + relay messages).
+- WebRTC peer connection negotiation.
+- Text chat UI with participant list and room state display.
+- Debug event timeline for connection and signaling diagnostics.
 
-The `server/` folder is required for Option A and must be running for room create/join flow.
+## What The App Can Currently Do
+
+### User setup and room actions
+
+- Prompt for a user ID before any room action.
+- Let a user choose between Create Room or Join Room.
+- Generate a random room ID for hosts.
+- Require a room password (minimum 4 characters).
+- Validate bootstrap/signaling URL format (`ws://` or `wss://`).
+- Show detailed connection states like:
+  - `connecting to bootstrap server`
+  - `room created`
+  - `waiting for guest`
+  - `peer connecting`
+  - `peer connected`
+  - `invalid room password`
+  - `room full`
+  - `room not found`
+
+### Signaling and room lifecycle
+
+- Handle messages for:
+  - `create-room`
+  - `join-room`
+  - `leave-room`
+  - `end-room`
+  - `offer`
+  - `answer`
+  - `ice-candidate`
+  - `chat-message`
+- Broadcast room updates (`room-state`, `participant-joined`, `participant-left`, `room-closed`, `peer-left`).
+- Enforce room password checks.
+- Enforce max participants at signaling layer (`6`).
+- Close room immediately when host ends session or disconnects.
+
+### WebRTC behavior
+
+- Establish one `RTCPeerConnection` per client session.
+- Exchange SDP offers/answers and ICE candidates via signaling server.
+- Create/use a WebRTC data channel named `chat`.
+- Surface WebRTC status (`idle`, `connecting`, `connected`, `disconnected`, `failed`, `closed`) in the UI.
+
+### Chat behavior right now
+
+- Chat UI supports send/receive with local timestamps.
+- Outbound chat is currently sent through signaling as `chat-message` and fanned out by server.
+- The WebRTC data channel is established and monitored, but user chat transport is currently server-relayed (not pure RTCDataChannel-only chat).
+
+### Host networking helpers (Electron)
+
+- Renderer can query local IPv4 addresses via preload bridge.
+- On host create flow, app can start a local host signaling service on selected port (default `8787`).
+- If host enters a loopback URL, app tries to replace with LAN IP and may prompt for manual IP.
+
+## Architecture Modes In This Repo
+
+There are two signaling implementations present:
+
+1. Embedded host signaling service inside Electron client (`client/electron/hostServer.ts`).
+2. Standalone signaling server process (`server/src/index.ts`).
+
+The client can connect to whichever bootstrap URL is entered in the form.
 
 ## Prerequisites
 
@@ -51,37 +80,33 @@ The `server/` folder is required for Option A and must be running for room creat
 
 ## Install
 
-Run from the repo root:
+From repository root:
 
 ```bash
 npm run install:all
 ```
 
-This installs both client and server dependencies.
-
 ## Run
 
-### Start bootstrap signaling server
-
-Terminal A:
-
-```bash
-cd server
-npm run dev
-```
-
-### Start client
-
-Terminal B:
+### Quick start (client only)
 
 ```bash
 cd client
 npm run dev
 ```
 
-Use multiple Electron instances if you want host/guest local testing.
+This runs Vite renderer and Electron together.
 
-### Two-instance local test
+### Optional: run standalone signaling server
+
+```bash
+cd server
+npm run dev
+```
+
+Then point clients to that server URL (for example `ws://localhost:8787`).
+
+### Two Electron instances for local host/guest test
 
 Terminal A:
 
@@ -104,80 +129,134 @@ cd client
 npm run dev:electron
 ```
 
-Use Terminal B as the host instance and Terminal C as the guest instance.
+Use one Electron window as host and the other as guest.
 
-### Host create flow
+## Build
 
-1. Enter a display name.
-2. Enter a room ID.
-3. Enter the bootstrap signaling URL (for example `ws://localhost:8787`).
-4. Click **Create Room**.
-5. The client connects to the bootstrap server.
-6. The server registers host ownership for that room.
-7. Host waits for guest.
+From root:
 
-### Guest join flow
+```bash
+npm run build
+```
 
-1. Enter a display name.
-2. Enter the same bootstrap signaling URL and room ID.
-3. Click **Join Room**.
-4. The server validates room exists and guest slot is available.
-5. Signaling is relayed through the bootstrap server, and WebRTC negotiation begins.
+From client only:
 
-## Option A Architecture
+```bash
+cd client
+npm run build
+```
 
-- Dedicated bootstrap/signaling server uses `ws` and in-memory room state.
-- Server is not the chat transport; chat stays on RTCDataChannel.
-- Room creator is still host.
-- Max room size is 2 peers: one host and one guest.
-- No host migration.
-- If host disconnects or ends room, room closes immediately.
+From server only:
 
-## Server Responsibilities
+```bash
+cd server
+npm run build
+```
 
-- `create-room`
-- `join-room`
-- `end-room`
-- `leave-room`
-- relay `offer` / `answer` / `ice-candidate` within same room only
-- room lifecycle notifications: `participant-joined`, `participant-left`, `room-state`, `room-closed`
+## Environment Variables
 
-## Room Lifecycle
+Client supports these (all optional):
 
-If host ends room or disconnects:
-
-1. Server marks room closed and broadcasts `room-closed`.
-2. Guest tears down WebRTC and clears room state.
-3. Host remains room owner semantics-wise; no host migration is attempted.
-
-If guest leaves or disconnects:
-
-1. Host receives `participant-left` and `peer-left`.
-2. Room remains open with empty guest slot.
+- `VITE_BOOTSTRAP_SIGNALING_URL`
+  - Default bootstrap URL shown in UI.
+- `VITE_STUN_URLS`
+  - Comma-separated STUN URLs.
+  - Default is `stun:stun.l.google.com:19302`.
+- `VITE_TURN_URLS`
+  - Comma-separated TURN URLs.
+- `VITE_TURN_USERNAME`
+  - TURN username.
+- `VITE_TURN_CREDENTIAL`
+  - TURN credential.
 
 ## NPM Scripts
 
-### Root
+### Root (`package.json`)
 
-- `npm run install:all` - install client and server dependencies
-- `npm run dev:client` - run renderer + Electron together for one instance
-- `npm run dev:server` - run bootstrap signaling server
-- `npm run build` - build the client app and Electron main/preload code
+- `npm run install:all` installs client and server dependencies.
+- `npm run dev:client` starts client dev flow.
+- `npm run dev:server` starts standalone signaling server dev flow.
+- `npm run build` builds client app.
 
 ### Client (`client/package.json`)
 
-- `npm run dev` - run Vite + Electron together
-- `npm run dev:renderer` - run only the Vite renderer
-- `npm run dev:electron` - run only the Electron process against the running Vite server
-- `npm run build:electron` - compile Electron main/preload
-- `npm run typecheck` - typecheck renderer and Electron code
-- `npm run build` - production renderer build + Electron compile
+- `npm run dev` starts Vite + Electron concurrently.
+- `npm run dev:renderer` starts Vite only.
+- `npm run dev:electron` waits for renderer and starts Electron.
+- `npm run build:electron` compiles Electron main/preload TS.
+- `npm run typecheck` typechecks renderer + Electron TS.
+- `npm run build` runs typecheck, Vite build, and Electron compile.
 
-## Known Limitations in This Milestone
+### Server (`server/package.json`)
 
-- Room size is limited to 2 peers.
-- There is no host migration or re-election.
-- There is no decentralized room discovery.
-- Peers need the same room ID and bootstrap URL.
-- TURN credentials are optional and must be supplied via environment variables for strict NAT scenarios.
-- Workspace sync, file transfer, and larger multi-peer topologies are not implemented yet.
+- `npm run dev` starts standalone signaling server with watch mode.
+- `npm run build` compiles server TS to `dist`.
+- `npm run start` runs compiled server.
+
+## File And Folder Map
+
+### Root
+
+- `package.json`: Monorepo-level helper scripts (`install:all`, `dev:client`, `dev:server`, `build`).
+- `README.md`: Project documentation.
+
+### Client app (`client/`)
+
+- `package.json`: Client scripts and dependencies (React, Electron, Vite).
+- `index.html`: Renderer entry HTML.
+- `tsconfig.json`: Renderer TypeScript config.
+- `tsconfig.node.json`: Electron-process TypeScript config.
+- `vite.config.ts`: Vite dev server config (`127.0.0.1:5173`, strict port).
+
+#### Electron process code (`client/electron/`)
+
+- `main.ts`: Electron main process; window lifecycle; IPC handlers; host service start/stop; local network info.
+- `preload.ts`: Secure renderer bridge (`window.electronApi`) for host-service and network calls.
+- `hostServer.ts`: Embedded WebSocket host signaling service and in-memory room management.
+
+#### Renderer source (`client/src/`)
+
+- `main.tsx`: React root mount.
+- `App.tsx`: Main app flow/state machine (user setup, create/join, signaling lifecycle, WebRTC lifecycle, chat state).
+- `styles.css`: App styling and responsive layout.
+- `types.ts`: Shared renderer-facing types and unions for statuses/messages.
+- `vite-env.d.ts`: Vite client type declarations.
+
+##### Renderer components (`client/src/components/`)
+
+- `JoinForm.tsx`: Multi-step setup UI (user ID, mode selection, create/join forms).
+- `ChatPanel.tsx`: Chat message list + send form.
+- `DebugLog.tsx`: Event timeline panel.
+- `ParticipantList.tsx`: Connected participants display.
+- `RoomInfo.tsx`: Room metadata/status display with leave/end actions.
+
+##### Renderer libraries (`client/src/lib/`)
+
+- `signalingClient.ts`: Browser WebSocket client wrapper with typed dispatch for signaling messages.
+- `webrtc.ts`: `RTCPeerConnection` manager, ICE handling, data channel wiring, and status callbacks.
+
+##### Shared signaling contracts (`client/src/shared/`)
+
+- `signaling.ts`: Shared message/type contracts for room, relay, chat, and host-service info.
+
+#### Build output (`client/dist-electron/`)
+
+- `vite.config.js`: Transpiled copy of Vite config.
+- `electron/main.js`, `electron/preload.js`, `electron/hostServer.js`: Compiled JS output for Electron process code.
+- `src/shared/signaling.js`: Compiled shared signaling contracts.
+
+### Standalone signaling service (`server/`)
+
+- `package.json`: Server scripts/dependencies.
+- `tsconfig.json`: Server TypeScript compiler settings.
+- `src/index.ts`: Standalone WebSocket signaling server implementation with in-memory room store.
+
+## Current Limitations
+
+- No persistence: rooms and participants are in-memory only.
+- No auth/identity verification beyond entered display name.
+- No E2EE layer for signaling payloads.
+- No host migration/re-election; room ends when host leaves.
+- Room state model still has single explicit `guestPeerId`/`guestDisplayName` fields even though participant map can hold more peers.
+- WebRTC connection manager is currently single-peer oriented (not full mesh for many peers).
+- No file transfer, voice/video streams, or workspace synchronization yet.
