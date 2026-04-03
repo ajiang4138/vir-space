@@ -123,7 +123,7 @@ export class RoomDiscoveryService {
 
     await this.stopListener();
 
-    const socket = createSocket("udp4");
+    const socket = createSocket({ type: "udp4", reuseAddr: true });
     socket.on("error", (error) => {
       this.handlers.onError(`room discovery listener error: ${error.message}`);
     });
@@ -158,7 +158,7 @@ export class RoomDiscoveryService {
 
       socket.once("error", onError);
       socket.once("listening", onListening);
-      socket.bind(port, "0.0.0.0");
+      socket.bind({ port, address: "0.0.0.0", exclusive: false });
     });
 
     this.listenerSocket = socket;
