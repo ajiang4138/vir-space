@@ -58,18 +58,24 @@ function resolveLocalNetworkInfo(): LocalNetworkInfo {
   }
 
   const sortedAddresses = Array.from(addresses).sort((left, right) => {
-    if (left === "127.0.0.1") {
-      return -1;
-    }
+    if (left === right) return 0;
+    
+    // Always put localhost at the very end
+    if (left === "127.0.0.1") return 1;
+    if (right === "127.0.0.1") return -1;
 
-    if (right === "127.0.0.1") {
-      return 1;
-    }
+    // Prioritize Tailscale (100.x.x.x) and Hamachi (25.x.x.x) IP ranges for P2P VPNs
+    const isVpn = (ip: string) => ip.startsWith("100.") || ip.startsWith("25.");
+    const leftIsVpn = isVpn(left);
+    const rightIsVpn = isVpn(right);
+
+    if (leftIsVpn && !rightIsVpn) return -1;
+    if (!leftIsVpn && rightIsVpn) return 1;
 
     return left.localeCompare(right);
   });
 
-  const preferredAddress = sortedAddresses.find((address) => address !== "127.0.0.1") ?? "127.0.0.1";
+  const preferredAddress = sortedAddresses[0] ?? "127.0.0.1";
 
   return {
     hostname: os.hostname(),
