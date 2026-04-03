@@ -190,8 +190,12 @@ export class WebRtcPeerManager {
       return false;
     }
 
-    this.fileDataChannel.send(data);
-    return true;
+    try {
+      this.fileDataChannel.send(data);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   isDataChannelOpen(): boolean {

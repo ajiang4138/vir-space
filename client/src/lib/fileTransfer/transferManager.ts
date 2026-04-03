@@ -9,6 +9,7 @@ import type {
 import { sha256Hex } from "./hash";
 import { PieceScheduler } from "./pieceScheduler";
 import {
+    DEFAULT_PIECE_SIZE,
     base64ToBitfield,
     bitfieldToBase64,
     createBitfield,
@@ -207,7 +208,7 @@ export class FileTransferManager {
       return null;
     }
 
-    const pieceSize = 1024 * 1024;
+    const pieceSize = DEFAULT_PIECE_SIZE;
 
     let manifest: FileManifest;
     try {
@@ -518,6 +519,7 @@ export class FileTransferManager {
     receiver.status = receiver.scheduler.isComplete() ? "verifying" : "transferring";
     receiver.message = undefined;
     receiver.updatedAt = now();
+    this.callbacks.onEvent(`receiver stored piece ${pieceIndex} for ${receiver.transferId}; completed ${receiver.completedPieces}/${receiver.manifest.pieceCount}`);
     this.emitState();
 
     if (receiver.scheduler.isComplete()) {
@@ -550,7 +552,7 @@ export class FileTransferManager {
       inFlightPieces: 0,
       completedPieces: 0,
       speedBytesPerSecond: 0,
-      scheduler: new PieceScheduler(manifest.pieceCount, 4, 12_000),
+      scheduler: new PieceScheduler(manifest.pieceCount, 1, 12_000),
       receivedBitfield: createBitfield(manifest.pieceCount),
       receiverTransferId: handle.transferId,
       finalizeRequested: false,
@@ -687,6 +689,7 @@ export class FileTransferManager {
     session.requestedPieces += 1;
     session.inFlightPieces = session.pendingRequests.length;
     session.updatedAt = now();
+    this.callbacks.onEvent(`sender queued piece ${pieceIndex} for ${transferId}; pending ${session.pendingRequests.length}`);
     this.emitState();
     await this.flushSenderQueue(session);
   }
@@ -733,6 +736,7 @@ export class FileTransferManager {
         session.status = "transferring";
         session.speedBytesPerSecond = this.calculateSpeed(session.transferredBytes, session.createdAt);
         session.updatedAt = now();
+        this.callbacks.onEvent(`sender sent piece ${pieceIndex} for ${session.transferId}; completed ${session.completedPieces}/${session.manifest.pieceCount}`);
 
         this.sendControl({
           type: "transfer-progress",
@@ -747,7 +751,11 @@ export class FileTransferManager {
         });
       }
 
-      if (session.pendingRequests.length === 0 && session.status === "transferring") {
+      if (
+        session.pendingRequests.length === 0
+        && session.status === "transferring"
+        && session.completedPieces >= session.manifest.pieceCount
+      ) {
         this.sendControl({
           type: "transfer-complete",
           transferId: session.transferId,
@@ -772,6 +780,12 @@ export class FileTransferManager {
       this.emitState();
     } finally {
       session.requestQueueRunning = false;
+
+      if (session.pendingRequests.length > 0 && this.transport?.isFileTransferReady()) {
+        window.setTimeout(() => {
+          void this.flushSenderQueue(session);
+        }, 0);
+      }
     }
   }
 
@@ -850,6 +864,10 @@ export class FileTransferManager {
     const nextPieces = session.scheduler.getNextRequestPieces(nowMs);
     session.requestedPieces = session.scheduler.getRequestedCount();
     session.inFlightPieces = session.scheduler.getInflightCount();
+
+    if (nextPieces.length > 0) {
+      this.callbacks.onEvent(`receiver requesting piece(s) ${nextPieces.join(",")} for ${session.transferId}`);
+    }
 
     for (const pieceIndex of nextPieces) {
       this.sendControl({
