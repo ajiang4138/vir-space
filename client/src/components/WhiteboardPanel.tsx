@@ -49,6 +49,15 @@ export function WhiteboardPanel({ roomId, signalingClient, displayName }: Whiteb
 
   const isUpdatingRef = useRef(false);
 
+  const lastReceivedPathRef = useRef<string | null>(null);
+
+  const handleStroke = (path: any) => {
+    if (isUpdatingRef.current) return;
+    const pathString = JSON.stringify(path);
+    if (lastReceivedPathRef.current === pathString) return; // Prevent loop
+    signalingClient.sendWhiteboardUpdate(roomId, JSON.stringify({ action: "stroke", path }), displayName);
+  };
+
   useEffect(() => {
     const handleWhiteboardUpdate = async (event: Event) => {
       const customEvent = event as CustomEvent;
@@ -56,13 +65,20 @@ export function WhiteboardPanel({ roomId, signalingClient, displayName }: Whiteb
       if (message && message.type === "whiteboard-update" && canvasRef.current) {
         try {
           const parsedData = JSON.parse(message.data);
-          if (parsedData.action === "paths") {
+          if (parsedData.action === "stroke") {
             isUpdatingRef.current = true;
+            lastReceivedPathRef.current = JSON.stringify(parsedData.path);
+            await canvasRef.current.loadPaths([parsedData.path]);
+            isUpdatingRef.current = false;
+          } else if (parsedData.action === "paths") {
+            isUpdatingRef.current = true;
+            lastReceivedPathRef.current = JSON.stringify(parsedData.paths);
             await canvasRef.current.loadPaths(parsedData.paths);
             isUpdatingRef.current = false;
           } else if (parsedData.action === "clear") {
             isUpdatingRef.current = true;
             canvasRef.current.clearCanvas();
+            lastReceivedPathRef.current = null;
             isUpdatingRef.current = false;
           }
         } catch (error) {
@@ -77,14 +93,6 @@ export function WhiteboardPanel({ roomId, signalingClient, displayName }: Whiteb
       document.removeEventListener("whiteboard-update", handleWhiteboardUpdate);
     };
   }, []);
-
-  const handleStroke = async () => {
-    if (isUpdatingRef.current) return;
-    const paths = await canvasRef.current?.exportPaths();
-    if (paths) {
-      signalingClient.sendWhiteboardUpdate(roomId, JSON.stringify({ action: "paths", paths }), displayName);
-    }
-  };
 
   const handleClear = () => {
     setIsConfirmingClear(true);

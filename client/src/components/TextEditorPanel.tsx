@@ -22,12 +22,24 @@ export function TextEditorPanel({ roomId, signalingClient, displayName }: TextEd
     });
   };
 
+  const pendingHtmlRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (pendingHtmlRef.current !== null && !isUpdatingRef.current) {
+        signalingClient.sendEditorUpdate(roomId, JSON.stringify({ action: "update", html: pendingHtmlRef.current }), displayName);
+        pendingHtmlRef.current = null;
+      }
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [roomId, signalingClient, displayName]);
+
   // Send update to peers
   const handleInput = () => {
     updateFormatState();
     if (isUpdatingRef.current) return;
     if (editorRef.current) {
-      signalingClient.sendEditorUpdate(roomId, JSON.stringify({ action: "update", html: editorRef.current.innerHTML }), displayName);
+      pendingHtmlRef.current = editorRef.current.innerHTML;
     }
   };
 
@@ -41,7 +53,51 @@ export function TextEditorPanel({ roomId, signalingClient, displayName }: TextEd
           if (parsedData.action === "update") {
             if (editorRef.current.innerHTML !== parsedData.html) {
               isUpdatingRef.current = true;
+              
+              // Try to save simple selection state
+              const sel = window.getSelection();
+              let savedOffset = 0;
+              let hasFocus = false;
+              if (sel && sel.rangeCount > 0 && editorRef.current.contains(sel.anchorNode)) {
+                hasFocus = true;
+                // Very basic preservation: length of text before selection
+                const range = sel.getRangeAt(0);
+                const preSelectionRange = range.cloneRange();
+                preSelectionRange.selectNodeContents(editorRef.current);
+                preSelectionRange.setEnd(range.startContainer, range.startOffset);
+                savedOffset = preSelectionRange.toString().length;
+              }
+
               editorRef.current.innerHTML = parsedData.html;
+              
+              // Try to restore selection state
+              if (hasFocus && sel) {
+                // Find node and offset
+                const walker = document.createTreeWalker(editorRef.current, NodeFilter.SHOW_TEXT, null);
+                let currentOffset = 0;
+                let foundNode = null;
+                let nodeOffset = 0;
+
+                while (walker.nextNode()) {
+                  const node = walker.currentNode;
+                  const length = node.nodeValue?.length || 0;
+                  if (currentOffset + length >= savedOffset) {
+                    foundNode = node;
+                    nodeOffset = savedOffset - currentOffset;
+                    break;
+                  }
+                  currentOffset += length;
+                }
+
+                if (foundNode) {
+                  const newRange = document.createRange();
+                  newRange.setStart(foundNode, nodeOffset);
+                  newRange.setEnd(foundNode, nodeOffset);
+                  sel.removeAllRanges();
+                  sel.addRange(newRange);
+                }
+              }
+
               isUpdatingRef.current = false;
             }
           }
