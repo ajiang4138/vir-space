@@ -15,8 +15,10 @@ import { WebRtcPeerManager, type WebRtcStatus } from "./lib/webrtc";
 import type {
   ChatMessage,
   ConnectionStatus,
+  DiscoveredRoomSummary,
   ParticipantRole,
   ParticipantSummary,
+  RoomDiscoveryAnnouncement,
   RoomStatePayload,
 } from "./types";
 import type { FileTransferViewState } from "./types/fileTransfer";
@@ -46,6 +48,13 @@ interface PendingAction {
 const defaultBootstrapUrl = import.meta.env.VITE_BOOTSTRAP_SIGNALING_URL ?? "ws://localhost:8787";
 const defaultHostPort = 8787;
 const minimumRoomPasswordLength = 4;
+const maximumRoomParticipants = 6;
+const roomDiscoveryTtlSeconds = 8;
+const roomDiscoveryIntervalMs = 2000;
+const roomDiscoveryCleanupIntervalMs = 1000;
+const roomDiscoveryMaxEntries = 200;
+const roomDiscoverySenderWindowMs = 10_000;
+const roomDiscoverySenderMaxAnnouncementsPerWindow = 40;
 
 function nowLabel(): string {
   return new Date().toLocaleTimeString();
@@ -81,6 +90,19 @@ function isWsProtocol(protocol: string): boolean {
   return protocol === "ws:" || protocol === "wss:";
 }
 
+function parseHostnameFromWsUrl(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    if (!isWsProtocol(parsed.protocol) || !parsed.hostname) {
+      return null;
+    }
+
+    return parsed.hostname;
+  } catch {
+    return null;
+  }
+}
+
 function buildActiveRoom(
   roomState: RoomStatePayload,
   myPeerId: string,
@@ -103,6 +125,7 @@ export default function App(): JSX.Element {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [events, setEvents] = useState<string[]>([]);
   const [activeRoom, setActiveRoom] = useState<ActiveRoom | null>(null);
+  const [discoveredRooms, setDiscoveredRooms] = useState<DiscoveredRoomSummary[]>([]);
   const [fileTransfers, setFileTransfers] = useState<FileTransferViewState>({
     incomingOffers: [],
     activeTransfers: [],
@@ -125,6 +148,11 @@ export default function App(): JSX.Element {
   const peerWebRtcManagersRef = useRef<Map<string, WebRtcPeerManager>>(new Map());
   const peerFileManagersRef = useRef<Map<string, FileTransferManager>>(new Map());
   const peerFileStatesRef = useRef<Map<string, FileTransferViewState>>(new Map());
+  const hostAnnouncementSignatureRef = useRef<string | null>(null);
+  const discoveredRoomsByKeyRef = useRef<Map<string, DiscoveredRoomSummary>>(new Map());
+  const localDiscoveryAddressesRef = useRef<Set<string>>(new Set(["127.0.0.1"]));
+  const discoverySenderWindowRef = useRef<Map<string, { windowStartedAt: number; count: number }>>(new Map());
+  const discoverySenderNoticeRef = useRef<Map<string, number>>(new Map());
 
   const addEvent = (text: string): void => {
     setEvents((prev) => [`[${nowLabel()}] ${text}`, ...prev].slice(0, 150));
@@ -137,6 +165,158 @@ export default function App(): JSX.Element {
 
   const setSessionState = (nextStatus: ConnectionStatus): void => {
     setStatus(nextStatus);
+  };
+
+  const setLocalDiscoveryAddresses = (addresses: string[]): void => {
+    const normalized = new Set<string>();
+    for (const address of addresses) {
+      const value = address.trim();
+      if (value) {
+        normalized.add(value);
+      }
+    }
+
+    normalized.add("127.0.0.1");
+    localDiscoveryAddressesRef.current = normalized;
+  };
+
+  const isSelfAnnouncement = (announcement: RoomDiscoveryAnnouncement): boolean => {
+    const room = activeRoomRef.current;
+    if (!room || room.myRole !== "host") {
+      return false;
+    }
+
+    if (announcement.roomId !== room.roomId) {
+      return false;
+    }
+
+    if (!localDiscoveryAddressesRef.current.has(announcement.hostIp)) {
+      return false;
+    }
+
+    const expectedHostPort = parsePortFromWsUrl(bootstrapUrlRef.current);
+    return announcement.hostPort === expectedHostPort;
+  };
+
+  const isRateLimitedAnnouncement = (announcement: RoomDiscoveryAnnouncement): boolean => {
+    const senderKey = announcement.hostIp;
+    const nowMs = Date.now();
+    const current = discoverySenderWindowRef.current.get(senderKey);
+
+    if (!current || nowMs - current.windowStartedAt >= roomDiscoverySenderWindowMs) {
+      discoverySenderWindowRef.current.set(senderKey, {
+        windowStartedAt: nowMs,
+        count: 1,
+      });
+      return false;
+    }
+
+    current.count += 1;
+    discoverySenderWindowRef.current.set(senderKey, current);
+
+    if (current.count <= roomDiscoverySenderMaxAnnouncementsPerWindow) {
+      return false;
+    }
+
+    const lastNoticeAt = discoverySenderNoticeRef.current.get(senderKey) ?? 0;
+    if (nowMs - lastNoticeAt >= roomDiscoverySenderWindowMs) {
+      addEvent(`room discovery: rate limit exceeded for sender ${senderKey}; announcements temporarily dropped`);
+      discoverySenderNoticeRef.current.set(senderKey, nowMs);
+    }
+
+    return true;
+  };
+
+  const publishDiscoveredRooms = (): void => {
+    const next = Array.from(discoveredRoomsByKeyRef.current.values()).sort((left, right) => {
+      if (left.isJoinable !== right.isJoinable) {
+        return left.isJoinable ? -1 : 1;
+      }
+
+      return right.lastSeenAt - left.lastSeenAt;
+    });
+
+    setDiscoveredRooms(next);
+  };
+
+  const upsertDiscoveredRoom = (announcement: RoomDiscoveryAnnouncement): void => {
+    const nowMs = Date.now();
+    const ttlSeconds = Math.max(3, Math.min(30, Math.floor(announcement.ttlSeconds)));
+    const ttlMs = ttlSeconds * 1000;
+    const key = `${announcement.hostIp}|${announcement.hostPort}|${announcement.roomId}`;
+    const existing = discoveredRoomsByKeyRef.current.get(key);
+
+    if (existing && existing.nonce === announcement.nonce && existing.timestamp === announcement.timestamp) {
+      discoveredRoomsByKeyRef.current.set(key, {
+        ...existing,
+        lastSeenAt: nowMs,
+        expiresAt: nowMs + ttlMs,
+      });
+      publishDiscoveredRooms();
+      return;
+    }
+
+    discoveredRoomsByKeyRef.current.set(key, {
+      roomId: announcement.roomId,
+      hostDisplayName: announcement.hostDisplayName,
+      hostIp: announcement.hostIp,
+      hostPort: announcement.hostPort,
+      participantCount: announcement.participantCount,
+      maxParticipants: announcement.maxParticipants,
+      isJoinable: announcement.isJoinable,
+      status: announcement.status,
+      timestamp: announcement.timestamp,
+      ttlSeconds,
+      nonce: announcement.nonce,
+      lastSeenAt: nowMs,
+      expiresAt: nowMs + ttlMs,
+    });
+
+    if (discoveredRoomsByKeyRef.current.size > roomDiscoveryMaxEntries) {
+      const overflowCount = discoveredRoomsByKeyRef.current.size - roomDiscoveryMaxEntries;
+      const oldestEntries = Array.from(discoveredRoomsByKeyRef.current.entries())
+        .sort((left, right) => left[1].lastSeenAt - right[1].lastSeenAt)
+        .slice(0, overflowCount);
+
+      for (const [oldestKey] of oldestEntries) {
+        discoveredRoomsByKeyRef.current.delete(oldestKey);
+      }
+
+      addEvent(`room discovery: capped list at ${roomDiscoveryMaxEntries} entries`);
+    }
+
+    publishDiscoveredRooms();
+  };
+
+  const pruneStaleDiscoveredRooms = (): void => {
+    const nowMs = Date.now();
+    let removedCount = 0;
+
+    for (const [key, room] of discoveredRoomsByKeyRef.current.entries()) {
+      if (room.expiresAt > nowMs) {
+        continue;
+      }
+
+      discoveredRoomsByKeyRef.current.delete(key);
+      removedCount += 1;
+    }
+
+    if (removedCount > 0) {
+      addEvent(`room discovery: removed ${removedCount} stale room${removedCount === 1 ? "" : "s"}`);
+      publishDiscoveredRooms();
+    }
+
+    for (const [senderKey, info] of discoverySenderWindowRef.current.entries()) {
+      if (nowMs - info.windowStartedAt > roomDiscoverySenderWindowMs * 3) {
+        discoverySenderWindowRef.current.delete(senderKey);
+      }
+    }
+
+    for (const [senderKey, lastNoticeAt] of discoverySenderNoticeRef.current.entries()) {
+      if (nowMs - lastNoticeAt > roomDiscoverySenderWindowMs * 3) {
+        discoverySenderNoticeRef.current.delete(senderKey);
+      }
+    }
   };
 
   const aggregateFileTransferState = (): void => {
@@ -307,7 +487,18 @@ export default function App(): JSX.Element {
     updateOverallWebRtcStatus();
   };
 
+  const stopRoomDiscoveryAnnouncement = async (): Promise<void> => {
+    try {
+      await window.electronApi.stopRoomDiscoveryAnnouncement();
+    } catch {
+      addEvent("error: failed to stop room discovery announcement");
+    } finally {
+      hostAnnouncementSignatureRef.current = null;
+    }
+  };
+
   const clearRoomState = (nextStatus: ConnectionStatus): void => {
+    void stopRoomDiscoveryAnnouncement();
     cleanupPeerConnection();
     updateActiveRoom(null);
     setMessages([]);
@@ -320,6 +511,8 @@ export default function App(): JSX.Element {
       await window.electronApi.stopHostService();
     } catch {
       addEvent("error: failed to stop local host signaling service");
+    } finally {
+      await stopRoomDiscoveryAnnouncement();
     }
   };
 
@@ -336,6 +529,8 @@ export default function App(): JSX.Element {
         if (cancelled) {
           return;
         }
+
+        setLocalDiscoveryAddresses([...networkInfo.addresses, networkInfo.preferredAddress]);
 
         const preferredAddress = networkInfo.preferredAddress;
         if (preferredAddress && !isLoopbackHost(preferredAddress)) {
@@ -356,6 +551,134 @@ export default function App(): JSX.Element {
   useEffect(() => {
     bootstrapUrlRef.current = bootstrapUrl;
   }, [bootstrapUrl]);
+
+  useEffect(() => {
+    let disposed = false;
+    const cleanupTimer = window.setInterval(() => {
+      pruneStaleDiscoveredRooms();
+    }, roomDiscoveryCleanupIntervalMs);
+
+    const unsubscribeAnnouncement = window.electronApi.onRoomDiscoveryAnnouncement((announcement) => {
+      if (disposed) {
+        return;
+      }
+
+      if (isSelfAnnouncement(announcement)) {
+        return;
+      }
+
+      if (isRateLimitedAnnouncement(announcement)) {
+        return;
+      }
+
+      upsertDiscoveredRoom(announcement);
+    });
+
+    const unsubscribeError = window.electronApi.onRoomDiscoveryError((message) => {
+      if (disposed) {
+        return;
+      }
+
+      addEvent(`room discovery error: ${message}`);
+    });
+
+    void (async () => {
+      try {
+        const listenerStatus = await window.electronApi.startRoomDiscoveryListener();
+        if (!disposed) {
+          addEvent(`room discovery listener active on UDP ${listenerStatus.port ?? "unknown"}`);
+        }
+      } catch {
+        if (!disposed) {
+          addEvent("error: failed to start room discovery listener");
+        }
+      }
+    })();
+
+    return () => {
+      disposed = true;
+      window.clearInterval(cleanupTimer);
+      unsubscribeAnnouncement();
+      unsubscribeError();
+      void window.electronApi.stopRoomDiscoveryListener();
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const syncHostAnnouncement = async (): Promise<void> => {
+      const room = activeRoom;
+      if (!room || room.myRole !== "host" || room.roomStatus !== "open") {
+        await stopRoomDiscoveryAnnouncement();
+        return;
+      }
+
+      let hostIp = parseHostnameFromWsUrl(bootstrapUrlRef.current) ?? "";
+      if (!hostIp || isLoopbackHost(hostIp)) {
+        try {
+          const networkInfo = await window.electronApi.getLocalNetworkInfo();
+          hostIp = networkInfo.preferredAddress;
+        } catch {
+          addEvent("error: failed to resolve host IP for room discovery announcement");
+          return;
+        }
+      }
+
+      if (!hostIp || isLoopbackHost(hostIp)) {
+        addEvent("warning: room discovery announcement skipped because no LAN host IP was resolved");
+        return;
+      }
+
+      const hostPort = parsePortFromWsUrl(bootstrapUrlRef.current);
+      const announcementSignature = [
+        room.roomId,
+        room.myDisplayName,
+        hostIp,
+        String(hostPort),
+        String(room.participants.length),
+      ].join("|");
+
+      if (announcementSignature === hostAnnouncementSignatureRef.current) {
+        return;
+      }
+
+      try {
+        await window.electronApi.startRoomDiscoveryAnnouncement({
+          intervalMs: roomDiscoveryIntervalMs,
+          announcement: {
+            roomId: room.roomId,
+            hostDisplayName: room.myDisplayName,
+            hostIp,
+            hostPort,
+            participantCount: room.participants.length,
+            maxParticipants: maximumRoomParticipants,
+            isJoinable: room.participants.length < maximumRoomParticipants,
+            status: "open",
+            ttlSeconds: roomDiscoveryTtlSeconds,
+          },
+        });
+
+        if (cancelled) {
+          return;
+        }
+
+        const previous = hostAnnouncementSignatureRef.current;
+        hostAnnouncementSignatureRef.current = announcementSignature;
+        if (!previous || !previous.startsWith(`${room.roomId}|`)) {
+          addEvent(`room discovery announcement active for ${room.roomId} on ${hostIp}:${hostPort}`);
+        }
+      } catch {
+        addEvent("error: failed to start room discovery announcement");
+      }
+    };
+
+    void syncHostAnnouncement();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeRoom]);
 
   const applyRoomState = (
     roomState: RoomStatePayload,
@@ -864,6 +1187,7 @@ export default function App(): JSX.Element {
                 step={setupStep}
                 userIdDraft={userIdDraft}
                 currentUserId={currentUserId}
+                discoveredRooms={discoveredRooms}
                 roomActionDisabled={Boolean(activeRoom)}
                 defaultBootstrapUrl={bootstrapUrlRef.current}
                 onUserIdDraftChange={setUserIdDraft}

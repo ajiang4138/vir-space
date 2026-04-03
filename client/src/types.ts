@@ -24,6 +24,7 @@ export interface DiscoveredRoomSummary {
   hostPort: number;
   participantCount: number;
   maxParticipants: number;
+  isJoinable: boolean;
   status: "open";
   timestamp: number;
   ttlSeconds: number;

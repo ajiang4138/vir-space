@@ -421,6 +421,51 @@ body {
   gap: 10px;
 }
 
+.join-room-layout {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+}
+
+.join-discovery-panel {
+  align-content: start;
+}
+
+.join-manual-form {
+  align-content: start;
+}
+
+.discovered-rooms-grid {
+  display: grid;
+  gap: 10px;
+  max-height: 350px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.discovered-room-card {
+  background: rgba(248, 251, 255, 0.96);
+  border: 1px solid rgba(80, 106, 133, 0.16);
+  border-radius: 14px;
+  padding: 12px;
+}
+
+.discovered-room-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.discovered-room-card p {
+  margin: 6px 0 0;
+}
+
+.discovered-room-card .full-room-note {
+  color: #825200;
+  font-size: 0.86rem;
+}
+
 .room-launcher > label {
   max-width: 100%;
 }
@@ -673,6 +718,10 @@ input:disabled {
   }
 
   .form-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .join-room-layout {
     grid-template-columns: 1fr;
   }
 

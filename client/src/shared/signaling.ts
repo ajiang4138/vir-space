@@ -33,6 +33,7 @@ export interface RoomDiscoveryAnnouncement {
   hostPort: number;
   participantCount: number;
   maxParticipants: number;
+  isJoinable: boolean;
   status: "open";
   timestamp: number;
   ttlSeconds: number;
@@ -46,6 +47,7 @@ export interface RoomDiscoveryAnnouncementInput {
   hostPort: number;
   participantCount: number;
   maxParticipants: number;
+  isJoinable: boolean;
   status: "open";
   ttlSeconds?: number;
 }

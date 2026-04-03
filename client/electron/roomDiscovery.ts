@@ -11,6 +11,11 @@ const DISCOVERY_ANNOUNCEMENT_TYPE = "vir-space-room-announce";
 const DISCOVERY_PROTOCOL_VERSION = 1;
 const BROADCAST_ADDRESS = "255.255.255.255";
 const MAX_DATAGRAM_BYTES = 4096;
+const MAX_ROOM_ID_LENGTH = 80;
+const MAX_HOST_DISPLAY_NAME_LENGTH = 64;
+const MAX_HOST_IP_LENGTH = 128;
+const MAX_NONCE_LENGTH = 128;
+const MAX_PARTICIPANTS_LIMIT = 64;
 
 export const DEFAULT_ROOM_DISCOVERY_PORT = 49231;
 export const DEFAULT_ROOM_DISCOVERY_TTL_SECONDS = 8;
@@ -39,26 +44,57 @@ function clampTtlSeconds(value: number | undefined): number {
   return Math.max(3, Math.min(30, Math.floor(value)));
 }
 
+function isNonEmptyBoundedString(value: unknown, maxLength: number): value is string {
+  return typeof value === "string" && value.trim().length > 0 && value.trim().length <= maxLength;
+}
+
+function isFiniteInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value);
+}
+
 function isRoomDiscoveryAnnouncement(value: unknown): value is RoomDiscoveryAnnouncement {
   if (!value || typeof value !== "object") {
     return false;
   }
 
   const candidate = value as Partial<RoomDiscoveryAnnouncement>;
+  if (
+    !isNonEmptyBoundedString(candidate.roomId, MAX_ROOM_ID_LENGTH)
+    || !isNonEmptyBoundedString(candidate.hostDisplayName, MAX_HOST_DISPLAY_NAME_LENGTH)
+    || !isNonEmptyBoundedString(candidate.hostIp, MAX_HOST_IP_LENGTH)
+    || !isNonEmptyBoundedString(candidate.nonce, MAX_NONCE_LENGTH)
+    || !isFiniteInteger(candidate.hostPort)
+    || !isFiniteInteger(candidate.participantCount)
+    || !isFiniteInteger(candidate.maxParticipants)
+    || !isFiniteInteger(candidate.timestamp)
+    || !isFiniteInteger(candidate.ttlSeconds)
+  ) {
+    return false;
+  }
+
+  if (
+    !isPositivePort(candidate.hostPort)
+    || candidate.maxParticipants < 1
+    || candidate.maxParticipants > MAX_PARTICIPANTS_LIMIT
+    || candidate.participantCount < 0
+    || candidate.participantCount > candidate.maxParticipants
+    || candidate.ttlSeconds < 3
+    || candidate.ttlSeconds > 30
+    || candidate.timestamp < 1
+  ) {
+    return false;
+  }
+
+  const expectedJoinable = candidate.participantCount < candidate.maxParticipants;
+  if (candidate.isJoinable !== expectedJoinable) {
+    return false;
+  }
+
   return (
     candidate.type === DISCOVERY_ANNOUNCEMENT_TYPE
     && candidate.version === DISCOVERY_PROTOCOL_VERSION
-    && typeof candidate.roomId === "string"
-    && typeof candidate.hostDisplayName === "string"
-    && typeof candidate.hostIp === "string"
-    && typeof candidate.hostPort === "number"
-    && typeof candidate.participantCount === "number"
-    && typeof candidate.maxParticipants === "number"
+    && typeof candidate.isJoinable === "boolean"
     && candidate.status === "open"
-    && typeof candidate.timestamp === "number"
-    && typeof candidate.ttlSeconds === "number"
-    && typeof candidate.nonce === "string"
-    && isPositivePort(candidate.hostPort)
   );
 }
 
@@ -171,16 +207,45 @@ export class RoomDiscoveryService {
       throw new Error("room discovery announce requires roomId");
     }
 
+    if (payload.roomId.trim().length > MAX_ROOM_ID_LENGTH) {
+      throw new Error(`room discovery announce roomId exceeds ${MAX_ROOM_ID_LENGTH} chars`);
+    }
+
     if (!payload.hostDisplayName.trim()) {
       throw new Error("room discovery announce requires hostDisplayName");
+    }
+
+    if (payload.hostDisplayName.trim().length > MAX_HOST_DISPLAY_NAME_LENGTH) {
+      throw new Error(`room discovery announce hostDisplayName exceeds ${MAX_HOST_DISPLAY_NAME_LENGTH} chars`);
     }
 
     if (!payload.hostIp.trim()) {
       throw new Error("room discovery announce requires hostIp");
     }
 
+    if (payload.hostIp.trim().length > MAX_HOST_IP_LENGTH) {
+      throw new Error(`room discovery announce hostIp exceeds ${MAX_HOST_IP_LENGTH} chars`);
+    }
+
     if (!isPositivePort(payload.hostPort)) {
       throw new Error("room discovery announce requires valid hostPort");
+    }
+
+    if (typeof payload.isJoinable !== "boolean") {
+      throw new Error("room discovery announce requires isJoinable");
+    }
+
+    if (!isFiniteInteger(payload.maxParticipants) || payload.maxParticipants < 1 || payload.maxParticipants > MAX_PARTICIPANTS_LIMIT) {
+      throw new Error(`room discovery announce maxParticipants must be between 1 and ${MAX_PARTICIPANTS_LIMIT}`);
+    }
+
+    if (!isFiniteInteger(payload.participantCount) || payload.participantCount < 0 || payload.participantCount > payload.maxParticipants) {
+      throw new Error("room discovery announce participantCount is out of range");
+    }
+
+    const expectedJoinable = payload.participantCount < payload.maxParticipants;
+    if (payload.isJoinable !== expectedJoinable) {
+      throw new Error("room discovery announce isJoinable does not match participant capacity");
     }
 
     await this.stopAnnouncement();
@@ -273,6 +338,7 @@ export class RoomDiscoveryService {
       hostPort: this.announcePayload.hostPort,
       participantCount: this.announcePayload.participantCount,
       maxParticipants: this.announcePayload.maxParticipants,
+      isJoinable: this.announcePayload.isJoinable,
       status: this.announcePayload.status,
       timestamp: Date.now(),
       ttlSeconds: clampTtlSeconds(this.announcePayload.ttlSeconds),

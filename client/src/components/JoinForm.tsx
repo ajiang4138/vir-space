@@ -1,4 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
+import type { DiscoveredRoomSummary } from "../types";
+import { DiscoverRoomsPanel } from "./DiscoverRoomsPanel.js";
 
 type SetupStep = "user-id" | "mode" | "create" | "join";
 
@@ -6,6 +8,7 @@ interface JoinFormProps {
   step: SetupStep;
   userIdDraft: string;
   currentUserId: string;
+  discoveredRooms: DiscoveredRoomSummary[];
   roomActionDisabled: boolean;
   defaultBootstrapUrl: string;
   onUserIdDraftChange: (next: string) => void;
@@ -29,6 +32,7 @@ export function JoinForm({
   step,
   userIdDraft,
   currentUserId,
+  discoveredRooms,
   roomActionDisabled,
   defaultBootstrapUrl,
   onUserIdDraftChange,
@@ -75,6 +79,11 @@ export function JoinForm({
       bootstrapUrl: joinBootstrapUrl.trim(),
       roomPassword: joinRoomPassword.trim(),
     });
+  };
+
+  const useDiscoveredRoom = (room: DiscoveredRoomSummary): void => {
+    setJoinRoomId(room.roomId);
+    setJoinBootstrapUrl(`ws://${room.hostIp}:${room.hostPort}`);
   };
 
   if (step === "user-id") {
@@ -195,51 +204,62 @@ export function JoinForm({
       <p className="setup-copy">
         Guest user: <strong>{currentUserId}</strong>
       </p>
-      <form className="subform" onSubmit={submitJoin}>
-        <label>
-          Bootstrap Signaling URL
-          <input
-            value={joinBootstrapUrl}
-            onChange={(event) => setJoinBootstrapUrl(event.target.value)}
-            placeholder="ws://192.168.1.42:8787"
-            required
-            disabled={roomActionDisabled}
-          />
-        </label>
 
-        <label>
-          Room ID
-          <input
-            value={joinRoomId}
-            onChange={(event) => setJoinRoomId(event.target.value)}
-            placeholder="room-1"
-            required
-            disabled={roomActionDisabled}
-          />
-        </label>
+      <section className="join-room-layout">
+        <DiscoverRoomsPanel
+          rooms={discoveredRooms}
+          disabled={roomActionDisabled}
+          onUseRoom={useDiscoveredRoom}
+        />
 
-        <label>
-          Room Password
-          <input
-            type="password"
-            value={joinRoomPassword}
-            onChange={(event) => setJoinRoomPassword(event.target.value)}
-            placeholder="Enter room password"
-            minLength={minimumRoomPasswordLength}
-            required
-            disabled={roomActionDisabled}
-          />
-        </label>
+        <form className="subform join-manual-form" onSubmit={submitJoin}>
+          <h3>Manual Join</h3>
 
-        <div className="setup-actions">
-          <button type="button" className="ghost" disabled={roomActionDisabled} onClick={onBackToMode}>
-            Back
-          </button>
-          <button type="submit" disabled={roomActionDisabled}>
-            Join Room
-          </button>
-        </div>
-      </form>
+          <label>
+            Bootstrap Signaling URL
+            <input
+              value={joinBootstrapUrl}
+              onChange={(event) => setJoinBootstrapUrl(event.target.value)}
+              placeholder="ws://192.168.1.42:8787"
+              required
+              disabled={roomActionDisabled}
+            />
+          </label>
+
+          <label>
+            Room ID
+            <input
+              value={joinRoomId}
+              onChange={(event) => setJoinRoomId(event.target.value)}
+              placeholder="room-1"
+              required
+              disabled={roomActionDisabled}
+            />
+          </label>
+
+          <label>
+            Room Password
+            <input
+              type="password"
+              value={joinRoomPassword}
+              onChange={(event) => setJoinRoomPassword(event.target.value)}
+              placeholder="Enter room password"
+              minLength={minimumRoomPasswordLength}
+              required
+              disabled={roomActionDisabled}
+            />
+          </label>
+
+          <div className="setup-actions">
+            <button type="button" className="ghost" disabled={roomActionDisabled} onClick={onBackToMode}>
+              Back
+            </button>
+            <button type="submit" disabled={roomActionDisabled}>
+              Join Room
+            </button>
+          </div>
+        </form>
+      </section>
     </section>
   );
 }
