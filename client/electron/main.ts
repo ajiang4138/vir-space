@@ -1,5 +1,70 @@
-import { app, BrowserWindow } from "electron";
+import { app, BrowserWindow, ipcMain } from "electron";
+import os from "node:os";
 import path from "node:path";
+import type { HostServiceInfo, LocalNetworkInfo } from "../src/shared/signaling.js";
+import { HostRoomService } from "./hostServer.js";
+
+const hostService = new HostRoomService();
+let isQuitting = false;
+
+function getLocalNetworkInfo(): LocalNetworkInfo {
+  const addresses = new Set<string>();
+
+  for (const interfaces of Object.values(os.networkInterfaces())) {
+    if (!interfaces) {
+      continue;
+    }
+
+    for (const detail of interfaces) {
+      if (detail.family !== "IPv4") {
+        continue;
+      }
+
+      addresses.add(detail.address);
+    }
+  }
+
+  if (addresses.size === 0) {
+    addresses.add("127.0.0.1");
+  } else {
+    addresses.add("127.0.0.1");
+  }
+
+  const sortedAddresses = Array.from(addresses).sort((left, right) => {
+    if (left === "127.0.0.1") {
+      return -1;
+    }
+
+    if (right === "127.0.0.1") {
+      return 1;
+    }
+
+    return left.localeCompare(right);
+  });
+
+  return {
+    hostname: os.hostname(),
+    preferredAddress: sortedAddresses.find((address) => address !== "127.0.0.1") ?? "127.0.0.1",
+    addresses: sortedAddresses,
+  };
+}
+
+async function stopHostService(reason: "host-ended" | "host-disconnected" = "host-disconnected"): Promise<HostServiceInfo> {
+  await hostService.stop(reason);
+  return hostService.getStatus();
+}
+
+ipcMain.handle("host-service:start", async (_event, requestedPort?: number) => {
+  return hostService.start(requestedPort);
+});
+
+ipcMain.handle("host-service:stop", async () => {
+  return stopHostService("host-disconnected");
+});
+
+ipcMain.handle("host-service:status", async () => hostService.getStatus());
+
+ipcMain.handle("host-service:network-info", async () => getLocalNetworkInfo());
 
 function createWindow(): void {
   const win = new BrowserWindow({
@@ -29,6 +94,23 @@ app.whenReady().then(() => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
     }
+  });
+});
+
+app.on("before-quit", (event) => {
+  if (isQuitting) {
+    return;
+  }
+
+  const hostStatus = hostService.getStatus();
+  if (hostStatus.status === "stopped") {
+    return;
+  }
+
+  event.preventDefault();
+  isQuitting = true;
+  void stopHostService("host-disconnected").finally(() => {
+    app.quit();
   });
 });
 

@@ -5,6 +5,8 @@ interface RoomInfoProps {
   yourName: string;
   yourRole: ParticipantRole;
   hostDisplayName: string;
+  hostEndpointLabel: string;
+  shareUrls: string[];
   inRoom: boolean;
   onLeaveRoom: () => void;
   onEndRoom: () => void;
@@ -15,6 +17,8 @@ export function RoomInfo({
   yourName,
   yourRole,
   hostDisplayName,
+  hostEndpointLabel,
+  shareUrls,
   inRoom,
   onLeaveRoom,
   onEndRoom,
@@ -43,7 +47,22 @@ export function RoomInfo({
               <dt>Host</dt>
               <dd>{hostDisplayName}</dd>
             </div>
+            <div>
+              <dt>Host Endpoint</dt>
+              <dd>{hostEndpointLabel}</dd>
+            </div>
           </dl>
+
+          {yourRole === "host" && shareUrls.length > 0 ? (
+            <div className="share-box">
+              <h3>Share with guest</h3>
+              <ul>
+                {shareUrls.map((url) => (
+                  <li key={url}>{url}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
 
           <div className="room-actions">
             {yourRole === "host" ? (

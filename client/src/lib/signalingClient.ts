@@ -1,4 +1,4 @@
-import { ClientSignalMessage, RoomActionPayload, ServerSignalMessage } from "../types";
+import type { ClientSignalMessage, RoomActionPayload, ServerSignalMessage } from "../shared/signaling";
 
 type RoomCreatedMessage = Extract<ServerSignalMessage, { type: "room-created" }>;
 type RoomJoinedMessage = Extract<ServerSignalMessage, { type: "room-joined" }>;
@@ -72,6 +72,7 @@ export class SignalingClient {
       type: "create-room",
       roomId: payload.roomId,
       displayName: payload.displayName,
+      roomPassword: payload.roomPassword,
     });
   }
 
@@ -80,6 +81,7 @@ export class SignalingClient {
       type: "join-room",
       roomId: payload.roomId,
       displayName: payload.displayName,
+      roomPassword: payload.roomPassword,
     });
   }
 
