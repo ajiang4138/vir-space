@@ -2,6 +2,15 @@ import { app, BrowserWindow, ipcMain } from "electron";
 import os from "node:os";
 import path from "node:path";
 import type { HostServiceInfo, LocalNetworkInfo } from "../src/shared/signaling.js";
+import {
+    buildFileManifest,
+    createReceiverTransfer,
+    finalizeReceiverTransfer,
+    readFilePiece,
+    removeReceiverTransfer,
+    selectFileForSharing,
+    writeReceiverPiece,
+} from "./fileTransfer.js";
 import { HostRoomService } from "./hostServer.js";
 
 const hostService = new HostRoomService();
@@ -65,6 +74,30 @@ ipcMain.handle("host-service:stop", async () => {
 ipcMain.handle("host-service:status", async () => hostService.getStatus());
 
 ipcMain.handle("host-service:network-info", async () => getLocalNetworkInfo());
+
+ipcMain.handle("file-transfer:select-file", async () => selectFileForSharing());
+
+ipcMain.handle(
+  "file-transfer:build-manifest",
+  async (_event, filePath: string, roomId: string, senderPeerId: string, pieceSize: number) =>
+    buildFileManifest(filePath, roomId, senderPeerId, pieceSize),
+);
+
+ipcMain.handle("file-transfer:read-piece", async (_event, filePath: string, pieceIndex: number, pieceSize: number) =>
+  readFilePiece(filePath, pieceIndex, pieceSize),
+);
+
+ipcMain.handle("file-transfer:create-receiver", async (_event, manifest) => createReceiverTransfer(manifest));
+
+ipcMain.handle("file-transfer:write-receiver-piece", async (_event, transferId: string, pieceIndex: number, data) =>
+  writeReceiverPiece(transferId, pieceIndex, new Uint8Array(data)),
+);
+
+ipcMain.handle("file-transfer:finalize-receiver", async (_event, transferId: string) =>
+  finalizeReceiverTransfer(transferId),
+);
+
+ipcMain.handle("file-transfer:cancel-receiver", async (_event, transferId: string) => removeReceiverTransfer(transferId));
 
 function createWindow(): void {
   const win = new BrowserWindow({

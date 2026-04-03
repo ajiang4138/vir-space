@@ -1,18 +1,25 @@
 import { useEffect, useRef, useState } from "react";
 import { ChatPanel } from "./components/ChatPanel";
 import { DebugLog } from "./components/DebugLog";
+import { FileSharePanel } from "./components/FileSharePanel";
 import { JoinForm } from "./components/JoinForm";
 import { ParticipantList } from "./components/ParticipantList";
 import { RoomInfo } from "./components/RoomInfo";
+import { TransferList } from "./components/TransferList";
+import {
+  FileTransferManager,
+  type FileTransferTransport
+} from "./lib/fileTransfer/transferManager";
 import { SignalingClient } from "./lib/signalingClient";
 import { WebRtcPeerManager, type WebRtcStatus } from "./lib/webrtc";
 import type {
-    ChatMessage,
-    ConnectionStatus,
-    ParticipantRole,
-    ParticipantSummary,
-    RoomStatePayload,
+  ChatMessage,
+  ConnectionStatus,
+  ParticipantRole,
+  ParticipantSummary,
+  RoomStatePayload,
 } from "./types";
+import type { FileTransferViewState } from "./types/fileTransfer";
 
 type RoomIntent = "create" | "join";
 type SetupStep = "user-id" | "mode" | "create" | "join";
@@ -96,6 +103,11 @@ export default function App(): JSX.Element {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [events, setEvents] = useState<string[]>([]);
   const [activeRoom, setActiveRoom] = useState<ActiveRoom | null>(null);
+  const [fileTransfers, setFileTransfers] = useState<FileTransferViewState>({
+    incomingOffers: [],
+    activeTransfers: [],
+    sharedFilesBySender: [],
+  });
   const [setupStep, setSetupStep] = useState<SetupStep>("user-id");
   const [userIdDraft, setUserIdDraft] = useState("");
   const [currentUserId, setCurrentUserId] = useState("");
@@ -107,10 +119,12 @@ export default function App(): JSX.Element {
   const currentUserIdRef = useRef("");
   const pendingActionRef = useRef<PendingAction | null>(null);
   const bootstrapUrlRef = useRef(defaultBootstrapUrl);
-  const negotiationStartedRef = useRef(false);
+  const negotiatedPeersRef = useRef<Set<string>>(new Set());
 
   const signalingRef = useRef<SignalingClient | null>(null);
-  const webrtcRef = useRef<WebRtcPeerManager | null>(null);
+  const peerWebRtcManagersRef = useRef<Map<string, WebRtcPeerManager>>(new Map());
+  const peerFileManagersRef = useRef<Map<string, FileTransferManager>>(new Map());
+  const peerFileStatesRef = useRef<Map<string, FileTransferViewState>>(new Map());
 
   const addEvent = (text: string): void => {
     setEvents((prev) => [`[${nowLabel()}] ${text}`, ...prev].slice(0, 150));
@@ -125,9 +139,172 @@ export default function App(): JSX.Element {
     setStatus(nextStatus);
   };
 
-  const cleanupPeerConnection = (): void => {
-    webrtcRef.current?.resetForNextPeer();
-    negotiationStartedRef.current = false;
+  const aggregateFileTransferState = (): void => {
+    const aggregate: FileTransferViewState = {
+      incomingOffers: [],
+      activeTransfers: [],
+      sharedFilesBySender: [],
+    };
+
+    const sharedByKey = new Map<string, FileTransferViewState["sharedFilesBySender"][number]>();
+
+    for (const state of peerFileStatesRef.current.values()) {
+      aggregate.incomingOffers.push(...state.incomingOffers);
+      aggregate.activeTransfers.push(...state.activeTransfers);
+
+      for (const senderGroup of state.sharedFilesBySender) {
+        const existingGroup = sharedByKey.get(senderGroup.senderPeerId);
+        if (!existingGroup) {
+          sharedByKey.set(senderGroup.senderPeerId, {
+            senderPeerId: senderGroup.senderPeerId,
+            senderDisplayName: senderGroup.senderDisplayName,
+            files: [...senderGroup.files],
+          });
+          continue;
+        }
+
+        const byFileId = new Map(existingGroup.files.map((file) => [file.fileId, file]));
+        for (const file of senderGroup.files) {
+          byFileId.set(file.fileId, file);
+        }
+
+        existingGroup.files = Array.from(byFileId.values());
+      }
+    }
+
+    aggregate.sharedFilesBySender = Array.from(sharedByKey.values()).map((group) => ({
+      ...group,
+      files: group.files.sort((left, right) => right.createdAt - left.createdAt),
+    }));
+    aggregate.sharedFilesBySender.sort((left, right) => left.senderDisplayName.localeCompare(right.senderDisplayName));
+    aggregate.incomingOffers.sort((left, right) => right.createdAt - left.createdAt);
+    aggregate.activeTransfers.sort((left, right) => right.updatedAt - left.updatedAt);
+
+    setFileTransfers(aggregate);
+  };
+
+  const updateOverallWebRtcStatus = (): void => {
+    const managers = Array.from(peerWebRtcManagersRef.current.values());
+    if (managers.length === 0) {
+      setWebRtcStatus("idle");
+      return;
+    }
+
+    if (managers.some((manager) => manager.isDataChannelOpen())) {
+      setWebRtcStatus("connected");
+      return;
+    }
+
+    setWebRtcStatus("connecting");
+  };
+
+  const removePeerControllers = (peerId: string): void => {
+    peerWebRtcManagersRef.current.get(peerId)?.close();
+    peerWebRtcManagersRef.current.delete(peerId);
+    peerFileManagersRef.current.get(peerId)?.resetRoom("peer left");
+    peerFileManagersRef.current.delete(peerId);
+    peerFileStatesRef.current.delete(peerId);
+    negotiatedPeersRef.current.delete(peerId);
+    aggregateFileTransferState();
+    updateOverallWebRtcStatus();
+  };
+
+  const cleanupPeerConnection = (reason = "peer disconnected"): void => {
+    for (const manager of peerFileManagersRef.current.values()) {
+      manager.resetRoom(reason);
+    }
+    for (const manager of peerWebRtcManagersRef.current.values()) {
+      manager.close();
+    }
+
+    peerFileManagersRef.current.clear();
+    peerWebRtcManagersRef.current.clear();
+    peerFileStatesRef.current.clear();
+    negotiatedPeersRef.current.clear();
+    aggregateFileTransferState();
+    updateOverallWebRtcStatus();
+  };
+
+  const syncTransferContext = (): void => {
+    const room = activeRoomRef.current;
+    if (!room) {
+      for (const manager of peerFileManagersRef.current.values()) {
+        manager.setContext(null);
+      }
+      return;
+    }
+
+    const remotePeers = room.participants.filter((participant) => participant.peerId !== room.myPeerId);
+    const remotePeerIds = new Set(remotePeers.map((peer) => peer.peerId));
+
+    for (const remotePeer of remotePeers) {
+      if (!peerWebRtcManagersRef.current.has(remotePeer.peerId)) {
+        const webRtcManager = new WebRtcPeerManager({
+          onIceCandidate: (candidate) => {
+            const active = activeRoomRef.current;
+            if (!active || !signalingRef.current) {
+              return;
+            }
+
+            signalingRef.current.sendIceCandidate(active.roomId, remotePeer.peerId, candidate);
+          },
+          onDataChannelOpen: () => {
+            setSessionState("peer connected");
+            addEvent(`peer connected via WebRTC data channel: ${remotePeer.displayName}`);
+            updateOverallWebRtcStatus();
+          },
+          onDataChannelClose: () => {
+            addEvent(`peer data channel closed: ${remotePeer.displayName}`);
+            updateOverallWebRtcStatus();
+          },
+          onDataMessage: (text) => {
+            addEvent(`received direct data-channel message from ${remotePeer.displayName}: ${text}`);
+          },
+          onFileControlMessage: (text) => {
+            void peerFileManagersRef.current.get(remotePeer.peerId)?.handleControlMessage(text);
+          },
+          onFileDataMessage: (data) => {
+            void peerFileManagersRef.current.get(remotePeer.peerId)?.handleBinaryMessage(data);
+          },
+          onConnectionState: (state) => {
+            if (state === "failed") {
+              addEvent(`peer connection failed: ${remotePeer.displayName}`);
+            }
+          },
+          onStatusChange: () => {
+            updateOverallWebRtcStatus();
+          },
+        });
+
+        peerWebRtcManagersRef.current.set(remotePeer.peerId, webRtcManager);
+
+        const fileManager = new FileTransferManager(window.electronApi, {
+          onUpdate: (state) => {
+            peerFileStatesRef.current.set(remotePeer.peerId, state);
+            aggregateFileTransferState();
+          },
+          onEvent: addEvent,
+        });
+
+        fileManager.setTransport(webRtcManager as FileTransferTransport);
+        peerFileManagersRef.current.set(remotePeer.peerId, fileManager);
+      }
+
+      peerFileManagersRef.current.get(remotePeer.peerId)?.setContext({
+        roomId: room.roomId,
+        myPeerId: room.myPeerId,
+        myDisplayName: room.myDisplayName,
+        remotePeerId: remotePeer.peerId,
+      });
+    }
+
+    for (const existingPeerId of Array.from(peerWebRtcManagersRef.current.keys())) {
+      if (!remotePeerIds.has(existingPeerId)) {
+        removePeerControllers(existingPeerId);
+      }
+    }
+
+    updateOverallWebRtcStatus();
   };
 
   const clearRoomState = (nextStatus: ConnectionStatus): void => {
@@ -180,15 +357,6 @@ export default function App(): JSX.Element {
     bootstrapUrlRef.current = bootstrapUrl;
   }, [bootstrapUrl]);
 
-  const getRemoteParticipant = (): ParticipantSummary | null => {
-    const room = activeRoomRef.current;
-    if (!room) {
-      return null;
-    }
-
-    return room.participants.find((participant) => participant.peerId !== room.myPeerId) ?? null;
-  };
-
   const applyRoomState = (
     roomState: RoomStatePayload,
     myPeerId: string,
@@ -197,19 +365,20 @@ export default function App(): JSX.Element {
   ): void => {
     const nextRoom = buildActiveRoom(roomState, myPeerId, myRole, myDisplayName);
     updateActiveRoom(nextRoom);
+    syncTransferContext();
 
     if (roomState.status === "closed") {
       setSessionState(myRole === "guest" ? "host disconnected" : "room closed by host");
       return;
     }
 
-    const remote = nextRoom.participants.find((participant) => participant.peerId !== myPeerId);
-    if (!remote) {
+    const remotePeers = nextRoom.participants.filter((participant) => participant.peerId !== myPeerId);
+    if (remotePeers.length === 0) {
       setSessionState(myRole === "host" ? "waiting for guest" : "peer connecting");
       return;
     }
 
-    if (webrtcRef.current?.isDataChannelOpen()) {
+    if (Array.from(peerWebRtcManagersRef.current.values()).some((manager) => manager.isDataChannelOpen())) {
       setSessionState("peer connected");
       return;
     }
@@ -219,76 +388,38 @@ export default function App(): JSX.Element {
 
   const tryStartNegotiation = async (): Promise<void> => {
     const room = activeRoomRef.current;
-    const remote = getRemoteParticipant();
-
-    if (!room || !remote || negotiationStartedRef.current) {
+    if (!room) {
       return;
     }
 
-    const isInitiator = room.myPeerId.localeCompare(remote.peerId) < 0;
-    if (!isInitiator) {
-      return;
-    }
-
-    negotiationStartedRef.current = true;
-    setSessionState("peer connecting");
-
-    try {
-      const offer = await webrtcRef.current?.createOffer();
-      if (offer && signalingRef.current) {
-        signalingRef.current.sendOffer(room.roomId, remote.peerId, offer);
+    const remotePeers = room.participants.filter((participant) => participant.peerId !== room.myPeerId);
+    for (const remotePeer of remotePeers) {
+      const isInitiator = room.myPeerId.localeCompare(remotePeer.peerId) < 0;
+      if (!isInitiator || negotiatedPeersRef.current.has(remotePeer.peerId)) {
+        continue;
       }
-    } catch {
-      addEvent("error: failed to create/send offer");
-      negotiationStartedRef.current = false;
+
+      const manager = peerWebRtcManagersRef.current.get(remotePeer.peerId);
+      if (!manager) {
+        continue;
+      }
+
+      negotiatedPeersRef.current.add(remotePeer.peerId);
+      setSessionState("peer connecting");
+
+      try {
+        const offer = await manager.createOffer();
+        if (offer && signalingRef.current) {
+          signalingRef.current.sendOffer(room.roomId, remotePeer.peerId, offer);
+        }
+      } catch {
+        addEvent(`error: failed to create/send offer for ${remotePeer.displayName}`);
+        negotiatedPeersRef.current.delete(remotePeer.peerId);
+      }
     }
   };
 
   useEffect(() => {
-    webrtcRef.current = new WebRtcPeerManager({
-      onIceCandidate: (candidate) => {
-        const room = activeRoomRef.current;
-        const remote = getRemoteParticipant();
-        if (!room || !remote || !signalingRef.current) {
-          return;
-        }
-
-        signalingRef.current.sendIceCandidate(room.roomId, remote.peerId, candidate);
-      },
-      onDataChannelOpen: () => {
-        setSessionState("peer connected");
-        addEvent("peer connected via WebRTC data channel");
-      },
-      onDataChannelClose: () => {
-        const room = activeRoomRef.current;
-        if (!room) {
-          return;
-        }
-
-        const remote = getRemoteParticipant();
-        if (!remote && room.myRole === "host") {
-          setSessionState("waiting for guest");
-        } else {
-          setSessionState("peer connecting");
-        }
-
-        addEvent("peer data channel closed");
-      },
-      onDataMessage: (text) => {
-        // Chat delivery is room-fanned via signaling to reach all participants.
-        addEvent(`received direct data-channel message: ${text}`);
-      },
-      onConnectionState: (state) => {
-        if (state === "failed") {
-          addEvent("peer connection failed");
-          setSessionState("peer connecting");
-        }
-      },
-      onStatusChange: (nextStatus) => {
-        setWebRtcStatus(nextStatus);
-      },
-    });
-
     signalingRef.current = new SignalingClient({
       onOpen: () => {
         setSignalingState("connected");
@@ -389,7 +520,7 @@ export default function App(): JSX.Element {
         }
 
         applyRoomState(message.room, room.myPeerId, room.myRole, room.myDisplayName);
-        if (webrtcRef.current?.isDataChannelOpen()) {
+        if (Array.from(peerWebRtcManagersRef.current.values()).some((manager) => manager.isDataChannelOpen())) {
           setSessionState("peer connected");
         } else {
           setSessionState("peer connecting");
@@ -403,7 +534,7 @@ export default function App(): JSX.Element {
           return;
         }
 
-        cleanupPeerConnection();
+        removePeerControllers(message.peerId);
         applyRoomState(message.room, room.myPeerId, room.myRole, room.myDisplayName);
 
         if (room.myRole === "host") {
@@ -427,11 +558,22 @@ export default function App(): JSX.Element {
         ]);
       },
       onOffer: async (message) => {
-        addEvent("received offer");
-        negotiationStartedRef.current = true;
+        addEvent(`received offer from ${message.senderPeerId}`);
+
+        if (!peerWebRtcManagersRef.current.has(message.senderPeerId)) {
+          syncTransferContext();
+        }
+
+        const manager = peerWebRtcManagersRef.current.get(message.senderPeerId);
+        if (!manager) {
+          addEvent(`error: missing peer manager for ${message.senderPeerId}`);
+          return;
+        }
+
+        negotiatedPeersRef.current.add(message.senderPeerId);
 
         try {
-          const answer = await webrtcRef.current?.handleRemoteOffer(message.sdp);
+          const answer = await manager.handleRemoteOffer(message.sdp);
           if (answer) {
             signalingRef.current?.sendAnswer(message.roomId, message.senderPeerId, answer);
           }
@@ -440,22 +582,22 @@ export default function App(): JSX.Element {
         }
       },
       onAnswer: async (message) => {
-        addEvent("received answer");
+        addEvent(`received answer from ${message.senderPeerId}`);
         try {
-          await webrtcRef.current?.handleRemoteAnswer(message.sdp);
+          await peerWebRtcManagersRef.current.get(message.senderPeerId)?.handleRemoteAnswer(message.sdp);
         } catch {
           addEvent("error: failed to handle answer");
         }
       },
       onIceCandidate: async (message) => {
         try {
-          await webrtcRef.current?.addIceCandidate(message.candidate);
+          await peerWebRtcManagersRef.current.get(message.senderPeerId)?.addIceCandidate(message.candidate);
         } catch {
           addEvent("error: failed to add ICE candidate");
         }
       },
-      onPeerLeft: () => {
-        cleanupPeerConnection();
+      onPeerLeft: (message) => {
+        removePeerControllers(message.peerId);
       },
       onRoomClosed: (message) => {
         addEvent(`room closed: ${message.reason}`);
@@ -485,8 +627,8 @@ export default function App(): JSX.Element {
 
     return () => {
       pendingActionRef.current = null;
+      cleanupPeerConnection("application shutdown");
       signalingRef.current?.disconnect();
-      webrtcRef.current?.close();
       void stopLocalHostService();
     };
   }, []);
@@ -652,6 +794,59 @@ export default function App(): JSX.Element {
     ]);
   };
 
+  const findManagerByTransferId = (transferId: string): FileTransferManager | null => {
+    for (const [peerId, state] of peerFileStatesRef.current.entries()) {
+      if (state.incomingOffers.some((offer) => offer.transferId === transferId)) {
+        return peerFileManagersRef.current.get(peerId) ?? null;
+      }
+
+      if (state.activeTransfers.some((transfer) => transfer.transferId === transferId)) {
+        return peerFileManagersRef.current.get(peerId) ?? null;
+      }
+    }
+
+    return null;
+  };
+
+  const shareFile = (): void => {
+    void (async () => {
+      const managers = Array.from(peerFileManagersRef.current.values());
+      if (managers.length === 0) {
+        addEvent("warning: no peer file channels available yet");
+        return;
+      }
+
+      const preparedShare = await managers[0].prepareShareFile();
+      if (!preparedShare) {
+        return;
+      }
+
+      for (const manager of managers) {
+        manager.sharePreparedFile(preparedShare);
+      }
+    })();
+  };
+
+  const acceptOffer = (transferId: string): void => {
+    findManagerByTransferId(transferId)?.acceptIncomingOffer(transferId);
+  };
+
+  const declineOffer = (transferId: string): void => {
+    findManagerByTransferId(transferId)?.declineIncomingOffer(transferId);
+  };
+
+  const cancelTransfer = (transferId: string): void => {
+    findManagerByTransferId(transferId)?.cancelTransfer(transferId);
+  };
+
+  const requestDownload = (fileId: string, senderPeerId: string): void => {
+    peerFileManagersRef.current.get(senderPeerId)?.requestDownload(fileId, senderPeerId);
+  };
+
+  const downloadAcceptedOffer = (transferId: string): void => {
+    findManagerByTransferId(transferId)?.downloadAcceptedOffer(transferId);
+  };
+
   const inRoom = Boolean(activeRoom);
 
   return (
@@ -690,7 +885,7 @@ export default function App(): JSX.Element {
         <section className="chatroom-page">
           <header className="app-header card">
             <h1>Vir Space - Chatroom</h1>
-            <p>Signaling uses the host client listener. Chat messages stay on RTCDataChannel.</p>
+            <p>Signaling uses the host client listener. Chat stays on the existing path and file transfers run peer-to-peer over dedicated RTC channels.</p>
           </header>
 
           <section className="chatroom-layout">
@@ -709,6 +904,20 @@ export default function App(): JSX.Element {
                 onEndRoom={endRoom}
               />
               <ParticipantList participants={activeRoom?.participants ?? []} currentPeerId={activeRoom?.myPeerId ?? ""} />
+            </section>
+
+            <section className="file-panels">
+              <FileSharePanel
+                viewState={fileTransfers}
+                onShareFile={shareFile}
+                onAcceptOffer={acceptOffer}
+                onDeclineOffer={declineOffer}
+                onRequestDownload={requestDownload}
+                onDownloadAcceptedOffer={downloadAcceptedOffer}
+                shareDisabled={webRtcStatus !== "connected"}
+                currentPeerId={activeRoom?.myPeerId}
+              />
+              <TransferList transfers={fileTransfers.activeTransfers} onCancelTransfer={cancelTransfer} />
             </section>
 
             <ChatPanel

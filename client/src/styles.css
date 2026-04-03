@@ -51,7 +51,7 @@ body {
 .chatroom-layout {
   display: grid;
   gap: 18px;
-  grid-template-rows: auto minmax(360px, 1fr) minmax(220px, 280px);
+  grid-template-rows: auto auto minmax(360px, 1fr) minmax(220px, 280px);
 }
 
 .layout {
@@ -70,6 +70,240 @@ body {
   display: grid;
   gap: 16px;
   grid-template-columns: repeat(2, minmax(220px, 1fr));
+}
+
+.file-panels {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(320px, 0.95fr) minmax(320px, 1.05fr);
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.file-share-panel,
+.transfer-list {
+  display: grid;
+  gap: 14px;
+}
+
+.warning-note {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(225, 170, 52, 0.35);
+  background: rgba(255, 248, 227, 0.92);
+  color: #6d4a00;
+  font-size: 0.9rem;
+}
+
+.file-section h3 {
+  margin: 0 0 10px;
+  font-size: 0.98rem;
+}
+
+.file-section-collapsible {
+  border: 1px solid rgba(80, 106, 133, 0.18);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(248, 251, 255, 0.9);
+}
+
+.file-section-collapsible > summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: #2f4858;
+}
+
+.file-section-collapsible > .empty,
+.file-section-collapsible > .shared-catalog {
+  margin-top: 10px;
+}
+
+.offer-list,
+.transfer-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.shared-catalog {
+  display: grid;
+  gap: 10px;
+}
+
+.sender-group {
+  border: 1px solid rgba(80, 106, 133, 0.16);
+  border-radius: 12px;
+  background: rgba(248, 251, 255, 0.92);
+  padding: 10px 12px;
+}
+
+.sender-group > summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-weight: 600;
+  color: #2f4858;
+}
+
+.sender-files {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.offer-card.compact {
+  padding: 10px;
+}
+
+.download-history-row {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.download-history-badge {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  background: rgba(220, 248, 230, 0.95);
+  color: #0d5f30;
+  border: 1px solid rgba(34, 128, 77, 0.22);
+}
+
+.offer-card,
+.transfer-card {
+  background: rgba(248, 251, 255, 0.96);
+  border: 1px solid rgba(80, 106, 133, 0.16);
+  border-radius: 14px;
+  padding: 14px;
+}
+
+.offer-card header,
+.transfer-card header {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.offer-card p,
+.transfer-card p {
+  margin: 6px 0 0;
+}
+
+.offer-card .meta,
+.transfer-card .meta {
+  color: #60717a;
+  font-size: 0.9rem;
+}
+
+.offer-actions,
+.transfer-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.status-badge {
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: #eaf1ff;
+  color: #1c61d6;
+}
+
+.status-badge.completed {
+  background: #dcf8e6;
+  color: #0d5f30;
+}
+
+.status-badge.failed,
+.status-badge.cancelled,
+.status-badge.declined {
+  background: #fdecea;
+  color: #911f1f;
+}
+
+.status-badge.verifying,
+.status-badge.saving,
+.status-badge.transferring,
+.status-badge.accepted,
+.status-badge.waiting-for-acceptance,
+.status-badge.offered,
+.status-badge.retrying {
+  background: #fff6d8;
+  color: #825200;
+}
+
+.transfer-meter {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.transfer-meter-track {
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(81, 109, 136, 0.12);
+  overflow: hidden;
+}
+
+.transfer-meter-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #2875ff, #27b0ff, #25d6a2);
+  transition: width 180ms ease;
+}
+
+.transfer-meter-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: #4a6070;
+  font-size: 0.88rem;
+}
+
+.transfer-stats {
+  margin: 12px 0 0;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.transfer-stats div {
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid rgba(80, 106, 133, 0.12);
+  border-radius: 12px;
+  padding: 10px;
+}
+
+.transfer-stats dt {
+  margin: 0;
+  color: #60717a;
+  font-size: 0.82rem;
+}
+
+.transfer-stats dd {
+  margin: 4px 0 0;
+  font-weight: 600;
+  word-break: break-word;
 }
 
 .card {
@@ -431,6 +665,10 @@ input:disabled {
   }
 
   .top-panels {
+    grid-template-columns: 1fr;
+  }
+
+  .file-panels {
     grid-template-columns: 1fr;
   }
 
