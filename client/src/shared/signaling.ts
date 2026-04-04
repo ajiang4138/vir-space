@@ -22,6 +22,23 @@ export interface RoomActionPayload {
   roomPassword: string;
 }
 
+export type RelayRoomStatus = "open" | "closed";
+
+export interface RelayRoomListingInput {
+  roomId: string;
+  hostDisplayName: string;
+  hostIp: string;
+  hostPort: number;
+  participantCount: number;
+  maxParticipants: number;
+  isJoinable: boolean;
+  status: RelayRoomStatus;
+}
+
+export interface RelayRoomListing extends RelayRoomListingInput {
+  updatedAt: number;
+}
+
 export type ClientSignalMessage =
   | ({ type: "create-room" } & RoomActionPayload)
   | ({ type: "join-room" } & RoomActionPayload)
@@ -32,7 +49,13 @@ export type ClientSignalMessage =
   | { type: "editor-update"; roomId: string; data: string; senderDisplayName?: string }
   | { type: "offer"; roomId: string; targetPeerId: string; sdp: RTCSessionDescriptionInit }
   | { type: "answer"; roomId: string; targetPeerId: string; sdp: RTCSessionDescriptionInit }
-  | { type: "ice-candidate"; roomId: string; targetPeerId: string; candidate: RTCIceCandidateInit };
+  | { type: "ice-candidate"; roomId: string; targetPeerId: string; candidate: RTCIceCandidateInit }
+  | { type: "relay-room-register"; listing: RelayRoomListingInput }
+  | { type: "relay-room-update"; listing: RelayRoomListingInput }
+  | { type: "relay-room-remove"; roomId: string }
+  | { type: "relay-room-list-request" }
+  | { type: "relay-room-subscribe" }
+  | { type: "relay-room-unsubscribe" };
 
 export type ServerSignalMessage =
   | {
@@ -120,6 +143,21 @@ export type ServerSignalMessage =
       roomId?: string;
       code?: string;
       message: string;
+    }
+  | {
+      type: "relay-room-upserted";
+      listing: RelayRoomListing;
+    }
+  | {
+      type: "relay-room-removed";
+      roomId: string;
+      hostIp: string;
+      hostPort: number;
+    }
+  | {
+      type: "relay-room-snapshot";
+      listings: RelayRoomListing[];
+      timestamp: number;
     };
 
 export type HostServiceStatus = "stopped" | "starting" | "running";

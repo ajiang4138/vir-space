@@ -33,6 +33,24 @@ interface ActiveRoom {
 
 const minimumRoomPasswordLength = 4;
 const maximumRoomParticipants = 6;
+const maxPortFallbackAttempts = 30;
+
+function normalizeRequestedPort(requestedPort: number): number {
+  if (!Number.isInteger(requestedPort) || requestedPort < 1 || requestedPort > 65535) {
+    return 8787;
+  }
+
+  return requestedPort;
+}
+
+function isPortInUseError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const candidate = error as { code?: string };
+  return candidate.code === "EADDRINUSE";
+}
 
 function resolveLocalNetworkInfo(): LocalNetworkInfo {
   const addresses = new Set<string>();
@@ -100,6 +118,36 @@ export class HostRoomService {
   private localNetworkInfo: LocalNetworkInfo | null = null;
   private shutdownInProgress = false;
 
+  private async createListeningServer(port: number): Promise<WebSocketServer> {
+    const server = new WebSocketServer({
+      host: "0.0.0.0",
+      port,
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      const onListening = (): void => {
+        cleanup();
+        resolve();
+      };
+
+      const onError = (error: unknown): void => {
+        cleanup();
+        server.close();
+        reject(error);
+      };
+
+      const cleanup = (): void => {
+        server.off("listening", onListening);
+        server.off("error", onError);
+      };
+
+      server.once("listening", onListening);
+      server.once("error", onError);
+    });
+
+    return server;
+  }
+
   async start(requestedPort = 8787): Promise<HostServiceInfo> {
     if (this.server) {
       return this.getStatus();
@@ -108,21 +156,36 @@ export class HostRoomService {
     this.status = "starting";
     this.localNetworkInfo = resolveLocalNetworkInfo();
 
-    const server = new WebSocketServer({
-      host: "0.0.0.0",
-      port: requestedPort,
-    });
+    let server: WebSocketServer | null = null;
+    const startPort = normalizeRequestedPort(requestedPort);
 
-    await new Promise<void>((resolve, reject) => {
-      server.once("listening", resolve);
-      server.once("error", reject);
-    }).catch((error) => {
-      server.close();
+    for (let attempt = 0; attempt < maxPortFallbackAttempts; attempt += 1) {
+      const candidatePort = startPort + attempt;
+      if (candidatePort > 65535) {
+        break;
+      }
+
+      try {
+        server = await this.createListeningServer(candidatePort);
+        break;
+      } catch (error) {
+        if (isPortInUseError(error)) {
+          continue;
+        }
+
+        this.status = "stopped";
+        this.port = null;
+        this.localNetworkInfo = null;
+        throw error;
+      }
+    }
+
+    if (!server) {
       this.status = "stopped";
       this.port = null;
       this.localNetworkInfo = null;
-      throw error;
-    });
+      throw new Error(`failed to start host service; no free port found in range ${startPort}-${Math.min(65535, startPort + maxPortFallbackAttempts - 1)}`);
+    }
 
     this.server = server;
     this.status = "running";

@@ -5,6 +5,9 @@ export type {
     LocalNetworkInfo,
     ParticipantRole,
     ParticipantSummary,
+    RelayRoomListing,
+    RelayRoomListingInput,
+    RelayRoomStatus,
     RoomActionPayload,
     RoomStatePayload,
     ServerSignalMessage
@@ -34,4 +37,16 @@ export interface ChatMessage {
   text: string;
   sentAt: string;
   own: boolean;
+}
+
+export interface DiscoveredRoomSummary {
+  roomId: string;
+  hostDisplayName: string;
+  hostIp: string;
+  hostPort: number;
+  participantCount: number;
+  maxParticipants: number;
+  isJoinable: boolean;
+  status: "open" | "closed";
+  updatedAt: number;
 }

@@ -17,8 +17,11 @@ import { WebRtcPeerManager, type WebRtcStatus } from "./lib/webrtc";
 import type {
   ChatMessage,
   ConnectionStatus,
+  DiscoveredRoomSummary,
   ParticipantRole,
   ParticipantSummary,
+  RelayRoomListing,
+  RelayRoomListingInput,
   RoomStatePayload,
 } from "./types";
 import type { FileTransferViewState } from "./types/fileTransfer";
@@ -48,6 +51,13 @@ interface PendingAction {
 const defaultBootstrapUrl = import.meta.env.VITE_BOOTSTRAP_SIGNALING_URL ?? "ws://localhost:8787";
 const defaultHostPort = 8787;
 const minimumRoomPasswordLength = 4;
+const maximumRoomParticipants = 6;
+const relayDiscoveredRoomsMaxEntries = 200;
+const relayDiscoveredRoomsStaleMs = 30_000;
+const relayDiscoveredRoomsCleanupIntervalMs = 5_000;
+const relayHostListingHeartbeatIntervalMs = 8_000;
+const relayReconnectBaseDelayMs = 1_500;
+const relayReconnectMaxDelayMs = 10_000;
 
 function nowLabel(): string {
   return new Date().toLocaleTimeString();
@@ -83,6 +93,74 @@ function isWsProtocol(protocol: string): boolean {
   return protocol === "ws:" || protocol === "wss:";
 }
 
+function parseHostnameFromWsUrl(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    if (!isWsProtocol(parsed.protocol) || !parsed.hostname) {
+      return null;
+    }
+
+    return parsed.hostname;
+  } catch {
+    return null;
+  }
+}
+
+function isPortInUseError(message: string): boolean {
+  return /EADDRINUSE|address already in use/i.test(message);
+}
+
+function canReachBootstrapServer(url: string, timeoutMs = 1200): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let socket: WebSocket | null = null;
+    let timeoutHandle = 0;
+
+    const finalize = (reachable: boolean): void => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      window.clearTimeout(timeoutHandle);
+
+      if (socket) {
+        socket.onopen = null;
+        socket.onerror = null;
+        socket.onclose = null;
+        if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+          socket.close();
+        }
+      }
+
+      resolve(reachable);
+    };
+
+    try {
+      socket = new WebSocket(url);
+    } catch {
+      resolve(false);
+      return;
+    }
+
+    timeoutHandle = window.setTimeout(() => {
+      finalize(false);
+    }, timeoutMs);
+
+    socket.onopen = () => {
+      finalize(true);
+    };
+
+    socket.onerror = () => {
+      finalize(false);
+    };
+
+    socket.onclose = () => {
+      finalize(false);
+    };
+  });
+}
+
 function buildActiveRoom(
   roomState: RoomStatePayload,
   myPeerId: string,
@@ -105,6 +183,7 @@ export default function App(): JSX.Element {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [events, setEvents] = useState<string[]>([]);
   const [activeRoom, setActiveRoom] = useState<ActiveRoom | null>(null);
+  const [discoveredRooms, setDiscoveredRooms] = useState<DiscoveredRoomSummary[]>([]);
   const [fileTransfers, setFileTransfers] = useState<FileTransferViewState>({
     incomingOffers: [],
     activeTransfers: [],
@@ -127,6 +206,11 @@ export default function App(): JSX.Element {
   const peerWebRtcManagersRef = useRef<Map<string, WebRtcPeerManager>>(new Map());
   const peerFileManagersRef = useRef<Map<string, FileTransferManager>>(new Map());
   const peerFileStatesRef = useRef<Map<string, FileTransferViewState>>(new Map());
+  const relayListingSignatureRef = useRef<string | null>(null);
+  const relayListedRoomIdRef = useRef<string | null>(null);
+  const discoveredRoomsByKeyRef = useRef<Map<string, DiscoveredRoomSummary>>(new Map());
+  const relayReconnectTimerRef = useRef<number | null>(null);
+  const relayReconnectAttemptsRef = useRef(0);
 
   const addEvent = (text: string): void => {
     setEvents((prev) => [`[${nowLabel()}] ${text}`, ...prev].slice(0, 150));
@@ -139,6 +223,111 @@ export default function App(): JSX.Element {
 
   const setSessionState = (nextStatus: ConnectionStatus): void => {
     setStatus(nextStatus);
+  };
+
+  const publishDiscoveredRooms = (): void => {
+    const next = Array.from(discoveredRoomsByKeyRef.current.values()).sort((left, right) => {
+      if (left.isJoinable !== right.isJoinable) {
+        return left.isJoinable ? -1 : 1;
+      }
+
+      return right.updatedAt - left.updatedAt;
+    });
+
+    setDiscoveredRooms(next);
+  };
+
+  const toDiscoveredRoomKey = (listing: Pick<DiscoveredRoomSummary, "roomId" | "hostIp" | "hostPort">): string => {
+    return `${listing.hostIp}|${listing.hostPort}|${listing.roomId}`;
+  };
+
+  const upsertRelayDiscoveredRoom = (listing: RelayRoomListing): void => {
+    const safeUpdatedAt = Number.isFinite(listing.updatedAt) ? listing.updatedAt : Date.now();
+    const key = toDiscoveredRoomKey(listing);
+    discoveredRoomsByKeyRef.current.set(key, {
+      roomId: listing.roomId,
+      hostDisplayName: listing.hostDisplayName,
+      hostIp: listing.hostIp,
+      hostPort: listing.hostPort,
+      participantCount: listing.participantCount,
+      maxParticipants: listing.maxParticipants,
+      isJoinable: listing.isJoinable,
+      status: listing.status,
+      updatedAt: safeUpdatedAt,
+    });
+
+    if (discoveredRoomsByKeyRef.current.size > relayDiscoveredRoomsMaxEntries) {
+      const overflowCount = discoveredRoomsByKeyRef.current.size - relayDiscoveredRoomsMaxEntries;
+      const oldest = Array.from(discoveredRoomsByKeyRef.current.entries())
+        .sort((left, right) => left[1].updatedAt - right[1].updatedAt)
+        .slice(0, overflowCount);
+
+      for (const [oldestKey] of oldest) {
+        discoveredRoomsByKeyRef.current.delete(oldestKey);
+      }
+    }
+
+    publishDiscoveredRooms();
+  };
+
+  const removeRelayDiscoveredRoom = (target: Pick<DiscoveredRoomSummary, "roomId" | "hostIp" | "hostPort">): void => {
+    const key = toDiscoveredRoomKey(target);
+    if (!discoveredRoomsByKeyRef.current.delete(key)) {
+      return;
+    }
+
+    publishDiscoveredRooms();
+  };
+
+  const applyRelaySnapshot = (listings: RelayRoomListing[]): void => {
+    const next = new Map<string, DiscoveredRoomSummary>();
+    for (const listing of listings) {
+      const safeUpdatedAt = Number.isFinite(listing.updatedAt) ? listing.updatedAt : Date.now();
+      const key = toDiscoveredRoomKey(listing);
+      next.set(key, {
+        roomId: listing.roomId,
+        hostDisplayName: listing.hostDisplayName,
+        hostIp: listing.hostIp,
+        hostPort: listing.hostPort,
+        participantCount: listing.participantCount,
+        maxParticipants: listing.maxParticipants,
+        isJoinable: listing.isJoinable,
+        status: listing.status,
+        updatedAt: safeUpdatedAt,
+      });
+    }
+
+    if (next.size > relayDiscoveredRoomsMaxEntries) {
+      const overflowCount = next.size - relayDiscoveredRoomsMaxEntries;
+      const oldest = Array.from(next.entries())
+        .sort((left, right) => left[1].updatedAt - right[1].updatedAt)
+        .slice(0, overflowCount);
+
+      for (const [oldestKey] of oldest) {
+        next.delete(oldestKey);
+      }
+    }
+
+    discoveredRoomsByKeyRef.current = next;
+    publishDiscoveredRooms();
+  };
+
+  const pruneStaleRelayDiscoveredRooms = (): void => {
+    const cutoff = Date.now() - relayDiscoveredRoomsStaleMs;
+    let removed = false;
+
+    for (const [key, room] of discoveredRoomsByKeyRef.current.entries()) {
+      if (room.updatedAt >= cutoff) {
+        continue;
+      }
+
+      discoveredRoomsByKeyRef.current.delete(key);
+      removed = true;
+    }
+
+    if (removed) {
+      publishDiscoveredRooms();
+    }
   };
 
   const aggregateFileTransferState = (): void => {
@@ -330,6 +519,16 @@ export default function App(): JSX.Element {
   }, [currentUserId]);
 
   useEffect(() => {
+    const cleanupTimer = window.setInterval(() => {
+      pruneStaleRelayDiscoveredRooms();
+    }, relayDiscoveredRoomsCleanupIntervalMs);
+
+    return () => {
+      window.clearInterval(cleanupTimer);
+    };
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
 
     const primeBootstrapUrl = async (): Promise<void> => {
@@ -354,6 +553,144 @@ export default function App(): JSX.Element {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const syncRelayHostListing = async (): Promise<void> => {
+      const signaling = signalingRef.current;
+      if (!signaling || signalingState !== "connected") {
+        return;
+      }
+
+      const room = activeRoom;
+      if (!room || room.myRole !== "host" || room.roomStatus !== "open") {
+        const listedRoomId = relayListedRoomIdRef.current;
+        if (listedRoomId) {
+          signaling.removeRelayRoom(listedRoomId);
+          relayListedRoomIdRef.current = null;
+          relayListingSignatureRef.current = null;
+          addEvent(`relay discovery listing removed: ${listedRoomId}`);
+        }
+
+        return;
+      }
+
+      let hostIp = parseHostnameFromWsUrl(bootstrapUrlRef.current) ?? "";
+      if (!hostIp || isLoopbackHost(hostIp)) {
+        try {
+          const networkInfo = await window.electronApi.getLocalNetworkInfo();
+          if (cancelled) {
+            return;
+          }
+
+          hostIp = networkInfo.preferredAddress;
+        } catch {
+          addEvent("error: failed to resolve host IP for relay discovery listing");
+          return;
+        }
+      }
+
+      if (!hostIp || isLoopbackHost(hostIp)) {
+        addEvent("warning: relay discovery listing skipped because no non-loopback host IP was resolved");
+        return;
+      }
+
+      const listing: RelayRoomListingInput = {
+        roomId: room.roomId,
+        hostDisplayName: room.myDisplayName,
+        hostIp,
+        hostPort: parsePortFromWsUrl(bootstrapUrlRef.current),
+        participantCount: room.participants.length,
+        maxParticipants: maximumRoomParticipants,
+        isJoinable: room.participants.length < maximumRoomParticipants,
+        status: room.roomStatus,
+      };
+
+      const nextSignature = [
+        listing.roomId,
+        listing.hostDisplayName,
+        listing.hostIp,
+        String(listing.hostPort),
+        String(listing.participantCount),
+        String(listing.maxParticipants),
+        String(listing.isJoinable),
+        listing.status,
+      ].join("|");
+
+      if (nextSignature === relayListingSignatureRef.current) {
+        return;
+      }
+
+      const previouslyListedRoomId = relayListedRoomIdRef.current;
+      if (previouslyListedRoomId && previouslyListedRoomId !== room.roomId) {
+        signaling.removeRelayRoom(previouslyListedRoomId);
+      }
+
+      const shouldUpdateExisting = previouslyListedRoomId === room.roomId;
+      if (shouldUpdateExisting) {
+        signaling.updateRelayRoom(listing);
+      } else {
+        signaling.registerRelayRoom(listing);
+        addEvent(`relay discovery listing active for ${room.roomId} on ${listing.hostIp}:${listing.hostPort}`);
+      }
+
+      relayListedRoomIdRef.current = room.roomId;
+      relayListingSignatureRef.current = nextSignature;
+    };
+
+    void syncRelayHostListing();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeRoom, signalingState]);
+
+  useEffect(() => {
+    const room = activeRoom;
+    if (!room || room.myRole !== "host" || room.roomStatus !== "open" || signalingState !== "connected") {
+      return;
+    }
+
+    const timer = window.setInterval(async () => {
+      const signaling = signalingRef.current;
+      const active = activeRoomRef.current;
+      if (!signaling || !active || active.myRole !== "host" || active.roomStatus !== "open") {
+        return;
+      }
+
+      let hostIp = parseHostnameFromWsUrl(bootstrapUrlRef.current) ?? "";
+      if (!hostIp || isLoopbackHost(hostIp)) {
+        try {
+          const networkInfo = await window.electronApi.getLocalNetworkInfo();
+          hostIp = networkInfo.preferredAddress;
+        } catch {
+          return;
+        }
+      }
+
+      if (!hostIp || isLoopbackHost(hostIp)) {
+        return;
+      }
+
+      const listing: RelayRoomListingInput = {
+        roomId: active.roomId,
+        hostDisplayName: active.myDisplayName,
+        hostIp,
+        hostPort: parsePortFromWsUrl(bootstrapUrlRef.current),
+        participantCount: active.participants.length,
+        maxParticipants: maximumRoomParticipants,
+        isJoinable: active.participants.length < maximumRoomParticipants,
+        status: active.roomStatus,
+      };
+
+      signaling.updateRelayRoom(listing);
+    }, relayHostListingHeartbeatIntervalMs);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [activeRoom, signalingState]);
 
   useEffect(() => {
     bootstrapUrlRef.current = bootstrapUrl;
@@ -427,6 +764,12 @@ export default function App(): JSX.Element {
         setSignalingState("connected");
         setSessionState("connected to bootstrap server");
         addEvent("connected to bootstrap signaling server");
+        relayReconnectAttemptsRef.current = 0;
+        if (relayReconnectTimerRef.current !== null) {
+          window.clearTimeout(relayReconnectTimerRef.current);
+          relayReconnectTimerRef.current = null;
+        }
+        signalingRef.current?.subscribeRelayRooms();
 
         const pending = pendingActionRef.current;
         if (!pending) {
@@ -452,6 +795,8 @@ export default function App(): JSX.Element {
       onClose: () => {
         setSignalingState("disconnected");
         addEvent("signaling disconnected");
+        relayListedRoomIdRef.current = null;
+        relayListingSignatureRef.current = null;
 
         const room = activeRoomRef.current;
         pendingActionRef.current = null;
@@ -618,6 +963,10 @@ export default function App(): JSX.Element {
       onServerError: (message) => {
         addEvent(`error: ${message.message}`);
 
+        if (message.code?.startsWith("RELAY_")) {
+          return;
+        }
+
         if (message.code === "ROOM_FULL") {
           setSessionState("room full");
         } else if (message.code === "ROOM_NOT_FOUND") {
@@ -632,15 +981,114 @@ export default function App(): JSX.Element {
 
         pendingActionRef.current = null;
       },
+      onRelayRoomUpserted: (message) => {
+        upsertRelayDiscoveredRoom(message.listing);
+      },
+      onRelayRoomRemoved: (message) => {
+        removeRelayDiscoveredRoom({
+          roomId: message.roomId,
+          hostIp: message.hostIp,
+          hostPort: message.hostPort,
+        });
+      },
+      onRelayRoomSnapshot: (message) => {
+        applyRelaySnapshot(message.listings);
+      },
     });
 
     return () => {
+      if (relayReconnectTimerRef.current !== null) {
+        window.clearTimeout(relayReconnectTimerRef.current);
+        relayReconnectTimerRef.current = null;
+      }
       pendingActionRef.current = null;
       cleanupPeerConnection("application shutdown");
       signalingRef.current?.disconnect();
       void stopLocalHostService();
     };
   }, []);
+
+  useEffect(() => {
+    if (setupStep !== "join" || activeRoom || signalingState !== "disconnected") {
+      if (relayReconnectTimerRef.current !== null) {
+        window.clearTimeout(relayReconnectTimerRef.current);
+        relayReconnectTimerRef.current = null;
+      }
+      return;
+    }
+
+    if (pendingActionRef.current) {
+      return;
+    }
+
+    const url = bootstrapUrlRef.current.trim();
+    if (!url) {
+      return;
+    }
+
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return;
+    }
+
+    if (!isWsProtocol(parsed.protocol)) {
+      return;
+    }
+
+    const delayMs = Math.min(
+      relayReconnectMaxDelayMs,
+      relayReconnectBaseDelayMs * (relayReconnectAttemptsRef.current + 1),
+    );
+
+    relayReconnectTimerRef.current = window.setTimeout(() => {
+      relayReconnectTimerRef.current = null;
+
+      if (setupStep !== "join" || activeRoomRef.current || pendingActionRef.current || signalingState !== "disconnected") {
+        return;
+      }
+
+      relayReconnectAttemptsRef.current += 1;
+      setSignalingState("connecting");
+      setSessionState("connecting to bootstrap server");
+      signalingRef.current?.connect(url);
+    }, delayMs);
+
+    return () => {
+      if (relayReconnectTimerRef.current !== null) {
+        window.clearTimeout(relayReconnectTimerRef.current);
+        relayReconnectTimerRef.current = null;
+      }
+    };
+  }, [setupStep, activeRoom, signalingState]);
+
+  const shouldStartLocalHostServiceForCreate = async (resolvedUrl: string): Promise<boolean> => {
+    try {
+      const parsed = new URL(resolvedUrl);
+      if (!isWsProtocol(parsed.protocol)) {
+        return false;
+      }
+
+      const targetHost = parsed.hostname.trim().toLowerCase();
+      if (!targetHost) {
+        return false;
+      }
+
+      if (isLoopbackHost(targetHost)) {
+        return true;
+      }
+
+      const networkInfo = await window.electronApi.getLocalNetworkInfo();
+      if (networkInfo.hostname.trim().toLowerCase() === targetHost) {
+        return true;
+      }
+
+      return networkInfo.addresses.some((address) => address.trim().toLowerCase() === targetHost);
+    } catch {
+      return false;
+    }
+  };
 
   const startRoomFlow = async (
     intent: RoomIntent,
@@ -719,17 +1167,40 @@ export default function App(): JSX.Element {
 
     if (intent === "create") {
       const requestedPort = parsePortFromWsUrl(resolvedBootstrapUrl);
+      const bootstrapServerReachable = await canReachBootstrapServer(resolvedBootstrapUrl);
+      const shouldStartLocalHostService = await shouldStartLocalHostServiceForCreate(resolvedBootstrapUrl);
 
-      try {
-        await window.electronApi.startHostService(requestedPort);
-        addEvent(`local host signaling service listening on port ${requestedPort}`);
-      } catch (error) {
-        pendingActionRef.current = null;
-        const message = error instanceof Error ? error.message : "failed to start local host signaling service";
-        addEvent(`error: ${message}`);
-        setSessionState("signaling disconnected");
-        return;
+      if (bootstrapServerReachable) {
+        addEvent("bootstrap signaling server already reachable; skipping local host service startup");
+      } else if (!shouldStartLocalHostService) {
+        addEvent("using external bootstrap signaling server (skipping local host service startup)");
+      } else {
+        try {
+          const hostStatus = await window.electronApi.startHostService(requestedPort);
+          const actualPort = hostStatus.port ?? requestedPort;
+          if (actualPort !== requestedPort) {
+            const parsed = new URL(resolvedBootstrapUrl);
+            parsed.port = String(actualPort);
+            resolvedBootstrapUrl = parsed.toString();
+            addEvent(`requested port ${requestedPort} was busy; using ${actualPort} automatically`);
+          } else {
+            addEvent(`local host signaling service listening on port ${requestedPort}`);
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "failed to start local host signaling service";
+          if (isPortInUseError(message)) {
+            addEvent(`port ${requestedPort} already in use; reusing existing signaling server`);
+          } else {
+            pendingActionRef.current = null;
+            addEvent(`error: ${message}`);
+            setSessionState("signaling disconnected");
+            return;
+          }
+        }
       }
+
+      pendingActionRef.current = { intent, roomId, bootstrapUrl: resolvedBootstrapUrl, displayName, roomPassword };
+      setBootstrapUrl(resolvedBootstrapUrl);
     }
 
     signalingRef.current?.connect(resolvedBootstrapUrl);
@@ -759,6 +1230,43 @@ export default function App(): JSX.Element {
 
   const switchUser = (): void => {
     setSetupStep("user-id");
+  };
+
+  const chooseJoinMode = (): void => {
+    setSetupStep("join");
+    relayReconnectAttemptsRef.current = 0;
+
+    if (activeRoomRef.current) {
+      return;
+    }
+
+    if (signalingState === "connected") {
+      signalingRef.current?.subscribeRelayRooms();
+      signalingRef.current?.requestRelayRoomList();
+      return;
+    }
+
+    if (signalingState !== "disconnected") {
+      return;
+    }
+
+    const url = bootstrapUrlRef.current.trim();
+    if (!url) {
+      return;
+    }
+
+    try {
+      const parsed = new URL(url);
+      if (!isWsProtocol(parsed.protocol)) {
+        return;
+      }
+
+      setSignalingState("connecting");
+      setSessionState("connecting to bootstrap server");
+      signalingRef.current?.connect(url);
+    } catch {
+      addEvent("error: invalid bootstrap URL format for room discovery");
+    }
   };
 
   const leaveRoom = (): void => {
@@ -873,12 +1381,13 @@ export default function App(): JSX.Element {
                 step={setupStep}
                 userIdDraft={userIdDraft}
                 currentUserId={currentUserId}
+                discoveredRooms={discoveredRooms}
                 roomActionDisabled={Boolean(activeRoom)}
                 defaultBootstrapUrl={bootstrapUrlRef.current}
                 onUserIdDraftChange={setUserIdDraft}
                 onSubmitUserId={submitUserId}
                 onChooseCreate={() => setSetupStep("create")}
-                onChooseJoin={() => setSetupStep("join")}
+                onChooseJoin={chooseJoinMode}
                 onBackToMode={() => setSetupStep("mode")}
                 onSwitchUser={switchUser}
                 onCreateRoom={createRoom}

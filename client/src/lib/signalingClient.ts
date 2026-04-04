@@ -14,6 +14,10 @@ type IceCandidateMessage = Extract<ServerSignalMessage, { type: "ice-candidate" 
 type PeerLeftMessage = Extract<ServerSignalMessage, { type: "peer-left" }>;
 type RoomClosedMessage = Extract<ServerSignalMessage, { type: "room-closed" }>;
 type ErrorMessage = Extract<ServerSignalMessage, { type: "error" }>;
+type RelayRoomUpsertedMessage = Extract<ServerSignalMessage, { type: "relay-room-upserted" }>;
+type RelayRoomRemovedMessage = Extract<ServerSignalMessage, { type: "relay-room-removed" }>;
+type RelayRoomSnapshotMessage = Extract<ServerSignalMessage, { type: "relay-room-snapshot" }>;
+type RelayRoomListingInput = Extract<ClientSignalMessage, { type: "relay-room-register" }>["listing"];
 
 type MaybeAsyncHandler<T> = (message: T) => void | Promise<void>;
 
@@ -36,10 +40,14 @@ interface SignalingHandlers {
   onPeerLeft?: MaybeAsyncHandler<PeerLeftMessage>;
   onRoomClosed?: MaybeAsyncHandler<RoomClosedMessage>;
   onServerError?: MaybeAsyncHandler<ErrorMessage>;
+  onRelayRoomUpserted?: MaybeAsyncHandler<RelayRoomUpsertedMessage>;
+  onRelayRoomRemoved?: MaybeAsyncHandler<RelayRoomRemovedMessage>;
+  onRelayRoomSnapshot?: MaybeAsyncHandler<RelayRoomSnapshotMessage>;
 }
 
 export class SignalingClient {
   private socket: WebSocket | null = null;
+  private relayDiscoverySubscriptionRequested = false;
 
   constructor(private readonly handlers: SignalingHandlers) {}
 
@@ -47,7 +55,14 @@ export class SignalingClient {
     this.disconnect();
 
     this.socket = new WebSocket(url);
-    this.socket.onopen = () => this.handlers.onOpen();
+    this.socket.onopen = () => {
+      this.handlers.onOpen();
+
+      if (this.relayDiscoverySubscriptionRequested) {
+        this.sendIfConnected({ type: "relay-room-subscribe" });
+        this.sendIfConnected({ type: "relay-room-list-request" });
+      }
+    };
     this.socket.onclose = () => this.handlers.onClose();
     this.socket.onerror = () => this.handlers.onError("Signaling socket error");
     this.socket.onmessage = (event) => {
@@ -144,6 +159,42 @@ export class SignalingClient {
     this.send({ type: "ice-candidate", roomId, targetPeerId, candidate });
   }
 
+  registerRelayRoom(listing: RelayRoomListingInput): void {
+    this.send({
+      type: "relay-room-register",
+      listing,
+    });
+  }
+
+  updateRelayRoom(listing: RelayRoomListingInput): void {
+    this.send({
+      type: "relay-room-update",
+      listing,
+    });
+  }
+
+  removeRelayRoom(roomId: string): void {
+    this.send({
+      type: "relay-room-remove",
+      roomId,
+    });
+  }
+
+  requestRelayRoomList(): void {
+    this.send({ type: "relay-room-list-request" });
+  }
+
+  subscribeRelayRooms(): void {
+    this.relayDiscoverySubscriptionRequested = true;
+    this.sendIfConnected({ type: "relay-room-subscribe" });
+    this.sendIfConnected({ type: "relay-room-list-request" });
+  }
+
+  unsubscribeRelayRooms(): void {
+    this.relayDiscoverySubscriptionRequested = false;
+    this.sendIfConnected({ type: "relay-room-unsubscribe" });
+  }
+
   private send(message: ClientSignalMessage): void {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       this.handlers.onError("Signaling socket is not connected");
@@ -151,6 +202,36 @@ export class SignalingClient {
     }
 
     this.socket.send(JSON.stringify(message));
+  }
+
+  private sendIfConnected(message: ClientSignalMessage): void {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    this.socket.send(JSON.stringify(message));
+  }
+
+  private isValidRelayListing(value: unknown): value is RelayRoomUpsertedMessage["listing"] {
+    if (!value || typeof value !== "object") {
+      return false;
+    }
+
+    const listing = value as Partial<RelayRoomUpsertedMessage["listing"]>;
+    return (
+      typeof listing.roomId === "string"
+      && listing.roomId.trim().length > 0
+      && typeof listing.hostDisplayName === "string"
+      && listing.hostDisplayName.trim().length > 0
+      && typeof listing.hostIp === "string"
+      && listing.hostIp.trim().length > 0
+      && Number.isInteger(listing.hostPort)
+      && Number.isInteger(listing.participantCount)
+      && Number.isInteger(listing.maxParticipants)
+      && typeof listing.isJoinable === "boolean"
+      && (listing.status === "open" || listing.status === "closed")
+      && Number.isInteger(listing.updatedAt)
+    );
   }
 
   private dispatchMessage(message: ServerSignalMessage): void {
@@ -240,6 +321,45 @@ export class SignalingClient {
       case "error":
         if (this.handlers.onServerError) {
           void this.handlers.onServerError(message);
+        }
+        return;
+
+      case "relay-room-upserted":
+        if (!this.isValidRelayListing(message.listing)) {
+          this.handlers.onError("Invalid relay-room-upserted payload");
+          return;
+        }
+
+        if (this.handlers.onRelayRoomUpserted) {
+          void this.handlers.onRelayRoomUpserted(message);
+        }
+        return;
+
+      case "relay-room-removed":
+        if (
+          !message.roomId
+          || !message.roomId.trim()
+          || !message.hostIp
+          || !message.hostIp.trim()
+          || !Number.isInteger(message.hostPort)
+        ) {
+          this.handlers.onError("Invalid relay-room-removed payload");
+          return;
+        }
+
+        if (this.handlers.onRelayRoomRemoved) {
+          void this.handlers.onRelayRoomRemoved(message);
+        }
+        return;
+
+      case "relay-room-snapshot":
+        if (!Array.isArray(message.listings) || !message.listings.every((listing) => this.isValidRelayListing(listing))) {
+          this.handlers.onError("Invalid relay-room-snapshot payload");
+          return;
+        }
+
+        if (this.handlers.onRelayRoomSnapshot) {
+          void this.handlers.onRelayRoomSnapshot(message);
         }
         return;
     }
