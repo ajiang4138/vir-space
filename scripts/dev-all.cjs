@@ -1,19 +1,27 @@
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const path = require("node:path");
 
 const rootDir = path.resolve(__dirname, "..");
 const runningChildren = new Set();
+let shuttingDown = false;
 
-function spawnNpmCommand(args) {
+function buildNpmCommand(args) {
   if (process.platform === "win32") {
-    const comspec = process.env.ComSpec || "cmd.exe";
-    return spawn(comspec, ["/d", "/s", "/c", `npm ${args.join(" ")}`], {
-      cwd: rootDir,
-      stdio: "inherit",
-    });
+    return {
+      command: process.env.ComSpec || "cmd.exe",
+      commandArgs: ["/d", "/s", "/c", `npm ${args.join(" ")}`],
+    };
   }
 
-  return spawn("npm", args, {
+  return {
+    command: "npm",
+    commandArgs: args,
+  };
+}
+
+function spawnNpmCommand(args) {
+  const npm = buildNpmCommand(args);
+  return spawn(npm.command, npm.commandArgs, {
     cwd: rootDir,
     stdio: "inherit",
   });
@@ -25,11 +33,27 @@ function track(child) {
   return child;
 }
 
+function terminateChild(child) {
+  if (!child || child.killed) {
+    return;
+  }
+
+  if (process.platform === "win32") {
+    if (typeof child.pid === "number" && child.pid > 0) {
+      spawnSync("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+    }
+    return;
+  }
+
+  child.kill("SIGTERM");
+}
+
 function stopChildren() {
   for (const child of runningChildren) {
-    if (!child.killed) {
-      child.kill("SIGINT");
-    }
+    terminateChild(child);
   }
 }
 
@@ -47,11 +71,19 @@ function main() {
   const client = track(spawnNpmCommand(["run", "dev:client"]));
 
   const shutdown = () => {
+    if (shuttingDown) {
+      return;
+    }
+
+    shuttingDown = true;
     stopChildren();
+    setTimeout(() => {
+      process.exit(0);
+    }, 250);
   };
 
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
 
   client.on("exit", (code, signal) => {
     stopChildren();

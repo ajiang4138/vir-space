@@ -1,4 +1,4 @@
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
@@ -6,6 +6,7 @@ const path = require("node:path");
 const rootDir = path.resolve(__dirname, "..");
 const defaultBootstrapUrl = "ws://127.0.0.1:8787";
 const localHostnames = new Set(["localhost", "127.0.0.1", "::1"]);
+let relayChild = null;
 
 for (const interfaces of Object.values(os.networkInterfaces())) {
   if (!interfaces) {
@@ -92,6 +93,24 @@ function spawnRelayServer() {
   });
 }
 
+function stopRelayChild() {
+  if (!relayChild || relayChild.killed) {
+    return;
+  }
+
+  if (process.platform === "win32") {
+    if (typeof relayChild.pid === "number" && relayChild.pid > 0) {
+      spawnSync("taskkill", ["/pid", String(relayChild.pid), "/t", "/f"], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+    }
+    return;
+  }
+
+  relayChild.kill("SIGTERM");
+}
+
 async function main() {
   const bootstrap = parseBootstrapTarget(process.env.VITE_BOOTSTRAP_SIGNALING_URL);
   const reachable = await canReachTcp(bootstrap.host, bootstrap.port);
@@ -107,9 +126,9 @@ async function main() {
   }
 
   console.log(`[relay-ensure] No relay detected at ${bootstrap.url}. Starting local relay server...`);
-  const child = spawnRelayServer();
+  relayChild = spawnRelayServer();
 
-  child.on("exit", (code, signal) => {
+  relayChild.on("exit", (code, signal) => {
     if (signal) {
       process.exitCode = 1;
       return;
@@ -118,6 +137,16 @@ async function main() {
     process.exitCode = code || 0;
   });
 }
+
+process.once("SIGINT", () => {
+  stopRelayChild();
+  process.exit(0);
+});
+
+process.once("SIGTERM", () => {
+  stopRelayChild();
+  process.exit(0);
+});
 
 main().catch((error) => {
   console.error("[relay-ensure] Failed:", error);
