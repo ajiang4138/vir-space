@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createSocket, type RemoteInfo, type Socket } from "node:dgram";
+import os from "node:os";
 import type {
   RoomDiscoveryAnnouncement,
   RoomDiscoveryAnnouncementInput,
@@ -20,6 +21,59 @@ const MAX_PARTICIPANTS_LIMIT = 64;
 export const DEFAULT_ROOM_DISCOVERY_PORT = 49231;
 export const DEFAULT_ROOM_DISCOVERY_TTL_SECONDS = 8;
 export const DEFAULT_ROOM_DISCOVERY_INTERVAL_MS = 2000;
+
+function parseIpv4ToInt(value: string): number | null {
+  const parts = value.split(".");
+  if (parts.length !== 4) {
+    return null;
+  }
+
+  const octets = parts.map((part) => Number.parseInt(part, 10));
+  if (octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) {
+    return null;
+  }
+
+  return (((octets[0] << 24) >>> 0) | (octets[1] << 16) | (octets[2] << 8) | octets[3]) >>> 0;
+}
+
+function formatIpv4FromInt(value: number): string {
+  return [
+    (value >>> 24) & 255,
+    (value >>> 16) & 255,
+    (value >>> 8) & 255,
+    value & 255,
+  ].join(".");
+}
+
+function resolveBroadcastTargets(): string[] {
+  const targets = new Set<string>([BROADCAST_ADDRESS]);
+
+  for (const interfaces of Object.values(os.networkInterfaces())) {
+    if (!interfaces) {
+      continue;
+    }
+
+    for (const detail of interfaces) {
+      if (detail.family !== "IPv4" || detail.internal) {
+        continue;
+      }
+
+      const addressInt = parseIpv4ToInt(detail.address);
+      const netmaskInt = parseIpv4ToInt(detail.netmask);
+      if (addressInt === null || netmaskInt === null) {
+        continue;
+      }
+
+      const broadcastInt = ((addressInt & netmaskInt) | (~netmaskInt >>> 0)) >>> 0;
+      const broadcastAddress = formatIpv4FromInt(broadcastInt);
+      if (broadcastAddress !== "0.0.0.0") {
+        targets.add(broadcastAddress);
+      }
+    }
+  }
+
+  return Array.from(targets);
+}
 
 export interface StartRoomAnnouncementOptions {
   discoveryPort?: number;
@@ -107,6 +161,7 @@ export class RoomDiscoveryService {
   private announcePayload: RoomDiscoveryAnnouncementInput | null = null;
   private announcePort: number | null = null;
   private announceIntervalMs: number | null = null;
+  private announceTargets: string[] = [BROADCAST_ADDRESS];
 
   constructor(handlers: RoomDiscoveryServiceHandlers) {
     this.handlers = handlers;
@@ -277,6 +332,7 @@ export class RoomDiscoveryService {
     this.announcePayload = payload;
     this.announcePort = discoveryPort;
     this.announceIntervalMs = intervalMs;
+    this.announceTargets = resolveBroadcastTargets();
 
     this.sendAnnouncement();
     this.announceInterval = setInterval(() => {
@@ -296,6 +352,7 @@ export class RoomDiscoveryService {
       this.announcePayload = null;
       this.announcePort = null;
       this.announceIntervalMs = null;
+      this.announceTargets = [BROADCAST_ADDRESS];
       return;
     }
 
@@ -304,6 +361,7 @@ export class RoomDiscoveryService {
     this.announcePayload = null;
     this.announcePort = null;
     this.announceIntervalMs = null;
+    this.announceTargets = [BROADCAST_ADDRESS];
 
     await new Promise<void>((resolve) => {
       socket.close(() => resolve());
@@ -351,10 +409,12 @@ export class RoomDiscoveryService {
       return;
     }
 
-    this.announceSocket.send(encoded, this.announcePort, BROADCAST_ADDRESS, (error) => {
-      if (error) {
-        this.handlers.onError(`room discovery send error: ${error.message}`);
-      }
-    });
+    for (const targetAddress of this.announceTargets) {
+      this.announceSocket.send(encoded, this.announcePort, targetAddress, (error) => {
+        if (error) {
+          this.handlers.onError(`room discovery send error (${targetAddress}): ${error.message}`);
+        }
+      });
+    }
   }
 }
