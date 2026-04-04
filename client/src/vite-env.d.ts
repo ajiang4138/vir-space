@@ -15,6 +15,13 @@ interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
 
+interface MetricsSessionInfo {
+  runId: string;
+  peerFileId: string;
+  logDirPath: string;
+  logFilePath: string;
+}
+
 declare global {
   interface Window {
     electronApi: {
@@ -31,6 +38,10 @@ declare global {
       writeReceiverPiece: (transferId: string, pieceIndex: number, data: Uint8Array) => Promise<void>;
       finalizeReceiverTransfer: (transferId: string) => Promise<{ savedPath: string; verifiedHash: string }>;
       cancelReceiverTransfer: (transferId: string) => Promise<void>;
+      initMetricsSession: (runId: string, peerFileId: string) => Promise<MetricsSessionInfo>;
+      getMetricsSession: () => Promise<MetricsSessionInfo | null>;
+      appendMetricsRecord: (record: unknown) => Promise<void>;
+      openMetricsFolder: () => Promise<void>;
     };
   }
 }

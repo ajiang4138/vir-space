@@ -12,6 +12,7 @@ import {
   FileTransferManager,
   type FileTransferTransport
 } from "./lib/fileTransfer/transferManager";
+import { metricsLogger } from "./lib/metrics";
 import { SignalingClient } from "./lib/signalingClient";
 import { WebRtcPeerManager, type WebRtcStatus } from "./lib/webrtc";
 import type {
@@ -48,6 +49,10 @@ interface PendingAction {
 const defaultBootstrapUrl = import.meta.env.VITE_BOOTSTRAP_SIGNALING_URL ?? "ws://localhost:8787";
 const defaultHostPort = 8787;
 const minimumRoomPasswordLength = 4;
+
+function buildMetricsRunId(roomId: string): string {
+  return `room-${roomId.trim().toLowerCase()}`;
+}
 
 function nowLabel(): string {
   return new Date().toLocaleTimeString();
@@ -122,14 +127,31 @@ export default function App(): JSX.Element {
   const pendingActionRef = useRef<PendingAction | null>(null);
   const bootstrapUrlRef = useRef(defaultBootstrapUrl);
   const negotiatedPeersRef = useRef<Set<string>>(new Set());
+  const pendingWorkspaceAcksRef = useRef<Map<string, { sentAtMs: number; sourceType: "whiteboard-update" | "editor-update" }>>(
+    new Map(),
+  );
+  const localMetricsPeerFileIdRef = useRef(`local-${crypto.randomUUID().slice(0, 8)}`);
+  const transferStatusByIdRef = useRef<Map<string, string>>(new Map());
 
   const signalingRef = useRef<SignalingClient | null>(null);
   const peerWebRtcManagersRef = useRef<Map<string, WebRtcPeerManager>>(new Map());
   const peerFileManagersRef = useRef<Map<string, FileTransferManager>>(new Map());
   const peerFileStatesRef = useRef<Map<string, FileTransferViewState>>(new Map());
 
+  const logMetric = (eventType: string, payload: Record<string, unknown> = {}): void => {
+    const room = activeRoomRef.current;
+    const displayName = room?.myDisplayName ?? currentUserIdRef.current ?? null;
+    void metricsLogger.log(eventType, {
+      roomId: room?.roomId ?? null,
+      myPeerId: room?.myPeerId ?? null,
+      myDisplayName: displayName,
+      ...payload,
+    });
+  };
+
   const addEvent = (text: string): void => {
     setEvents((prev) => [`[${nowLabel()}] ${text}`, ...prev].slice(0, 150));
+    logMetric("debug_event", { message: text });
   };
 
   const updateActiveRoom = (nextRoom: ActiveRoom | null): void => {
@@ -262,7 +284,25 @@ export default function App(): JSX.Element {
           onDataMessage: (text) => {
             try {
               const message = JSON.parse(text);
-              if (message.type === "chat-message") {
+              if (message.type === "metrics-ack") {
+                const metricMessageId = typeof message.metricMessageId === "string" ? message.metricMessageId : "";
+                const pending = pendingWorkspaceAcksRef.current.get(metricMessageId);
+                if (pending) {
+                  const rttMs = Math.max(0, Date.now() - pending.sentAtMs);
+                  pendingWorkspaceAcksRef.current.delete(metricMessageId);
+                  logMetric("workspace_update_rtt", {
+                    metricMessageId,
+                    sourceType: pending.sourceType,
+                    ackSourceType: typeof message.sourceType === "string" ? message.sourceType : pending.sourceType,
+                    rttMs,
+                    remotePeerId: remotePeer.peerId,
+                  });
+                }
+              } else if (message.type === "chat-message") {
+                logMetric("chat_message_received", {
+                  senderPeerId: message.senderPeerId ?? remotePeer.peerId,
+                  textLength: typeof message.text === "string" ? message.text.length : 0,
+                });
                 setMessages((prev) => [
                   ...prev,
                   {
@@ -274,9 +314,39 @@ export default function App(): JSX.Element {
                   },
                 ]);
               } else if (message.type === "whiteboard-update") {
+                const metricMessageId = typeof message.metricMessageId === "string" ? message.metricMessageId : null;
+                logMetric("whiteboard_update_received", {
+                  senderPeerId: message.senderPeerId ?? remotePeer.peerId,
+                  payloadLength: typeof message.data === "string" ? message.data.length : 0,
+                  metricMessageId,
+                });
                 document.dispatchEvent(new CustomEvent("whiteboard-update", { detail: message }));
+                if (metricMessageId) {
+                  webRtcManager.sendAppDataMessage(
+                    JSON.stringify({
+                      type: "metrics-ack",
+                      metricMessageId,
+                      sourceType: "whiteboard-update",
+                    }),
+                  );
+                }
               } else if (message.type === "editor-update") {
+                const metricMessageId = typeof message.metricMessageId === "string" ? message.metricMessageId : null;
+                logMetric("editor_update_received", {
+                  senderPeerId: message.senderPeerId ?? remotePeer.peerId,
+                  payloadLength: typeof message.data === "string" ? message.data.length : 0,
+                  metricMessageId,
+                });
                 document.dispatchEvent(new CustomEvent("editor-update", { detail: message }));
+                if (metricMessageId) {
+                  webRtcManager.sendAppDataMessage(
+                    JSON.stringify({
+                      type: "metrics-ack",
+                      metricMessageId,
+                      sourceType: "editor-update",
+                    }),
+                  );
+                }
               }
             } catch {
               addEvent(`received direct data-channel message from ${remotePeer.displayName}: ${text.length > 100 ? text.substring(0, 100) + "..." : text}`);
@@ -379,6 +449,46 @@ export default function App(): JSX.Element {
     bootstrapUrlRef.current = bootstrapUrl;
   }, [bootstrapUrl]);
 
+  useEffect(() => {
+    if (!activeRoom) {
+      return;
+    }
+
+    logMetric("room_state_snapshot", {
+      roomId: activeRoom.roomId,
+      roomStatus: activeRoom.roomStatus,
+      participantCount: activeRoom.participants.length,
+      myRole: activeRoom.myRole,
+    });
+  }, [activeRoom?.roomId, activeRoom?.roomStatus, activeRoom?.participants.length, activeRoom?.myRole]);
+
+  useEffect(() => {
+    const nextStatuses = new Map<string, string>();
+
+    for (const transfer of fileTransfers.activeTransfers) {
+      nextStatuses.set(transfer.transferId, transfer.status);
+      const previousStatus = transferStatusByIdRef.current.get(transfer.transferId);
+      if (previousStatus === transfer.status) {
+        continue;
+      }
+
+      logMetric("transfer_status", {
+        transferId: transfer.transferId,
+        status: transfer.status,
+        direction: transfer.direction,
+        fileId: transfer.manifest.fileId,
+        fileName: transfer.manifest.fileName,
+        fileSize: transfer.manifest.fileSize,
+        progress: transfer.progress,
+        transferredBytes: transfer.transferredBytes,
+        integrityStatus: transfer.integrityStatus,
+        speedBytesPerSecond: transfer.speedBytesPerSecond,
+      });
+    }
+
+    transferStatusByIdRef.current = nextStatuses;
+  }, [fileTransfers.activeTransfers]);
+
   const applyRoomState = (
     roomState: RoomStatePayload,
     myPeerId: string,
@@ -447,6 +557,9 @@ export default function App(): JSX.Element {
         setSignalingState("connected");
         setSessionState("connected to bootstrap server");
         addEvent("connected to bootstrap signaling server");
+        logMetric("signaling_connected", {
+          bootstrapUrl: bootstrapUrlRef.current,
+        });
 
         const pending = pendingActionRef.current;
         if (!pending) {
@@ -472,6 +585,7 @@ export default function App(): JSX.Element {
       onClose: () => {
         setSignalingState("disconnected");
         addEvent("signaling disconnected");
+        logMetric("signaling_disconnected");
 
         const room = activeRoomRef.current;
         pendingActionRef.current = null;
@@ -502,6 +616,12 @@ export default function App(): JSX.Element {
         applyRoomState(message.room, message.senderPeerId, message.role, pending.displayName);
         setSessionState("room created");
         addEvent(`room created: ${message.roomId}`);
+        logMetric("room_created", {
+          roomId: message.roomId,
+          senderPeerId: message.senderPeerId,
+          role: message.role,
+          participantCount: message.room.participants.length,
+        });
         setTimeout(() => {
           if (activeRoomRef.current?.myRole === "host") {
             setSessionState("waiting for guest");
@@ -518,6 +638,12 @@ export default function App(): JSX.Element {
         applyRoomState(message.room, message.senderPeerId, message.role, pending.displayName);
         setSessionState("room joined");
         addEvent(`room joined: ${message.roomId}`);
+        logMetric("room_joined", {
+          roomId: message.roomId,
+          senderPeerId: message.senderPeerId,
+          role: message.role,
+          participantCount: message.room.participants.length,
+        });
         await tryStartNegotiation();
       },
       onRoomState: async (message) => {
@@ -548,6 +674,12 @@ export default function App(): JSX.Element {
           setSessionState("peer connecting");
         }
         addEvent(`participant joined: ${message.participant.displayName}`);
+        logMetric("participant_joined", {
+          roomId: message.roomId,
+          participantPeerId: message.participant.peerId,
+          participantDisplayName: message.participant.displayName,
+          participantCount: message.room.participants.length,
+        });
         await tryStartNegotiation();
       },
       onParticipantLeft: (message) => {
@@ -558,6 +690,11 @@ export default function App(): JSX.Element {
 
         removePeerControllers(message.peerId);
         applyRoomState(message.room, room.myPeerId, room.myRole, room.myDisplayName);
+        logMetric("participant_left", {
+          roomId: message.roomId,
+          participantPeerId: message.peerId,
+          participantCount: message.room.participants.length,
+        });
 
         if (room.myRole === "host") {
           setSessionState("guest left");
@@ -609,9 +746,17 @@ export default function App(): JSX.Element {
       },
       onPeerLeft: (message) => {
         removePeerControllers(message.peerId);
+        logMetric("peer_left", {
+          roomId: message.roomId,
+          peerId: message.peerId,
+        });
       },
       onRoomClosed: (message) => {
         addEvent(`room closed: ${message.reason}`);
+        logMetric("room_closed", {
+          roomId: message.roomId,
+          reason: message.reason,
+        });
         if (message.reason === "host-ended") {
           void stopLocalHostService();
         }
@@ -619,6 +764,11 @@ export default function App(): JSX.Element {
       },
       onServerError: (message) => {
         addEvent(`error: ${message.message}`);
+        logMetric("room_action_error", {
+          roomId: message.roomId ?? null,
+          errorCode: message.code ?? "UNKNOWN",
+          errorMessage: message.message,
+        });
 
         if (message.code === "ROOM_FULL") {
           setSessionState("room full");
@@ -656,6 +806,20 @@ export default function App(): JSX.Element {
     if (!roomId || !displayName || !requestedBootstrapUrl || !roomPassword) {
       addEvent("error: bootstrap URL, room ID, display name, and room password are required");
       return;
+    }
+
+    const metricsRunId = buildMetricsRunId(roomId);
+    try {
+      const metricsSession = await metricsLogger.initSession(metricsRunId, localMetricsPeerFileIdRef.current);
+      await metricsLogger.log("room_flow_submit", {
+        intent,
+        roomId,
+        bootstrapUrl: requestedBootstrapUrl,
+        actorUserId: displayName,
+      });
+      addEvent(`metrics log file: ${metricsSession.logFilePath}`);
+    } catch {
+      addEvent("warning: failed to initialize metrics logging");
     }
 
     if (roomPassword.length < minimumRoomPasswordLength) {
@@ -713,6 +877,7 @@ export default function App(): JSX.Element {
 
     setBootstrapUrl(resolvedBootstrapUrl);
     setMessages([]);
+    pendingWorkspaceAcksRef.current.clear();
     cleanupPeerConnection();
     updateActiveRoom(null);
     pendingActionRef.current = { intent, roomId, bootstrapUrl: resolvedBootstrapUrl, displayName, roomPassword };
@@ -725,6 +890,11 @@ export default function App(): JSX.Element {
       try {
         await window.electronApi.startHostService(requestedPort);
         addEvent(`local host signaling service listening on port ${requestedPort}`);
+        logMetric("host_service_started", {
+          roomId,
+          requestedPort,
+          bootstrapUrl: resolvedBootstrapUrl,
+        });
       } catch (error) {
         pendingActionRef.current = null;
         const message = error instanceof Error ? error.message : "failed to start local host signaling service";
@@ -734,6 +904,11 @@ export default function App(): JSX.Element {
       }
     }
 
+    logMetric("signaling_connect_requested", {
+      intent,
+      roomId,
+      bootstrapUrl: resolvedBootstrapUrl,
+    });
     signalingRef.current?.connect(resolvedBootstrapUrl);
   };
 
@@ -769,6 +944,10 @@ export default function App(): JSX.Element {
       return;
     }
 
+    logMetric("leave_room_requested", {
+      roomId: room.roomId,
+      myRole: room.myRole,
+    });
     signalingRef.current?.leaveRoom(room.roomId);
     clearRoomState("connected to bootstrap server");
     addEvent("left room");
@@ -780,6 +959,10 @@ export default function App(): JSX.Element {
       return;
     }
 
+    logMetric("end_room_requested", {
+      roomId: room.roomId,
+      myRole: room.myRole,
+    });
     signalingRef.current?.endRoom(room.roomId);
     addEvent("host requested room shutdown");
   };
@@ -792,6 +975,11 @@ export default function App(): JSX.Element {
     }
 
     const msg = { type: "chat-message", roomId: room.roomId, senderPeerId: room.myPeerId, senderDisplayName: room.myDisplayName, text };
+    logMetric("chat_message_sent", {
+      roomId: room.roomId,
+      textLength: text.length,
+      recipientPeerCount: peerWebRtcManagersRef.current.size,
+    });
     for (const manager of peerWebRtcManagersRef.current.values()) {
       manager.sendAppDataMessage(JSON.stringify(msg));
     }
@@ -825,6 +1013,9 @@ export default function App(): JSX.Element {
   const shareFile = (): void => {
     void (async () => {
       const managers = Array.from(peerFileManagersRef.current.values());
+      logMetric("file_share_requested", {
+        peerChannelCount: managers.length,
+      });
       if (managers.length === 0) {
         addEvent("warning: no peer file channels available yet");
         return;
@@ -832,8 +1023,16 @@ export default function App(): JSX.Element {
 
       const preparedShare = await managers[0].prepareShareFile();
       if (!preparedShare) {
+        logMetric("file_share_cancelled");
         return;
       }
+
+      logMetric("file_share_prepared", {
+        fileId: preparedShare.manifest.fileId,
+        fileName: preparedShare.manifest.fileName,
+        fileSize: preparedShare.manifest.fileSize,
+        pieceCount: preparedShare.manifest.pieceCount,
+      });
 
       for (const manager of managers) {
         manager.sharePreparedFile(preparedShare);
@@ -842,22 +1041,30 @@ export default function App(): JSX.Element {
   };
 
   const acceptOffer = (transferId: string): void => {
+    logMetric("file_offer_accept_clicked", { transferId });
     findManagerByTransferId(transferId)?.acceptIncomingOffer(transferId);
   };
 
   const declineOffer = (transferId: string): void => {
+    logMetric("file_offer_decline_clicked", { transferId });
     findManagerByTransferId(transferId)?.declineIncomingOffer(transferId);
   };
 
   const cancelTransfer = (transferId: string): void => {
+    logMetric("transfer_cancel_clicked", { transferId });
     findManagerByTransferId(transferId)?.cancelTransfer(transferId);
   };
 
   const requestDownload = (fileId: string, senderPeerId: string): void => {
+    logMetric("download_requested", {
+      fileId,
+      senderPeerId,
+    });
     peerFileManagersRef.current.get(senderPeerId)?.requestDownload(fileId, senderPeerId);
   };
 
   const downloadAcceptedOffer = (transferId: string): void => {
+    logMetric("download_accepted_offer_clicked", { transferId });
     findManagerByTransferId(transferId)?.downloadAcceptedOffer(transferId);
   };
 
@@ -927,7 +1134,24 @@ export default function App(): JSX.Element {
                     roomId={activeRoom.roomId}
                     displayName={activeRoom.myDisplayName}
                     onSendUpdate={(data, displayName) => {
-                      const msg = { type: "whiteboard-update", roomId: activeRoom.roomId, senderPeerId: activeRoom.myPeerId, senderDisplayName: displayName, data };
+                      const metricMessageId = crypto.randomUUID();
+                      pendingWorkspaceAcksRef.current.set(metricMessageId, {
+                        sentAtMs: Date.now(),
+                        sourceType: "whiteboard-update",
+                      });
+                      logMetric("whiteboard_update_sent", {
+                        roomId: activeRoom.roomId,
+                        payloadLength: data.length,
+                        metricMessageId,
+                      });
+                      const msg = {
+                        type: "whiteboard-update",
+                        roomId: activeRoom.roomId,
+                        senderPeerId: activeRoom.myPeerId,
+                        senderDisplayName: displayName,
+                        data,
+                        metricMessageId,
+                      };
                       for (const manager of peerWebRtcManagersRef.current.values()) {
                         manager.sendAppDataMessage(JSON.stringify(msg));
                       }
@@ -940,7 +1164,24 @@ export default function App(): JSX.Element {
                     roomId={activeRoom.roomId}
                     displayName={activeRoom.myDisplayName}
                     onSendUpdate={(data, displayName) => {
-                      const msg = { type: "editor-update", roomId: activeRoom.roomId, senderPeerId: activeRoom.myPeerId, senderDisplayName: displayName, data };
+                      const metricMessageId = crypto.randomUUID();
+                      pendingWorkspaceAcksRef.current.set(metricMessageId, {
+                        sentAtMs: Date.now(),
+                        sourceType: "editor-update",
+                      });
+                      logMetric("editor_update_sent", {
+                        roomId: activeRoom.roomId,
+                        payloadLength: data.length,
+                        metricMessageId,
+                      });
+                      const msg = {
+                        type: "editor-update",
+                        roomId: activeRoom.roomId,
+                        senderPeerId: activeRoom.myPeerId,
+                        senderDisplayName: displayName,
+                        data,
+                        metricMessageId,
+                      };
                       for (const manager of peerWebRtcManagersRef.current.values()) {
                         manager.sendAppDataMessage(JSON.stringify(msg));
                       }

@@ -1,6 +1,13 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { FileManifest } from "../src/shared/fileTransfer.js";
 
+interface MetricsSessionInfo {
+  runId: string;
+  peerFileId: string;
+  logDirPath: string;
+  logFilePath: string;
+}
+
 contextBridge.exposeInMainWorld("electronApi", {
   platform: process.platform,
   versions: process.versions,
@@ -18,4 +25,9 @@ contextBridge.exposeInMainWorld("electronApi", {
     ipcRenderer.invoke("file-transfer:write-receiver-piece", transferId, pieceIndex, data),
   finalizeReceiverTransfer: (transferId: string) => ipcRenderer.invoke("file-transfer:finalize-receiver", transferId),
   cancelReceiverTransfer: (transferId: string) => ipcRenderer.invoke("file-transfer:cancel-receiver", transferId),
+  initMetricsSession: (runId: string, peerFileId: string): Promise<MetricsSessionInfo> =>
+    ipcRenderer.invoke("metrics:init", { runId, peerFileId }),
+  getMetricsSession: (): Promise<MetricsSessionInfo | null> => ipcRenderer.invoke("metrics:get-session"),
+  appendMetricsRecord: (record: unknown): Promise<void> => ipcRenderer.invoke("metrics:append", record),
+  openMetricsFolder: (): Promise<void> => ipcRenderer.invoke("metrics:open-folder"),
 });
