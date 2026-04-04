@@ -1,14 +1,13 @@
 import React, { useRef, useEffect, useState } from "react";
 import { ReactSketchCanvas, ReactSketchCanvasRef } from "react-sketch-canvas";
-import { SignalingClient } from "../lib/signalingClient";
 
 interface WhiteboardPanelProps {
   roomId: string;
-  signalingClient: SignalingClient;
+  onSendUpdate: (data: string, displayName: string) => void;
   displayName: string;
 }
 
-export function WhiteboardPanel({ roomId, signalingClient, displayName }: WhiteboardPanelProps) {
+export function WhiteboardPanel({ roomId, onSendUpdate, displayName }: WhiteboardPanelProps) {
   const canvasRef = useRef<ReactSketchCanvasRef>(null);
   const [penColor, setPenColor] = useState("#000000");
   const [highlighterColor, setHighlighterColor] = useState("#ffff00");
@@ -55,7 +54,7 @@ export function WhiteboardPanel({ roomId, signalingClient, displayName }: Whiteb
     if (isUpdatingRef.current) return;
     const pathString = JSON.stringify(path);
     if (lastReceivedPathRef.current === pathString) return; // Prevent loop
-    signalingClient.sendWhiteboardUpdate(roomId, JSON.stringify({ action: "stroke", path }), displayName);
+    onSendUpdate(JSON.stringify({ action: "stroke", path }), displayName);
   };
 
   useEffect(() => {
@@ -68,18 +67,31 @@ export function WhiteboardPanel({ roomId, signalingClient, displayName }: Whiteb
           if (parsedData.action === "stroke") {
             isUpdatingRef.current = true;
             lastReceivedPathRef.current = JSON.stringify(parsedData.path);
-            await canvasRef.current.loadPaths([parsedData.path]);
-            isUpdatingRef.current = false;
+            try {
+              await canvasRef.current.loadPaths([parsedData.path]);
+            } catch (err) {
+              console.error("Failed to load stroke", err);
+            } finally {
+              isUpdatingRef.current = false;
+            }
           } else if (parsedData.action === "paths") {
             isUpdatingRef.current = true;
             lastReceivedPathRef.current = JSON.stringify(parsedData.paths);
-            await canvasRef.current.loadPaths(parsedData.paths);
-            isUpdatingRef.current = false;
+            try {
+              await canvasRef.current.loadPaths(parsedData.paths);
+            } catch (err) {
+              console.error("Failed to load paths", err);
+            } finally {
+              isUpdatingRef.current = false;
+            }
           } else if (parsedData.action === "clear") {
             isUpdatingRef.current = true;
-            canvasRef.current.clearCanvas();
-            lastReceivedPathRef.current = null;
-            isUpdatingRef.current = false;
+            try {
+              canvasRef.current.clearCanvas();
+              lastReceivedPathRef.current = null;
+            } finally {
+              isUpdatingRef.current = false;
+            }
           }
         } catch (error) {
           console.error("Failed to parse whiteboard update:", error);
@@ -100,7 +112,7 @@ export function WhiteboardPanel({ roomId, signalingClient, displayName }: Whiteb
 
   const confirmClear = () => {
     canvasRef.current?.clearCanvas();
-    signalingClient.sendWhiteboardUpdate(roomId, JSON.stringify({ action: "clear" }), displayName);
+    onSendUpdate(JSON.stringify({ action: "clear" }), displayName);
     setIsConfirmingClear(false);
   };
 

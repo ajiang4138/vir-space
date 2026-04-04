@@ -1,13 +1,12 @@
 import React, { useRef, useEffect, useState } from "react";
-import { SignalingClient } from "../lib/signalingClient";
 
 interface TextEditorPanelProps {
   roomId: string;
-  signalingClient: SignalingClient;
+  onSendUpdate: (data: string, displayName: string) => void;
   displayName: string;
 }
 
-export function TextEditorPanel({ roomId, signalingClient, displayName }: TextEditorPanelProps) {
+export function TextEditorPanel({ roomId, onSendUpdate, displayName }: TextEditorPanelProps) {
   const editorRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isConfirmingClear, setIsConfirmingClear] = useState(false);
@@ -27,12 +26,12 @@ export function TextEditorPanel({ roomId, signalingClient, displayName }: TextEd
   useEffect(() => {
     const interval = setInterval(() => {
       if (pendingHtmlRef.current !== null && !isUpdatingRef.current) {
-        signalingClient.sendEditorUpdate(roomId, JSON.stringify({ action: "update", html: pendingHtmlRef.current }), displayName);
+        onSendUpdate(JSON.stringify({ action: "update", html: pendingHtmlRef.current }), displayName);
         pendingHtmlRef.current = null;
       }
     }, 2000);
     return () => clearInterval(interval);
-  }, [roomId, signalingClient, displayName]);
+  }, [roomId, onSendUpdate, displayName]);
 
   // Send update to peers
   const handleInput = () => {
@@ -58,43 +57,56 @@ export function TextEditorPanel({ roomId, signalingClient, displayName }: TextEd
               const sel = window.getSelection();
               let savedOffset = 0;
               let hasFocus = false;
-              if (sel && sel.rangeCount > 0 && editorRef.current.contains(sel.anchorNode)) {
-                hasFocus = true;
-                // Very basic preservation: length of text before selection
-                const range = sel.getRangeAt(0);
-                const preSelectionRange = range.cloneRange();
-                preSelectionRange.selectNodeContents(editorRef.current);
-                preSelectionRange.setEnd(range.startContainer, range.startOffset);
-                savedOffset = preSelectionRange.toString().length;
+              try {
+                if (sel && sel.rangeCount > 0 && editorRef.current.contains(sel.anchorNode)) {
+                  hasFocus = true;
+                  // Very basic preservation: length of text before selection
+                  const range = sel.getRangeAt(0);
+                  const preSelectionRange = range.cloneRange();
+                  preSelectionRange.selectNodeContents(editorRef.current);
+                  preSelectionRange.setEnd(range.startContainer, range.startOffset);
+                  savedOffset = preSelectionRange.toString().length;
+                }
+              } catch (e) {
+                console.error("Failed to save selection:", e);
+                hasFocus = false;
               }
 
-              editorRef.current.innerHTML = parsedData.html;
+              try {
+                editorRef.current.innerHTML = parsedData.html;
+              } catch (e) {
+                console.error("Failed to update HTML:", e);
+              }
               
               // Try to restore selection state
               if (hasFocus && sel) {
-                // Find node and offset
-                const walker = document.createTreeWalker(editorRef.current, NodeFilter.SHOW_TEXT, null);
-                let currentOffset = 0;
-                let foundNode = null;
-                let nodeOffset = 0;
+                try {
+                  // Find node and offset
+                  const walker = document.createTreeWalker(editorRef.current, NodeFilter.SHOW_TEXT, null);
+                  let currentOffset = 0;
+                  let foundNode = null;
+                  let nodeOffset = 0;
 
-                while (walker.nextNode()) {
-                  const node = walker.currentNode;
-                  const length = node.nodeValue?.length || 0;
-                  if (currentOffset + length >= savedOffset) {
-                    foundNode = node;
-                    nodeOffset = savedOffset - currentOffset;
-                    break;
+                  while (walker.nextNode()) {
+                    const node = walker.currentNode;
+                    const length = node.nodeValue?.length || 0;
+                    if (currentOffset + length >= savedOffset) {
+                      foundNode = node;
+                      nodeOffset = savedOffset - currentOffset;
+                      break;
+                    }
+                    currentOffset += length;
                   }
-                  currentOffset += length;
-                }
 
-                if (foundNode) {
-                  const newRange = document.createRange();
-                  newRange.setStart(foundNode, nodeOffset);
-                  newRange.setEnd(foundNode, nodeOffset);
-                  sel.removeAllRanges();
-                  sel.addRange(newRange);
+                  if (foundNode) {
+                    const newRange = document.createRange();
+                    newRange.setStart(foundNode, nodeOffset);
+                    newRange.setEnd(foundNode, nodeOffset);
+                    sel.removeAllRanges();
+                    sel.addRange(newRange);
+                  }
+                } catch (e) {
+                  console.error("Failed to restore selection:", e);
                 }
               }
 

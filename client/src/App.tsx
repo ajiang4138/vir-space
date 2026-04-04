@@ -260,7 +260,27 @@ export default function App(): JSX.Element {
             updateOverallWebRtcStatus();
           },
           onDataMessage: (text) => {
-            addEvent(`received direct data-channel message from ${remotePeer.displayName}: ${text}`);
+            try {
+              const message = JSON.parse(text);
+              if (message.type === "chat-message") {
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    id: crypto.randomUUID(),
+                    author: message.senderDisplayName || "Peer",
+                    text: message.text,
+                    sentAt: nowLabel(),
+                    own: false,
+                  },
+                ]);
+              } else if (message.type === "whiteboard-update") {
+                document.dispatchEvent(new CustomEvent("whiteboard-update", { detail: message }));
+              } else if (message.type === "editor-update") {
+                document.dispatchEvent(new CustomEvent("editor-update", { detail: message }));
+              }
+            } catch {
+              addEvent(`received direct data-channel message from ${remotePeer.displayName}: ${text.length > 100 ? text.substring(0, 100) + "..." : text}`);
+            }
           },
           onFileControlMessage: (text) => {
             void peerFileManagersRef.current.get(remotePeer.peerId)?.handleControlMessage(text);
@@ -547,25 +567,7 @@ export default function App(): JSX.Element {
 
         setSessionState("peer connecting");
       },
-      onChatMessage: (message) => {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            author: message.senderDisplayName || "Peer",
-            text: message.text,
-            sentAt: nowLabel(),
-            own: false,
-          },
-        ]);
-      },
-      onWhiteboardUpdate: (message) => {
-        // dispatch custom event for the whiteboard panel
-        document.dispatchEvent(new CustomEvent("whiteboard-update", { detail: message }));
-      },
-      onEditorUpdate: (message) => {
-        document.dispatchEvent(new CustomEvent("editor-update", { detail: message }));
-      },
+
       onOffer: async (message) => {
         addEvent(`received offer from ${message.senderPeerId}`);
 
@@ -789,7 +791,10 @@ export default function App(): JSX.Element {
       return;
     }
 
-    signalingRef.current?.sendChatMessage(room.roomId, text, room.myDisplayName);
+    const msg = { type: "chat-message", roomId: room.roomId, senderPeerId: room.myPeerId, senderDisplayName: room.myDisplayName, text };
+    for (const manager of peerWebRtcManagersRef.current.values()) {
+      manager.sendAppDataMessage(JSON.stringify(msg));
+    }
 
     setMessages((prev) => [
       ...prev,
@@ -921,7 +926,12 @@ export default function App(): JSX.Element {
                   <WhiteboardPanel
                     roomId={activeRoom.roomId}
                     displayName={activeRoom.myDisplayName}
-                    signalingClient={signalingRef.current}
+                    onSendUpdate={(data, displayName) => {
+                      const msg = { type: "whiteboard-update", roomId: activeRoom.roomId, senderPeerId: activeRoom.myPeerId, senderDisplayName: displayName, data };
+                      for (const manager of peerWebRtcManagersRef.current.values()) {
+                        manager.sendAppDataMessage(JSON.stringify(msg));
+                      }
+                    }}
                   />
                 </section>
 
@@ -929,7 +939,12 @@ export default function App(): JSX.Element {
                   <TextEditorPanel
                     roomId={activeRoom.roomId}
                     displayName={activeRoom.myDisplayName}
-                    signalingClient={signalingRef.current}
+                    onSendUpdate={(data, displayName) => {
+                      const msg = { type: "editor-update", roomId: activeRoom.roomId, senderPeerId: activeRoom.myPeerId, senderDisplayName: displayName, data };
+                      for (const manager of peerWebRtcManagersRef.current.values()) {
+                        manager.sendAppDataMessage(JSON.stringify(msg));
+                      }
+                    }}
                   />
                 </section>
               </>

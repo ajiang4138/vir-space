@@ -27,9 +27,6 @@ export type ClientSignalMessage =
   | ({ type: "join-room" } & RoomActionPayload)
   | { type: "leave-room"; roomId: string }
   | { type: "end-room"; roomId: string }
-  | { type: "chat-message"; roomId: string; text: string; senderDisplayName?: string }
-  | { type: "whiteboard-update"; roomId: string; data: string; senderDisplayName?: string }
-  | { type: "editor-update"; roomId: string; data: string; senderDisplayName?: string }
   | { type: "offer"; roomId: string; targetPeerId: string; sdp: RTCSessionDescriptionInit }
   | { type: "answer"; roomId: string; targetPeerId: string; sdp: RTCSessionDescriptionInit }
   | { type: "ice-candidate"; roomId: string; targetPeerId: string; candidate: RTCIceCandidateInit };
@@ -64,27 +61,6 @@ export type ServerSignalMessage =
       roomId: string;
       peerId: string;
       room: RoomStatePayload;
-    }
-  | {
-      type: "chat-message";
-      roomId: string;
-      senderPeerId: string;
-      senderDisplayName: string;
-      text: string;
-    }
-  | {
-      type: "whiteboard-update";
-      roomId: string;
-      senderPeerId: string;
-      senderDisplayName: string;
-      data: string;
-    }
-  | {
-      type: "editor-update";
-      roomId: string;
-      senderPeerId: string;
-      senderDisplayName: string;
-      data: string;
     }
   | {
       type: "offer";
@@ -137,3 +113,23 @@ export interface HostServiceInfo {
   localNetworkInfo: LocalNetworkInfo | null;
   wsUrls: string[];
 }
+
+export type AppDataMessage =
+  | {
+      type: "chat-message";
+      senderPeerId: string;
+      senderDisplayName: string;
+      text: string;
+    }
+  | {
+      type: "whiteboard-update";
+      senderPeerId: string;
+      senderDisplayName: string;
+      data: string;
+    }
+  | {
+      type: "editor-update";
+      senderPeerId: string;
+      senderDisplayName: string;
+      data: string;
+    };
