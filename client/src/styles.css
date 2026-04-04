@@ -49,9 +49,9 @@ body {
 }
 
 .chatroom-layout {
-  display: flex;
-  flex-direction: column;
+  display: grid;
   gap: 18px;
+  grid-template-rows: auto auto minmax(360px, 1fr) minmax(220px, 280px);
 }
 
 .layout {
@@ -653,8 +653,7 @@ input:disabled {
   }
 
   .chatroom-layout {
-    display: flex;
-    flex-direction: column;
+    grid-template-rows: auto auto auto;
   }
 
   .layout {
