@@ -112,6 +112,11 @@ function stopRelayChild() {
 }
 
 async function main() {
+  if (!process.env.VITE_BOOTSTRAP_SIGNALING_URL) {
+    console.log("[relay-ensure] No VITE_BOOTSTRAP_SIGNALING_URL set; defaulting to local ws://127.0.0.1:8787");
+    console.log("[relay-ensure] For shared VPN discovery, set VITE_BOOTSTRAP_SIGNALING_URL to your shared relay host IP.");
+  }
+
   const bootstrap = parseBootstrapTarget(process.env.VITE_BOOTSTRAP_SIGNALING_URL);
   const reachable = await canReachTcp(bootstrap.host, bootstrap.port);
 

@@ -49,6 +49,7 @@ interface PendingAction {
 }
 
 const defaultBootstrapUrl = import.meta.env.VITE_BOOTSTRAP_SIGNALING_URL ?? "ws://localhost:8787";
+const hasConfiguredBootstrapUrl = Boolean(import.meta.env.VITE_BOOTSTRAP_SIGNALING_URL?.trim());
 const defaultHostPort = 8787;
 const minimumRoomPasswordLength = 4;
 const maximumRoomParticipants = 6;
@@ -529,9 +530,18 @@ export default function App(): JSX.Element {
   }, []);
 
   useEffect(() => {
+    if (hasConfiguredBootstrapUrl) {
+      return;
+    }
+
     let cancelled = false;
 
     const primeBootstrapUrl = async (): Promise<void> => {
+      const currentHost = parseHostnameFromWsUrl(bootstrapUrlRef.current);
+      if (currentHost && !isLoopbackHost(currentHost)) {
+        return;
+      }
+
       try {
         const networkInfo = await window.electronApi.getLocalNetworkInfo();
         if (cancelled) {
