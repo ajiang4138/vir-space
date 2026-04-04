@@ -1,5 +1,5 @@
 import {
-    CHAT_CHANNEL_LABEL,
+    APP_DATA_CHANNEL_LABEL,
     FILE_CONTROL_CHANNEL_LABEL,
     FILE_DATA_CHANNEL_LABEL,
 } from "./fileTransfer/protocol";
@@ -63,7 +63,7 @@ function resolveIceServers(): RTCIceServer[] {
 
 export class WebRtcPeerManager {
   private pc: RTCPeerConnection | null = null;
-  private chatChannel: RTCDataChannel | null = null;
+  private appDataChannel: RTCDataChannel | null = null;
   private fileControlChannel: RTCDataChannel | null = null;
   private fileDataChannel: RTCDataChannel | null = null;
   private openChannelLabels = new Set<string>();
@@ -109,8 +109,8 @@ export class WebRtcPeerManager {
     const pc = this.ensurePeerConnection();
     this.handlers.onStatusChange?.("connecting");
 
-    if (!this.chatChannel) {
-      const channel = pc.createDataChannel(CHAT_CHANNEL_LABEL, {
+    if (!this.appDataChannel) {
+      const channel = pc.createDataChannel(APP_DATA_CHANNEL_LABEL, {
         ordered: true,
       });
       this.bindDataChannel(channel);
@@ -163,13 +163,21 @@ export class WebRtcPeerManager {
     await pc.addIceCandidate(new RTCIceCandidate(candidate));
   }
 
-  sendChatMessage(text: string): boolean {
-    if (!this.chatChannel || this.chatChannel.readyState !== "open") {
+  sendAppDataMessage(text: string): boolean {
+    if (!this.appDataChannel || this.appDataChannel.readyState !== "open") {
       return false;
     }
 
-    this.chatChannel.send(text);
-    return true;
+    if (this.appDataChannel.bufferedAmount > 8 * 1024 * 1024) {
+      return false;
+    }
+
+    try {
+      this.appDataChannel.send(text);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   sendFileControlMessage(text: string): boolean {
@@ -207,7 +215,7 @@ export class WebRtcPeerManager {
   }
 
   close(): void {
-    for (const channel of [this.chatChannel, this.fileControlChannel, this.fileDataChannel]) {
+    for (const channel of [this.appDataChannel, this.fileControlChannel, this.fileDataChannel]) {
       if (!channel) {
         continue;
       }
@@ -218,7 +226,7 @@ export class WebRtcPeerManager {
       channel.close();
     }
 
-    this.chatChannel = null;
+    this.appDataChannel = null;
     this.fileControlChannel = null;
     this.fileDataChannel = null;
     this.openChannelLabels.clear();
@@ -242,8 +250,8 @@ export class WebRtcPeerManager {
   }
 
   private bindDataChannel(channel: RTCDataChannel): void {
-    if (channel.label === CHAT_CHANNEL_LABEL) {
-      this.chatChannel = channel;
+    if (channel.label === APP_DATA_CHANNEL_LABEL) {
+      this.appDataChannel = channel;
     } else if (channel.label === FILE_CONTROL_CHANNEL_LABEL) {
       this.fileControlChannel = channel;
     } else if (channel.label === FILE_DATA_CHANNEL_LABEL) {
@@ -270,7 +278,7 @@ export class WebRtcPeerManager {
     };
 
     channel.onmessage = (event) => {
-      if (channel.label === CHAT_CHANNEL_LABEL) {
+      if (channel.label === APP_DATA_CHANNEL_LABEL) {
         this.handlers.onDataMessage(String(event.data));
         return;
       }

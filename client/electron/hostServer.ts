@@ -196,11 +196,6 @@ export class HostRoomService {
             return;
           }
 
-          if (raw.type === "chat-message") {
-            this.handleChatMessage(client, raw);
-            return;
-          }
-
           if (raw.type === "offer" || raw.type === "answer" || raw.type === "ice-candidate") {
             this.handleRelay(client, raw);
             return;
@@ -393,37 +388,6 @@ export class HostRoomService {
       senderPeerId: client.id,
       candidate: message.candidate,
     });
-  }
-
-  private handleChatMessage(
-    client: ClientContext,
-    message: Extract<ClientSignalMessage, { type: "chat-message" }>,
-  ): void {
-    const room = this.activeRoom;
-    if (!room || room.status !== "open" || client.roomId !== message.roomId) {
-      this.sendError(client, "You must join the room before sending chat", message.roomId, "NOT_IN_ROOM");
-      return;
-    }
-
-    const senderDisplayName = client.displayName ?? message.senderDisplayName ?? "Peer";
-    const text = message.text.trim();
-    if (!text) {
-      return;
-    }
-
-    for (const member of room.participants.values()) {
-      if (member.id === client.id) {
-        continue;
-      }
-
-      this.sendTo(member, {
-        type: "chat-message",
-        roomId: room.roomId,
-        senderPeerId: client.id,
-        senderDisplayName,
-        text,
-      });
-    }
   }
 
   private handleClientDisconnect(client: ClientContext): void {

@@ -7,7 +7,7 @@ export const DEFAULT_MAX_INFLIGHT_REQUESTS = 4;
 export const DEFAULT_PIECE_REQUEST_TIMEOUT_MS = 12_000;
 export const FILE_CONTROL_CHANNEL_LABEL = "file-transfer-control";
 export const FILE_DATA_CHANNEL_LABEL = "file-transfer-data";
-export const CHAT_CHANNEL_LABEL = "chat";
+export const APP_DATA_CHANNEL_LABEL = "app-data";
 
 export type FilePieceState = "pending" | "requested" | "received" | "verified" | "failed";
 
