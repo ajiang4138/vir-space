@@ -6,6 +6,8 @@ type RoomStateMessage = Extract<ServerSignalMessage, { type: "room-state" }>;
 type ParticipantJoinedMessage = Extract<ServerSignalMessage, { type: "participant-joined" }>;
 type ParticipantLeftMessage = Extract<ServerSignalMessage, { type: "participant-left" }>;
 type ChatMessage = Extract<ServerSignalMessage, { type: "chat-message" }>;
+type WhiteboardUpdateMessage = Extract<ServerSignalMessage, { type: "whiteboard-update" }>;
+type EditorUpdateMessage = Extract<ServerSignalMessage, { type: "editor-update" }>;
 type OfferMessage = Extract<ServerSignalMessage, { type: "offer" }>;
 type AnswerMessage = Extract<ServerSignalMessage, { type: "answer" }>;
 type IceCandidateMessage = Extract<ServerSignalMessage, { type: "ice-candidate" }>;
@@ -26,6 +28,8 @@ interface SignalingHandlers {
   onParticipantJoined?: MaybeAsyncHandler<ParticipantJoinedMessage>;
   onParticipantLeft?: MaybeAsyncHandler<ParticipantLeftMessage>;
   onChatMessage?: MaybeAsyncHandler<ChatMessage>;
+  onEditorUpdate?: MaybeAsyncHandler<EditorUpdateMessage>;
+  onWhiteboardUpdate?: MaybeAsyncHandler<WhiteboardUpdateMessage>;
   onOffer?: MaybeAsyncHandler<OfferMessage>;
   onAnswer?: MaybeAsyncHandler<AnswerMessage>;
   onIceCandidate?: MaybeAsyncHandler<IceCandidateMessage>;
@@ -110,6 +114,24 @@ export class SignalingClient {
     });
   }
 
+  sendWhiteboardUpdate(roomId: string, data: string, senderDisplayName?: string): void {
+    this.send({
+      type: "whiteboard-update",
+      roomId,
+      data,
+      senderDisplayName,
+    });
+  }
+
+  sendEditorUpdate(roomId: string, data: string, senderDisplayName?: string): void {
+    this.send({
+      type: "editor-update",
+      roomId,
+      data,
+      senderDisplayName,
+    });
+  }
+
   sendOffer(roomId: string, targetPeerId: string, sdp: RTCSessionDescriptionInit): void {
     this.send({ type: "offer", roomId, targetPeerId, sdp });
   }
@@ -170,6 +192,18 @@ export class SignalingClient {
       case "chat-message":
         if (this.handlers.onChatMessage) {
           void this.handlers.onChatMessage(message);
+        }
+        return;
+
+      case "whiteboard-update":
+        if (this.handlers.onWhiteboardUpdate) {
+          void this.handlers.onWhiteboardUpdate(message);
+        }
+        return;
+
+      case "editor-update":
+        if (this.handlers.onEditorUpdate) {
+          void this.handlers.onEditorUpdate(message);
         }
         return;
 
