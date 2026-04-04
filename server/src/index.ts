@@ -32,6 +32,28 @@ interface RoomStatePayload {
   participants: ParticipantSummary[];
 }
 
+type RelayRoomStatus = "open" | "closed";
+
+interface RelayRoomListingInput {
+  roomId: string;
+  hostDisplayName: string;
+  hostIp: string;
+  hostPort: number;
+  participantCount: number;
+  maxParticipants: number;
+  isJoinable: boolean;
+  status: RelayRoomStatus;
+}
+
+interface RelayRoomListing extends RelayRoomListingInput {
+  updatedAt: number;
+}
+
+interface RelayRoomListingRecord {
+  ownerClientId: string;
+  listing: RelayRoomListing;
+}
+
 type ClientMessage =
   | { type: "create-room"; roomId: string; displayName: string; roomPassword: string }
   | { type: "join-room"; roomId: string; displayName: string; roomPassword: string }
@@ -42,7 +64,13 @@ type ClientMessage =
   | { type: "editor-update"; roomId: string; data: string; senderDisplayName?: string }
   | { type: "offer"; roomId: string; targetPeerId: string; sdp: SessionDescriptionPayload }
   | { type: "answer"; roomId: string; targetPeerId: string; sdp: SessionDescriptionPayload }
-  | { type: "ice-candidate"; roomId: string; targetPeerId: string; candidate: IceCandidatePayload };
+  | { type: "ice-candidate"; roomId: string; targetPeerId: string; candidate: IceCandidatePayload }
+  | { type: "relay-room-register"; listing: RelayRoomListingInput }
+  | { type: "relay-room-update"; listing: RelayRoomListingInput }
+  | { type: "relay-room-remove"; roomId: string }
+  | { type: "relay-room-list-request" }
+  | { type: "relay-room-subscribe" }
+  | { type: "relay-room-unsubscribe" };
 
 type ServerMessage =
   | {
@@ -121,6 +149,21 @@ type ServerMessage =
       message: string;
       roomId?: string;
       code?: string;
+    }
+  | {
+      type: "relay-room-upserted";
+      listing: RelayRoomListing;
+    }
+  | {
+      type: "relay-room-removed";
+      roomId: string;
+      hostIp: string;
+      hostPort: number;
+    }
+  | {
+      type: "relay-room-snapshot";
+      listings: RelayRoomListing[];
+      timestamp: number;
     };
 
 interface ClientContext {
@@ -129,6 +172,7 @@ interface ClientContext {
   roomId?: string;
   displayName?: string;
   role?: ParticipantRole;
+  relayDiscoverySubscribed?: boolean;
 }
 
 interface Room {
@@ -142,17 +186,319 @@ interface Room {
   participants: Map<string, ClientContext>;
 }
 
-const PORT = Number(process.env.PORT ?? 8787);
+const PORT = 8787;
 const minimumRoomPasswordLength = 4;
 const maximumRoomParticipants = 6;
 const rooms = new Map<string, Room>();
+const clientsById = new Map<string, ClientContext>();
+
+const relayListingTtlMs = 20_000;
+const relayCleanupIntervalMs = 2_000;
+const relayMutationWindowMs = 10_000;
+const relayMutationMaxPerWindow = 80;
+const relayMaxListings = 500;
+
+const relayMaxRoomIdLength = 80;
+const relayMaxHostDisplayNameLength = 64;
+const relayMaxHostIpLength = 128;
+const relayMaxParticipants = 64;
+
+const relayListingsByKey = new Map<string, RelayRoomListingRecord>();
+const relayMutationWindows = new Map<string, { windowStartedAt: number; count: number }>();
 
 const httpServer = createServer((_req, res) => {
   res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("Vir Space bootstrap signaling server is running. Use ws://localhost:8787 from clients.\n");
+  res.end(`Vir Space bootstrap signaling server is running. Use ws://localhost:${PORT} from clients.\n`);
 });
 
 const wss = new WebSocketServer({ noServer: true });
+
+function relayListingKey(ownerClientId: string, roomId: string): string {
+  return `${ownerClientId}:${roomId}`;
+}
+
+function relayListingContentEquals(left: RelayRoomListingInput, right: RelayRoomListingInput): boolean {
+  return (
+    left.roomId === right.roomId
+    && left.hostDisplayName === right.hostDisplayName
+    && left.hostIp === right.hostIp
+    && left.hostPort === right.hostPort
+    && left.participantCount === right.participantCount
+    && left.maxParticipants === right.maxParticipants
+    && left.isJoinable === right.isJoinable
+    && left.status === right.status
+  );
+}
+
+function snapshotRelayListings(): RelayRoomListing[] {
+  return Array.from(relayListingsByKey.values())
+    .map((record) => record.listing)
+    .sort((left, right) => right.updatedAt - left.updatedAt);
+}
+
+function broadcastRelayUpsert(listing: RelayRoomListing): void {
+  for (const client of clientsById.values()) {
+    if (!client.relayDiscoverySubscribed) {
+      continue;
+    }
+
+    sendTo(client, {
+      type: "relay-room-upserted",
+      listing,
+    });
+  }
+}
+
+function broadcastRelayRemoved(listing: Pick<RelayRoomListing, "roomId" | "hostIp" | "hostPort">): void {
+  for (const client of clientsById.values()) {
+    if (!client.relayDiscoverySubscribed) {
+      continue;
+    }
+
+    sendTo(client, {
+      type: "relay-room-removed",
+      roomId: listing.roomId,
+      hostIp: listing.hostIp,
+      hostPort: listing.hostPort,
+    });
+  }
+}
+
+function sendRelaySnapshot(client: ClientContext): void {
+  pruneStaleRelayListings();
+
+  sendTo(client, {
+    type: "relay-room-snapshot",
+    listings: snapshotRelayListings(),
+    timestamp: Date.now(),
+  });
+}
+
+function isFiniteInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value);
+}
+
+function isNonEmptyBoundedString(value: unknown, maxLength: number): value is string {
+  return typeof value === "string" && value.trim().length > 0 && value.trim().length <= maxLength;
+}
+
+function toValidatedRelayListingInput(value: unknown): RelayRoomListingInput | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const candidate = value as Partial<RelayRoomListingInput>;
+  if (
+    !isNonEmptyBoundedString(candidate.roomId, relayMaxRoomIdLength)
+    || !isNonEmptyBoundedString(candidate.hostDisplayName, relayMaxHostDisplayNameLength)
+    || !isNonEmptyBoundedString(candidate.hostIp, relayMaxHostIpLength)
+    || !isFiniteInteger(candidate.hostPort)
+    || !isFiniteInteger(candidate.participantCount)
+    || !isFiniteInteger(candidate.maxParticipants)
+    || (candidate.status !== "open" && candidate.status !== "closed")
+    || typeof candidate.isJoinable !== "boolean"
+  ) {
+    return null;
+  }
+
+  if (
+    candidate.hostPort < 1
+    || candidate.hostPort > 65535
+    || candidate.maxParticipants < 1
+    || candidate.maxParticipants > relayMaxParticipants
+    || candidate.participantCount < 0
+    || candidate.participantCount > candidate.maxParticipants
+  ) {
+    return null;
+  }
+
+  const expectedJoinable = candidate.status === "open" && candidate.participantCount < candidate.maxParticipants;
+  if (candidate.isJoinable !== expectedJoinable) {
+    return null;
+  }
+
+  return {
+    roomId: candidate.roomId.trim(),
+    hostDisplayName: candidate.hostDisplayName.trim(),
+    hostIp: candidate.hostIp.trim(),
+    hostPort: candidate.hostPort,
+    participantCount: candidate.participantCount,
+    maxParticipants: candidate.maxParticipants,
+    isJoinable: candidate.isJoinable,
+    status: candidate.status,
+  };
+}
+
+function isRelayMutationRateLimited(client: ClientContext): boolean {
+  const nowMs = Date.now();
+  const current = relayMutationWindows.get(client.id);
+  if (!current || nowMs - current.windowStartedAt >= relayMutationWindowMs) {
+    relayMutationWindows.set(client.id, {
+      windowStartedAt: nowMs,
+      count: 1,
+    });
+    return false;
+  }
+
+  current.count += 1;
+  relayMutationWindows.set(client.id, current);
+
+  return current.count > relayMutationMaxPerWindow;
+}
+
+function upsertRelayListing(ownerClientId: string, input: RelayRoomListingInput): { listing: RelayRoomListing; changed: boolean } | null {
+  const key = relayListingKey(ownerClientId, input.roomId);
+  const existing = relayListingsByKey.get(key);
+  if (!existing && relayListingsByKey.size >= relayMaxListings) {
+    return null;
+  }
+
+  if (existing && relayListingContentEquals(existing.listing, input)) {
+    existing.listing.updatedAt = Date.now();
+    relayListingsByKey.set(key, existing);
+    return {
+      listing: existing.listing,
+      changed: false,
+    };
+  }
+
+  const listing: RelayRoomListing = {
+    ...input,
+    updatedAt: Date.now(),
+  };
+
+  relayListingsByKey.set(key, {
+    ownerClientId,
+    listing,
+  });
+
+  return {
+    listing,
+    changed: true,
+  };
+}
+
+function removeRelayListing(ownerClientId: string, roomId: string): RelayRoomListing | null {
+  const key = relayListingKey(ownerClientId, roomId);
+  const record = relayListingsByKey.get(key);
+  if (!record) {
+    return null;
+  }
+
+  relayListingsByKey.delete(key);
+  return record.listing;
+}
+
+function removeRelayListingsForClient(ownerClientId: string): void {
+  const keysToDelete: string[] = [];
+  for (const [key, record] of relayListingsByKey.entries()) {
+    if (record.ownerClientId === ownerClientId) {
+      keysToDelete.push(key);
+    }
+  }
+
+  for (const key of keysToDelete) {
+    const record = relayListingsByKey.get(key);
+    relayListingsByKey.delete(key);
+    if (record) {
+      broadcastRelayRemoved(record.listing);
+    }
+  }
+
+  relayMutationWindows.delete(ownerClientId);
+}
+
+function pruneStaleRelayListings(): void {
+  const nowMs = Date.now();
+  for (const [key, record] of relayListingsByKey.entries()) {
+    if (nowMs - record.listing.updatedAt <= relayListingTtlMs) {
+      continue;
+    }
+
+    relayListingsByKey.delete(key);
+    broadcastRelayRemoved(record.listing);
+  }
+
+  for (const [clientId, windowInfo] of relayMutationWindows.entries()) {
+    if (nowMs - windowInfo.windowStartedAt > relayMutationWindowMs * 3) {
+      relayMutationWindows.delete(clientId);
+    }
+  }
+}
+
+function handleRelayDirectoryAction(
+  client: ClientContext,
+  message: Extract<
+    ClientMessage,
+    {
+      type:
+        | "relay-room-register"
+        | "relay-room-update"
+        | "relay-room-remove"
+        | "relay-room-list-request"
+        | "relay-room-subscribe"
+        | "relay-room-unsubscribe";
+    }
+  >,
+): void {
+  pruneStaleRelayListings();
+
+  if (message.type === "relay-room-subscribe") {
+    client.relayDiscoverySubscribed = true;
+    sendRelaySnapshot(client);
+    return;
+  }
+
+  if (message.type === "relay-room-unsubscribe") {
+    client.relayDiscoverySubscribed = false;
+    return;
+  }
+
+  if (message.type === "relay-room-list-request") {
+    sendRelaySnapshot(client);
+    return;
+  }
+
+  if (isRelayMutationRateLimited(client)) {
+    sendError(client, "relay discovery mutation rate limit exceeded", undefined, "RELAY_RATE_LIMIT");
+    return;
+  }
+
+  if (message.type === "relay-room-remove") {
+    const roomId = message.roomId.trim();
+    if (!roomId || roomId.length > relayMaxRoomIdLength) {
+      sendError(client, "relay room remove requires valid roomId", undefined, "RELAY_BAD_REQUEST");
+      return;
+    }
+
+    const removed = removeRelayListing(client.id, roomId);
+    if (removed) {
+      broadcastRelayRemoved(removed);
+    }
+
+    return;
+  }
+
+  const listing = toValidatedRelayListingInput(message.listing);
+  if (!listing) {
+    sendError(client, "invalid relay room listing payload", undefined, "RELAY_BAD_REQUEST");
+    return;
+  }
+
+  const upsertResult = upsertRelayListing(client.id, listing);
+  if (!upsertResult) {
+    sendError(client, "relay room listing capacity exceeded", undefined, "RELAY_CAPACITY_EXCEEDED");
+    return;
+  }
+
+  broadcastRelayUpsert(upsertResult.listing);
+}
+
+const relayCleanupTimer = setInterval(() => {
+  pruneStaleRelayListings();
+}, relayCleanupIntervalMs);
+
+relayCleanupTimer.unref();
 
 function sendTo(client: ClientContext | undefined, message: ServerMessage): void {
   if (!client || client.socket.readyState !== WebSocket.OPEN) {
@@ -563,6 +909,20 @@ wss.on("connection", (socket) => {
   const client: ClientContext = {
     id: randomUUID(),
     socket,
+    relayDiscoverySubscribed: false,
+  };
+  clientsById.set(client.id, client);
+
+  let disconnected = false;
+  const handleDisconnect = (): void => {
+    if (disconnected) {
+      return;
+    }
+
+    disconnected = true;
+    clientsById.delete(client.id);
+    removeRelayListingsForClient(client.id);
+    leaveRoom(client, "disconnect");
   };
 
   socket.on("message", (data) => {
@@ -594,6 +954,18 @@ wss.on("connection", (socket) => {
         return;
       }
 
+      if (
+        raw.type === "relay-room-register"
+        || raw.type === "relay-room-update"
+        || raw.type === "relay-room-remove"
+        || raw.type === "relay-room-list-request"
+        || raw.type === "relay-room-subscribe"
+        || raw.type === "relay-room-unsubscribe"
+      ) {
+        handleRelayDirectoryAction(client, raw);
+        return;
+      }
+
       sendError(client, "Unsupported message type", undefined, "BAD_REQUEST");
     } catch {
       sendError(client, "Invalid JSON payload", undefined, "BAD_JSON");
@@ -601,11 +973,11 @@ wss.on("connection", (socket) => {
   });
 
   socket.on("close", () => {
-    leaveRoom(client, "disconnect");
+    handleDisconnect();
   });
 
   socket.on("error", () => {
-    leaveRoom(client, "disconnect");
+    handleDisconnect();
   });
 });
 
@@ -613,6 +985,16 @@ httpServer.on("upgrade", (request, socket, head) => {
   wss.handleUpgrade(request, socket, head, (ws) => {
     wss.emit("connection", ws, request);
   });
+});
+
+httpServer.on("error", (error: NodeJS.ErrnoException) => {
+  if (error.code === "EADDRINUSE") {
+    console.error(`Bootstrap signaling server failed: port ${PORT} is already in use.`);
+    process.exit(1);
+  }
+
+  console.error("Failed to start bootstrap signaling server", error);
+  process.exit(1);
 });
 
 httpServer.listen(PORT, () => {

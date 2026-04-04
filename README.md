@@ -88,7 +88,21 @@ npm run install:all
 
 ## Run
 
-### Quick start (client only)
+### Quick start (recommended)
+
+From repository root:
+
+```bash
+npm run dev
+```
+
+This one command:
+
+- Starts the client flow.
+- Checks whether relay server is already reachable at bootstrap URL.
+- Starts local relay server only when needed.
+
+### Client-only flow (advanced)
 
 ```bash
 cd client
@@ -173,7 +187,9 @@ Client supports these (all optional):
 
 ### Root (`package.json`)
 
+- `npm run dev` starts relay-ensure + client in one command.
 - `npm run install:all` installs client and server dependencies.
+- `npm run dev:relay:ensure` checks relay reachability and starts local relay only if needed.
 - `npm run dev:client` starts client dev flow.
 - `npm run dev:server` starts standalone signaling server dev flow.
 - `npm run build` builds client app.

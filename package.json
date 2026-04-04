@@ -3,12 +3,11 @@
   "private": true,
   "version": "0.1.0",
   "scripts": {
+    "dev": "node scripts/dev-all.cjs",
     "install:all": "npm install --prefix client && npm install --prefix server",
+    "dev:relay:ensure": "node scripts/ensure-relay-server.cjs",
     "dev:client": "npm run dev --prefix client",
     "dev:server": "npm run dev --prefix server",
     "build": "npm run build --prefix client"
-  },
-  "dependencies": {
-    "react-sketch-canvas": "^6.2.0"
   }
 }
