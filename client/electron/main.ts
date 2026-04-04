@@ -110,6 +110,8 @@ function createWindow(): void {
     },
   });
 
+  win.maximize();
+
   const devServerUrl = process.env.VITE_DEV_SERVER_URL;
   if (devServerUrl) {
     void win.loadURL(devServerUrl);
