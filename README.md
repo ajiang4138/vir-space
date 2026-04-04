@@ -193,6 +193,39 @@ Client supports these (all optional):
 - `npm run build` compiles server TS to `dist`.
 - `npm run start` runs compiled server.
 
+## Metrics Logging And Analysis
+
+The Electron client now supports local metrics logging for evaluation runs.
+
+- Logs are written under workspace root `.metrics/<run_id>/`.
+- Each peer writes to `peer_<local_peer_file_id>.ndjson`.
+- Open the run folder directly from filesystem at `.metrics/<run_id>/`.
+- Metrics run ID is derived from room ID as `room-<roomId>`.
+
+If you generated logs before this fix, some older runs may be under `client/dist-electron/.metrics/`.
+
+### Analyze A Run
+
+From repository root:
+
+```bash
+npm run analyze:metrics -- room-myroomid
+```
+
+You can also pass a direct directory path:
+
+```bash
+npm run analyze:metrics -- .metrics/room-myroomid
+```
+
+Generated output:
+
+- `.metrics/<run_id>/analysis/room_latency.csv`
+- `.metrics/<run_id>/analysis/transfer_metrics.csv`
+- `.metrics/<run_id>/analysis/workspace_rtt.csv`
+- `.metrics/<run_id>/analysis/resync_metrics.csv`
+- `.metrics/<run_id>/analysis/metrics_summary.json`
+
 ## File And Folder Map
 
 ### Root
