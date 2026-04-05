@@ -326,6 +326,12 @@ export class FileTransferManager {
       reason,
     });
     this.emitState();
+
+    // Remove the offer after a short delay to show the declined status
+    window.setTimeout(() => {
+      this.incomingOffers.delete(transferId);
+      this.emitState();
+    }, 1500);
   }
 
   cancelTransfer(transferId: string, reason = "Cancelled by user"): void {
@@ -820,6 +826,12 @@ export class FileTransferManager {
       session.updatedAt = now();
       this.markFileDownloaded(session.manifest);
       this.emitState();
+
+      // Remove the incoming offer after a short delay to show the completed status
+      window.setTimeout(() => {
+        this.incomingOffers.delete(session.transferId);
+        this.emitState();
+      }, 1500);
     } catch (error) {
       session.status = "failed";
       session.integrityStatus = "mismatch";

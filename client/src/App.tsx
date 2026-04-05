@@ -1,13 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { ChatPanel } from "./components/ChatPanel";
-import { DebugLog } from "./components/DebugLog";
+import { DebugWindow } from "./components/DebugWindow";
 import { FileSharePanel } from "./components/FileSharePanel";
 import { JoinForm } from "./components/JoinForm";
 import { ParticipantList } from "./components/ParticipantList";
 import { RoomInfo } from "./components/RoomInfo";
-import { TransferList } from "./components/TransferList";
-import { WhiteboardPanel } from "./components/WhiteboardPanel";
 import { TextEditorPanel } from "./components/TextEditorPanel";
+import { WhiteboardPanel } from "./components/WhiteboardPanel";
 import {
   FileTransferManager,
   type FileTransferTransport
@@ -26,6 +25,7 @@ import type { FileTransferViewState } from "./types/fileTransfer";
 type RoomIntent = "create" | "join";
 type SetupStep = "user-id" | "mode" | "create" | "join";
 type SignalingConnectionState = "disconnected" | "connecting" | "connected";
+type CenterWorkspace = "chatroom" | "whiteboard" | "editor" | "files";
 
 interface ActiveRoom {
   roomId: string;
@@ -116,6 +116,9 @@ export default function App(): JSX.Element {
   const [bootstrapUrl, setBootstrapUrl] = useState(defaultBootstrapUrl);
   const [signalingState, setSignalingState] = useState<SignalingConnectionState>("disconnected");
   const [webRtcStatus, setWebRtcStatus] = useState<WebRtcStatus>("idle");
+  const [activeWorkspace, setActiveWorkspace] = useState<CenterWorkspace>("chatroom");
+  const [isLeftLaneCollapsed, setIsLeftLaneCollapsed] = useState(false);
+  const [isRightLaneCollapsed, setIsRightLaneCollapsed] = useState(false);
 
   const activeRoomRef = useRef<ActiveRoom | null>(null);
   const currentUserIdRef = useRef("");
@@ -127,6 +130,13 @@ export default function App(): JSX.Element {
   const peerWebRtcManagersRef = useRef<Map<string, WebRtcPeerManager>>(new Map());
   const peerFileManagersRef = useRef<Map<string, FileTransferManager>>(new Map());
   const peerFileStatesRef = useRef<Map<string, FileTransferViewState>>(new Map());
+
+  const collapsedLaneWidth = "44px";
+
+  const chatroomLaneStyle = {
+    ["--left-lane-width" as string]: isLeftLaneCollapsed ? collapsedLaneWidth : "clamp(180px, 14vw, 220px)",
+    ["--right-lane-width" as string]: isRightLaneCollapsed ? collapsedLaneWidth : "clamp(180px, 14vw, 220px)",
+  } as React.CSSProperties;
 
   const addEvent = (text: string): void => {
     setEvents((prev) => [`[${nowLabel()}] ${text}`, ...prev].slice(0, 150));
@@ -379,6 +389,12 @@ export default function App(): JSX.Element {
     bootstrapUrlRef.current = bootstrapUrl;
   }, [bootstrapUrl]);
 
+  useEffect(() => {
+    if (!activeRoom) {
+      setActiveWorkspace("chatroom");
+    }
+  }, [activeRoom]);
+
   const applyRoomState = (
     roomState: RoomStatePayload,
     myPeerId: string,
@@ -615,6 +631,21 @@ export default function App(): JSX.Element {
         if (message.reason === "host-ended") {
           void stopLocalHostService();
         }
+
+        // Add a system message to chat when room is closed
+        if (message.reason === "host-ended" || message.reason === "host-disconnected") {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              author: "System",
+              text: "The host has left the room.",
+              sentAt: nowLabel(),
+              own: false,
+            },
+          ]);
+        }
+
         clearRoomState(message.reason === "host-disconnected" ? "host disconnected" : "room closed by host");
       },
       onServerError: (message) => {
@@ -780,7 +811,17 @@ export default function App(): JSX.Element {
       return;
     }
 
+    const hostIsAlone = room.participants.length <= 1;
     signalingRef.current?.endRoom(room.roomId);
+
+    if (hostIsAlone) {
+      signalingRef.current?.disconnect();
+      void stopLocalHostService();
+      clearRoomState("room closed by host");
+      addEvent("host ended room (solo host)");
+      return;
+    }
+
     addEvent("host requested room shutdown");
   };
 
@@ -849,10 +890,6 @@ export default function App(): JSX.Element {
     findManagerByTransferId(transferId)?.declineIncomingOffer(transferId);
   };
 
-  const cancelTransfer = (transferId: string): void => {
-    findManagerByTransferId(transferId)?.cancelTransfer(transferId);
-  };
-
   const requestDownload = (fileId: string, senderPeerId: string): void => {
     peerFileManagersRef.current.get(senderPeerId)?.requestDownload(fileId, senderPeerId);
   };
@@ -868,8 +905,7 @@ export default function App(): JSX.Element {
       {!inRoom ? (
         <section className="setup-page">
           <header className="app-header card">
-            <h1>Vir Space - Host-Owned Signaling</h1>
-            <p>The room creator listens on a local signaling port; chat messages stay peer-to-peer over WebRTC.</p>
+            <h1>VIR Space</h1>
           </header>
 
           <div className="setup-page-content">
@@ -890,88 +926,191 @@ export default function App(): JSX.Element {
                 onJoinRoom={joinRoom}
               />
             </div>
-            <div className="setup-debug">
-              <DebugLog events={events} />
-            </div>
           </div>
         </section>
       ) : (
-        <section className="chatroom-page">
-          <header className="app-header card">
-            <h1>Vir Space - Chatroom</h1>
-            <p>Signaling uses the host client listener. Chat stays on the existing path and file transfers run peer-to-peer over dedicated RTC channels.</p>
-          </header>
+        <section className="chatroom-page" style={chatroomLaneStyle}>
+          <aside className="left-lane" aria-label="Workspace navigation">
+            <div className={`left-lane-card${isLeftLaneCollapsed ? " collapsed" : ""}`}>
+              <div className="lane-header">
+                <h2 className="lane-title">Menu</h2>
+                <button
+                  type="button"
+                  className="lane-collapse-button"
+                  onClick={() => setIsLeftLaneCollapsed((value) => !value)}
+                  aria-label={isLeftLaneCollapsed ? "Expand Menu lane" : "Collapse Menu lane"}
+                  title={isLeftLaneCollapsed ? "Expand" : "Collapse"}
+                >
+                  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+                    <rect x="4" y="6" width="16" height="2.2" rx="1.1" fill="currentColor" />
+                    <rect x="4" y="11" width="16" height="2.2" rx="1.1" fill="currentColor" />
+                    <rect x="4" y="16" width="16" height="2.2" rx="1.1" fill="currentColor" />
+                  </svg>
+                </button>
+              </div>
+              {!isLeftLaneCollapsed ? (
+                <nav className="left-lane-tabs" aria-label="Workspace tabs">
+                  <button
+                    type="button"
+                    className={`lane-tab${activeWorkspace === "chatroom" ? " active" : ""}`}
+                    onClick={() => setActiveWorkspace("chatroom")}
+                  >
+                    Chatroom
+                  </button>
+                  <button
+                    type="button"
+                    className={`lane-tab${activeWorkspace === "whiteboard" ? " active" : ""}`}
+                    onClick={() => setActiveWorkspace("whiteboard")}
+                  >
+                    Whiteboard
+                  </button>
+                  <button
+                    type="button"
+                    className={`lane-tab${activeWorkspace === "editor" ? " active" : ""}`}
+                    onClick={() => setActiveWorkspace("editor")}
+                  >
+                    Shared Editor
+                  </button>
+                  <button
+                    type="button"
+                    className={`lane-tab${activeWorkspace === "files" ? " active" : ""}`}
+                    onClick={() => setActiveWorkspace("files")}
+                  >
+                    File Sharing
+                  </button>
+                </nav>
+              ) : null}
+            </div>
+          </aside>
 
-          <section className="chatroom-layout">
-            <section className="top-panels">
-              <RoomInfo
-                roomId={activeRoom?.roomId ?? "-"}
-                yourName={activeRoom?.myDisplayName ?? "-"}
-                yourRole={activeRoom?.myRole ?? "guest"}
-                hostDisplayName={activeRoom?.hostDisplayName ?? "-"}
-                bootstrapUrl={bootstrapUrl}
-                signalingStatus={signalingState}
-                webRtcStatus={webRtcStatus}
-                roomStatus={activeRoom?.roomStatus ?? "closed"}
-                inRoom={Boolean(activeRoom)}
-                onLeaveRoom={leaveRoom}
-                onEndRoom={endRoom}
-              />
-              <ParticipantList participants={activeRoom?.participants ?? []} currentPeerId={activeRoom?.myPeerId ?? ""} />
-            </section>
+          <div className="chatroom-main">
+            <section className="chatroom-layout">
+              {activeWorkspace === "chatroom" ? (
+                <ChatPanel
+                  messages={messages}
+                  onSend={sendMessage}
+                />
+              ) : null}
 
-            {activeRoom && signalingRef.current && (
-              <>
-                <section className="whiteboard-row" style={{ height: "500px", width: "100%" }}>
-                  <WhiteboardPanel
-                    roomId={activeRoom.roomId}
-                    displayName={activeRoom.myDisplayName}
-                    onSendUpdate={(data, displayName) => {
-                      const msg = { type: "whiteboard-update", roomId: activeRoom.roomId, senderPeerId: activeRoom.myPeerId, senderDisplayName: displayName, data };
-                      for (const manager of peerWebRtcManagersRef.current.values()) {
-                        manager.sendAppDataMessage(JSON.stringify(msg));
-                      }
-                    }}
+              {activeWorkspace === "whiteboard" ? (
+                activeRoom && signalingRef.current ? (
+                  <section className="workspace-panel whiteboard-row">
+                    <WhiteboardPanel
+                      roomId={activeRoom.roomId}
+                      displayName={activeRoom.myDisplayName}
+                      onSendUpdate={(data, displayName) => {
+                        const msg = { type: "whiteboard-update", roomId: activeRoom.roomId, senderPeerId: activeRoom.myPeerId, senderDisplayName: displayName, data };
+                        for (const manager of peerWebRtcManagersRef.current.values()) {
+                          manager.sendAppDataMessage(JSON.stringify(msg));
+                        }
+                      }}
+                    />
+                  </section>
+                ) : (
+                  <section className="card"><p className="empty">Whiteboard is unavailable until the room connection is ready.</p></section>
+                )
+              ) : null}
+
+              {activeWorkspace === "editor" ? (
+                activeRoom && signalingRef.current ? (
+                  <section className="workspace-panel editor-row">
+                    <TextEditorPanel
+                      roomId={activeRoom.roomId}
+                      displayName={activeRoom.myDisplayName}
+                      onSendUpdate={(data, displayName) => {
+                        const msg = { type: "editor-update", roomId: activeRoom.roomId, senderPeerId: activeRoom.myPeerId, senderDisplayName: displayName, data };
+                        for (const manager of peerWebRtcManagersRef.current.values()) {
+                          manager.sendAppDataMessage(JSON.stringify(msg));
+                        }
+                      }}
+                    />
+                  </section>
+                ) : (
+                  <section className="card"><p className="empty">Shared editor is unavailable until the room connection is ready.</p></section>
+                )
+              ) : null}
+
+              {activeWorkspace === "files" ? (
+                <section className="workspace-panel">
+                  <FileSharePanel
+                    viewState={fileTransfers}
+                    onShareFile={shareFile}
+                    onAcceptOffer={acceptOffer}
+                    onDeclineOffer={declineOffer}
+                    onRequestDownload={requestDownload}
+                    onDownloadAcceptedOffer={downloadAcceptedOffer}
+                    shareDisabled={webRtcStatus !== "connected"}
+                    currentPeerId={activeRoom?.myPeerId}
                   />
                 </section>
-
-                <section className="editor-row" style={{ height: "500px", width: "100%", marginTop: "16px" }}>
-                  <TextEditorPanel
-                    roomId={activeRoom.roomId}
-                    displayName={activeRoom.myDisplayName}
-                    onSendUpdate={(data, displayName) => {
-                      const msg = { type: "editor-update", roomId: activeRoom.roomId, senderPeerId: activeRoom.myPeerId, senderDisplayName: displayName, data };
-                      for (const manager of peerWebRtcManagersRef.current.values()) {
-                        manager.sendAppDataMessage(JSON.stringify(msg));
-                      }
-                    }}
-                  />
-                </section>
-              </>
-            )}
-
-            <section className="file-panels">
-              <FileSharePanel
-                viewState={fileTransfers}
-                onShareFile={shareFile}
-                onAcceptOffer={acceptOffer}
-                onDeclineOffer={declineOffer}
-                onRequestDownload={requestDownload}
-                onDownloadAcceptedOffer={downloadAcceptedOffer}
-                shareDisabled={webRtcStatus !== "connected"}
-                currentPeerId={activeRoom?.myPeerId}
-              />
-              <TransferList transfers={fileTransfers.activeTransfers} onCancelTransfer={cancelTransfer} />
+              ) : null}
             </section>
+          </div>
 
-            <ChatPanel
-              messages={messages}
-              onSend={sendMessage}
-            />
-            <DebugLog events={events} />
-          </section>
+          <aside className={`right-lane${isRightLaneCollapsed ? " collapsed" : ""}`} aria-label="Room menu">
+            <div className="lane-header">
+              <button
+                type="button"
+                className="lane-collapse-button"
+                onClick={() => setIsRightLaneCollapsed((value) => !value)}
+                aria-label={isRightLaneCollapsed ? "Expand Info lane" : "Collapse Info lane"}
+                title={isRightLaneCollapsed ? "Expand" : "Collapse"}
+              >
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+                  <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="2" />
+                  <rect x="11" y="10" width="2" height="8" rx="1" fill="currentColor" />
+                  <rect x="11" y="6" width="2" height="2" rx="1" fill="currentColor" />
+                </svg>
+              </button>
+              <h2 className="lane-title">Info</h2>
+            </div>
+            {!isRightLaneCollapsed ? (
+              <div className="right-lane-content">
+                <details className="menu-section menu-section-collapsible" open>
+                  <summary className="menu-section-title">Room Info</summary>
+                  <RoomInfo
+                    roomId={activeRoom?.roomId ?? "-"}
+                    yourRole={activeRoom?.myRole ?? "guest"}
+                    hostDisplayName={activeRoom?.hostDisplayName ?? "-"}
+                    bootstrapUrl={bootstrapUrl}
+                    inRoom={Boolean(activeRoom)}
+                    compact
+                    showTitle={false}
+                    showActions={false}
+                    onLeaveRoom={leaveRoom}
+                    onEndRoom={endRoom}
+                  />
+                </details>
+
+                <details className="menu-section menu-section-collapsible" open>
+                  <summary className="menu-section-title">Members</summary>
+                  <ParticipantList
+                    participants={activeRoom?.participants ?? []}
+                    currentPeerId={activeRoom?.myPeerId ?? ""}
+                    compact
+                    showTitle={false}
+                  />
+                </details>
+
+                <section className="menu-section room-control-section">
+                  <h3 className="menu-section-title">Room Controls</h3>
+                  {activeRoom?.myRole === "host" ? (
+                    <button type="button" className="danger" onClick={endRoom}>
+                      End Room
+                    </button>
+                  ) : (
+                    <button type="button" onClick={leaveRoom}>
+                      Leave Room
+                    </button>
+                  )}
+                </section>
+              </div>
+            ) : null}
+          </aside>
         </section>
       )}
+
+      <DebugWindow events={events} />
     </main>
   );
 }
