@@ -8,6 +8,8 @@ const runningChildren = new Set();
 let shuttingDown = false;
 const relayPort = 8787;
 const connectTimeoutMs = 350;
+const classBScanWorkerCount = 900;
+const classBScanTimeoutMs = 100;
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -26,6 +28,24 @@ function isIPv4(value) {
     const num = Number.parseInt(part, 10);
     return num >= 0 && num <= 255;
   });
+}
+
+function compareIPv4(left, right) {
+  if (!isIPv4(left) || !isIPv4(right)) {
+    return left.localeCompare(right);
+  }
+
+  const leftParts = left.split(".").map((part) => Number.parseInt(part, 10));
+  const rightParts = right.split(".").map((part) => Number.parseInt(part, 10));
+  for (let i = 0; i < 4; i += 1) {
+    if (leftParts[i] === rightParts[i]) {
+      continue;
+    }
+
+    return leftParts[i] - rightParts[i];
+  }
+
+  return 0;
 }
 
 function getLocalIPv4Addresses() {
@@ -176,9 +196,25 @@ async function scanForRelayHostOnSubnet(localIp, port) {
 async function scanForRelayHostOnClassB(localIp, port) {
   const hosts = buildClassBHosts(localIp);
   return scanHostList(hosts, port, {
-    workerCount: 600,
-    timeoutMs: 140,
+    workerCount: classBScanWorkerCount,
+    timeoutMs: classBScanTimeoutMs,
   });
+}
+
+async function discoverRelayHostLocalOnly(localIps, port) {
+  for (const localIp of localIps) {
+    // eslint-disable-next-line no-await-in-loop
+    const found = await scanForRelayHostOnSubnet(localIp, port);
+    if (found) {
+      return found;
+    }
+  }
+
+  if (await canReachTcp("127.0.0.1", port)) {
+    return "127.0.0.1";
+  }
+
+  return null;
 }
 
 async function discoverRelayHost(localIps, port) {
@@ -262,7 +298,8 @@ function spawnDetachedRelayServer() {
     ...process.env,
     RELAY_IDLE_SHUTDOWN_MS: process.env.RELAY_IDLE_SHUTDOWN_MS || "60000",
   };
-  const relayRunCommand = "npm --prefix server exec tsx src/index.ts";
+  const relayEntryPath = "server/src/index.ts";
+  const relayRunCommand = `npm --prefix server exec tsx ${relayEntryPath}`;
 
   if (process.platform === "win32") {
     const comspec = process.env.ComSpec || "cmd.exe";
@@ -277,7 +314,7 @@ function spawnDetachedRelayServer() {
     return child;
   }
 
-  const child = spawn("npm", ["--prefix", "server", "exec", "tsx", "src/index.ts"], {
+  const child = spawn("npm", ["--prefix", "server", "exec", "tsx", relayEntryPath], {
     cwd: rootDir,
     env: relayEnv,
     detached: true,
@@ -329,6 +366,8 @@ function stopChildren() {
 async function main() {
   const localIps = getLocalIPv4Addresses();
   const preferredLocalIp = localIps[0] || "127.0.0.1";
+  let localRelayCandidate = null;
+  let startedLocalRelay = false;
 
   let bootstrapUrl = "";
   let relayHostForBootstrap = await discoverRelayHost(localIps, relayPort);
@@ -340,7 +379,7 @@ async function main() {
 
   if (!relayHostForBootstrap) {
     await delay(600);
-    relayHostForBootstrap = await discoverRelayHost(localIps, relayPort);
+    relayHostForBootstrap = await discoverRelayHostLocalOnly(localIps, relayPort);
     if (relayHostForBootstrap) {
       bootstrapUrl = `ws://${relayHostForBootstrap}:${relayPort}`;
       console.log(`[dev-all] Found existing relay after retry at ${bootstrapUrl}`);
@@ -349,7 +388,8 @@ async function main() {
 
   if (!relayHostForBootstrap) {
     console.log(`[dev-all] No relay found on subnet; starting local relay on ${preferredLocalIp}:${relayPort}`);
-    spawnDetachedRelayServer();
+    localRelayCandidate = spawnDetachedRelayServer();
+    startedLocalRelay = true;
 
     const localReady = await waitForLocalRelay("127.0.0.1", relayPort);
     if (!localReady) {
@@ -362,6 +402,32 @@ async function main() {
     relayHostForBootstrap = preferredLocalIp;
     bootstrapUrl = `ws://${relayHostForBootstrap}:${relayPort}`;
     console.log(`[dev-all] Local relay ready in background. Bootstrap URL: ${bootstrapUrl}`);
+  }
+
+  if (startedLocalRelay && relayHostForBootstrap) {
+    await delay(900);
+    const discoveredAfterSpawn = await discoverRelayHost(localIps, relayPort);
+    const usableDiscoveredHost = discoveredAfterSpawn && discoveredAfterSpawn !== "127.0.0.1"
+      ? discoveredAfterSpawn
+      : null;
+
+    if (usableDiscoveredHost && usableDiscoveredHost !== relayHostForBootstrap) {
+      const leaderHost = compareIPv4(usableDiscoveredHost, relayHostForBootstrap) < 0
+        ? usableDiscoveredHost
+        : relayHostForBootstrap;
+
+      if (leaderHost !== relayHostForBootstrap) {
+        relayHostForBootstrap = leaderHost;
+        bootstrapUrl = `ws://${relayHostForBootstrap}:${relayPort}`;
+        console.log(`[dev-all] Converged to existing relay leader at ${bootstrapUrl}`);
+
+        if (localRelayCandidate) {
+          terminateChild(localRelayCandidate);
+          localRelayCandidate = null;
+          console.log("[dev-all] Stopped local relay candidate after convergence.");
+        }
+      }
+    }
   }
 
   const clientEnv = {

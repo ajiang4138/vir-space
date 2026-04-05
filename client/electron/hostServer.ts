@@ -279,6 +279,19 @@ export class HostRoomService {
             return;
           }
 
+          if (
+            raw.type === "relay-room-register"
+            || raw.type === "relay-room-update"
+            || raw.type === "relay-room-remove"
+            || raw.type === "relay-room-list-request"
+            || raw.type === "relay-room-subscribe"
+            || raw.type === "relay-room-unsubscribe"
+          ) {
+            // Local host service does not implement relay-directory features.
+            // Ignore these messages so room create/join flows continue working.
+            return;
+          }
+
           this.sendError(client, "Unsupported message type");
         } catch {
           this.sendError(client, "Invalid JSON payload");

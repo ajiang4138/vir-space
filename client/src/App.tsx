@@ -779,9 +779,12 @@ export default function App(): JSX.Element {
           window.clearTimeout(relayReconnectTimerRef.current);
           relayReconnectTimerRef.current = null;
         }
-        signalingRef.current?.subscribeRelayRooms();
 
         const pending = pendingActionRef.current;
+        if (setupStep === "join" || pending?.intent === "join") {
+          signalingRef.current?.subscribeRelayRooms();
+        }
+
         if (!pending) {
           return;
         }
@@ -972,6 +975,11 @@ export default function App(): JSX.Element {
       },
       onServerError: (message) => {
         addEvent(`error: ${message.message}`);
+
+        const normalizedMessage = message.message.trim().toLowerCase();
+        if (!message.code && normalizedMessage === "unsupported message type") {
+          return;
+        }
 
         if (message.code?.startsWith("RELAY_")) {
           return;
