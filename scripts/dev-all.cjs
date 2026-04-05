@@ -83,7 +83,7 @@ function canReachTcp(host, port, timeoutMs = connectTimeoutMs) {
   });
 }
 
-function buildSubnetHosts(ip) {
+function buildClassCHosts(ip) {
   if (!isIPv4(ip)) {
     return [];
   }
@@ -104,15 +104,48 @@ function buildSubnetHosts(ip) {
   return hosts;
 }
 
-async function scanForRelayHostOnSubnet(localIp, port) {
-  const hosts = buildSubnetHosts(localIp);
-  if (hosts.length === 0) {
+function buildClassBHosts(ip) {
+  if (!isIPv4(ip)) {
+    return [];
+  }
+
+  const parts = ip.split(".");
+  const first = parts[0];
+  const second = parts[1];
+  const selfThird = Number.parseInt(parts[2], 10);
+  const selfFourth = Number.parseInt(parts[3], 10);
+
+  const hosts = [];
+  for (let third = 0; third <= 255; third += 1) {
+    for (let fourth = 1; fourth <= 254; fourth += 1) {
+      if (third === selfThird && fourth === selfFourth) {
+        continue;
+      }
+
+      hosts.push(`${first}.${second}.${third}.${fourth}`);
+    }
+  }
+
+  return hosts;
+}
+
+function shouldTryClassBScan(ip) {
+  if (!isIPv4(ip)) {
+    return false;
+  }
+
+  return ip.startsWith("10.") || ip.startsWith("100.") || ip.startsWith("25.");
+}
+
+async function scanHostList(hosts, port, options = {}) {
+  if (!hosts.length) {
     return null;
   }
 
+  const workerCount = options.workerCount ?? 40;
+  const timeoutMs = options.timeoutMs ?? connectTimeoutMs;
   let nextIndex = 0;
   let foundHost = null;
-  const workerCount = 40;
 
   const worker = async () => {
     while (!foundHost && nextIndex < hosts.length) {
@@ -120,7 +153,7 @@ async function scanForRelayHostOnSubnet(localIp, port) {
       nextIndex += 1;
 
       // eslint-disable-next-line no-await-in-loop
-      const reachable = await canReachTcp(host, port);
+      const reachable = await canReachTcp(host, port, timeoutMs);
       if (reachable) {
         foundHost = host;
         return;
@@ -132,10 +165,48 @@ async function scanForRelayHostOnSubnet(localIp, port) {
   return foundHost;
 }
 
+async function scanForRelayHostOnSubnet(localIp, port) {
+  const classCHosts = buildClassCHosts(localIp);
+  return scanHostList(classCHosts, port, {
+    workerCount: 80,
+    timeoutMs: 250,
+  });
+}
+
+async function scanForRelayHostOnClassB(localIp, port) {
+  const hosts = buildClassBHosts(localIp);
+  return scanHostList(hosts, port, {
+    workerCount: 600,
+    timeoutMs: 140,
+  });
+}
+
 async function discoverRelayHost(localIps, port) {
   for (const localIp of localIps) {
     // eslint-disable-next-line no-await-in-loop
     const found = await scanForRelayHostOnSubnet(localIp, port);
+    if (found) {
+      return found;
+    }
+  }
+
+  const scannedClassBPrefixes = new Set();
+  for (const localIp of localIps) {
+    if (!shouldTryClassBScan(localIp)) {
+      continue;
+    }
+
+    const parts = localIp.split(".");
+    const prefix = `${parts[0]}.${parts[1]}`;
+    if (scannedClassBPrefixes.has(prefix)) {
+      continue;
+    }
+
+    scannedClassBPrefixes.add(prefix);
+    console.log(`[dev-all] No relay in local /24 for ${localIp}; scanning broader ${prefix}.0.0/16 ...`);
+
+    // eslint-disable-next-line no-await-in-loop
+    const found = await scanForRelayHostOnClassB(localIp, port);
     if (found) {
       return found;
     }
