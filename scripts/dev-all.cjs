@@ -257,6 +257,36 @@ function spawnNpmCommand(args) {
   });
 }
 
+function spawnDetachedRelayServer() {
+  const relayEnv = {
+    ...process.env,
+    RELAY_IDLE_SHUTDOWN_MS: process.env.RELAY_IDLE_SHUTDOWN_MS || "60000",
+  };
+  const relayRunCommand = "npm --prefix server exec tsx src/index.ts";
+
+  if (process.platform === "win32") {
+    const comspec = process.env.ComSpec || "cmd.exe";
+    const child = spawn(comspec, ["/d", "/s", "/c", relayRunCommand], {
+      cwd: rootDir,
+      env: relayEnv,
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    child.unref();
+    return child;
+  }
+
+  const child = spawn("npm", ["--prefix", "server", "exec", "tsx", "src/index.ts"], {
+    cwd: rootDir,
+    env: relayEnv,
+    detached: true,
+    stdio: "ignore",
+  });
+  child.unref();
+  return child;
+}
+
 function spawnNpmCommandWithEnv(args, env) {
   const npm = buildNpmCommand(args);
   return spawn(npm.command, npm.commandArgs, {
@@ -319,7 +349,7 @@ async function main() {
 
   if (!relayHostForBootstrap) {
     console.log(`[dev-all] No relay found on subnet; starting local relay on ${preferredLocalIp}:${relayPort}`);
-    const relay = track(spawnNpmCommand(["run", "dev:server"]));
+    spawnDetachedRelayServer();
 
     const localReady = await waitForLocalRelay("127.0.0.1", relayPort);
     if (!localReady) {
@@ -331,21 +361,7 @@ async function main() {
 
     relayHostForBootstrap = preferredLocalIp;
     bootstrapUrl = `ws://${relayHostForBootstrap}:${relayPort}`;
-    console.log(`[dev-all] Local relay ready. Bootstrap URL: ${bootstrapUrl}`);
-
-    relay.on("exit", (code, signal) => {
-      if (shuttingDown) {
-        return;
-      }
-
-      if (!signal && code === 0) {
-        return;
-      }
-
-      console.error("[dev-all] Relay server exited unexpectedly.");
-      stopChildren();
-      process.exit(1);
-    });
+    console.log(`[dev-all] Local relay ready in background. Bootstrap URL: ${bootstrapUrl}`);
   }
 
   const clientEnv = {

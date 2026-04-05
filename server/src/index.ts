@@ -202,9 +202,18 @@ const relayMaxRoomIdLength = 80;
 const relayMaxHostDisplayNameLength = 64;
 const relayMaxHostIpLength = 128;
 const relayMaxParticipants = 64;
+const relayIdleShutdownMs = Number(process.env.RELAY_IDLE_SHUTDOWN_MS ?? 0);
+const relayIdleShutdownEnabled = Number.isFinite(relayIdleShutdownMs) && relayIdleShutdownMs > 0;
 
 const relayListingsByKey = new Map<string, RelayRoomListingRecord>();
 const relayMutationWindows = new Map<string, { windowStartedAt: number; count: number }>();
+let lastRelayRoomHeartbeatAt = Date.now();
+let relayIdleShutdownScheduled = false;
+
+function noteRelayRoomHeartbeat(): void {
+  lastRelayRoomHeartbeatAt = Date.now();
+  relayIdleShutdownScheduled = false;
+}
 
 const httpServer = createServer((_req, res) => {
   res.writeHead(200, { "Content-Type": "text/plain" });
@@ -424,6 +433,19 @@ function pruneStaleRelayListings(): void {
       relayMutationWindows.delete(clientId);
     }
   }
+
+  if (
+    relayIdleShutdownEnabled
+    && !relayIdleShutdownScheduled
+    && relayListingsByKey.size === 0
+    && nowMs - lastRelayRoomHeartbeatAt >= relayIdleShutdownMs
+  ) {
+    relayIdleShutdownScheduled = true;
+    console.log(`Relay idle timeout reached (${relayIdleShutdownMs}ms) with no active room heartbeats; shutting down.`);
+    setTimeout(() => {
+      process.exit(0);
+    }, 0);
+  }
 }
 
 function handleRelayDirectoryAction(
@@ -484,6 +506,8 @@ function handleRelayDirectoryAction(
     sendError(client, "invalid relay room listing payload", undefined, "RELAY_BAD_REQUEST");
     return;
   }
+
+  noteRelayRoomHeartbeat();
 
   const upsertResult = upsertRelayListing(client.id, listing);
   if (!upsertResult) {
