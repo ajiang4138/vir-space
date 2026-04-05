@@ -305,10 +305,6 @@ export class FileTransferManager {
       return;
     }
 
-    // Remove the offer when starting the download
-    this.incomingOffers.delete(transferId);
-    this.emitState();
-
     void this.startReceiverSession(offer.manifest, offer.senderDisplayName, transferId).catch((error) => {
       this.callbacks.onEvent(error instanceof Error ? `error: ${error.message}` : "error: failed to start download");
     });
@@ -829,9 +825,13 @@ export class FileTransferManager {
       session.message = `Saved to ${result.savedPath}`;
       session.updatedAt = now();
       this.markFileDownloaded(session.manifest);
-      // Remove the incoming offer after successful download
-      this.incomingOffers.delete(session.transferId);
       this.emitState();
+
+      // Remove the incoming offer after a short delay to show the completed status
+      window.setTimeout(() => {
+        this.incomingOffers.delete(session.transferId);
+        this.emitState();
+      }, 1500);
     } catch (error) {
       session.status = "failed";
       session.integrityStatus = "mismatch";
