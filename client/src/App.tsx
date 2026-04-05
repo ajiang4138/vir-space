@@ -631,6 +631,21 @@ export default function App(): JSX.Element {
         if (message.reason === "host-ended") {
           void stopLocalHostService();
         }
+
+        // Add a system message to chat when room is closed
+        if (message.reason === "host-ended" || message.reason === "host-disconnected") {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              author: "System",
+              text: "The host has left the room.",
+              sentAt: nowLabel(),
+              own: false,
+            },
+          ]);
+        }
+
         clearRoomState(message.reason === "host-disconnected" ? "host disconnected" : "room closed by host");
       },
       onServerError: (message) => {
