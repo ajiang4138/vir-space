@@ -46,9 +46,17 @@ interface PendingAction {
   roomPassword: string;
 }
 
+interface RemoteEditorCursor {
+  peerId: string;
+  displayName: string;
+  cursorOffset: number;
+  updatedAt: number;
+}
+
 const defaultBootstrapUrl = import.meta.env.VITE_BOOTSTRAP_SIGNALING_URL ?? "ws://localhost:8787";
 const defaultHostPort = 8787;
 const minimumRoomPasswordLength = 4;
+const editorCursorStaleMs = 15000;
 
 function nowLabel(): string {
   return new Date().toLocaleTimeString();
@@ -128,6 +136,7 @@ export default function App(): JSX.Element {
   const [activeWorkspace, setActiveWorkspace] = useState<CenterWorkspace>("chatroom");
   const [isLeftLaneCollapsed, setIsLeftLaneCollapsed] = useState(false);
   const [isRightLaneCollapsed, setIsRightLaneCollapsed] = useState(false);
+  const [remoteEditorCursors, setRemoteEditorCursors] = useState<RemoteEditorCursor[]>([]);
 
   const activeRoomRef = useRef<ActiveRoom | null>(null);
   const currentUserIdRef = useRef("");
@@ -141,6 +150,7 @@ export default function App(): JSX.Element {
   const peerFileStatesRef = useRef<Map<string, FileTransferViewState>>(new Map());
   const whiteboardHistoryRef = useRef<Array<{ action: string; data: string; senderPeerId: string; senderDisplayName: string }>>([]);
   const editorCrdtRef = useRef<EditorCrdtManager>(new EditorCrdtManager());
+  const remoteEditorCursorsRef = useRef<Map<string, RemoteEditorCursor>>(new Map());
 
   const collapsedLaneWidth = "44px";
 
@@ -164,6 +174,55 @@ export default function App(): JSX.Element {
 
   const ensureEditorCrdtInitialized = (roomId: string): void => {
     editorCrdtRef.current.init(roomId);
+  };
+
+  const syncRemoteEditorCursorState = (): void => {
+    const now = Date.now();
+    const next = Array.from(remoteEditorCursorsRef.current.values())
+      .filter((cursor) => now - cursor.updatedAt <= editorCursorStaleMs)
+      .sort((left, right) => left.displayName.localeCompare(right.displayName));
+
+    setRemoteEditorCursors(next);
+  };
+
+  const updateRemoteEditorCursor = (
+    peerId: string,
+    displayName: string,
+    cursorOffset: number | null,
+  ): void => {
+    if (cursorOffset === null) {
+      remoteEditorCursorsRef.current.delete(peerId);
+      syncRemoteEditorCursorState();
+      return;
+    }
+
+    remoteEditorCursorsRef.current.set(peerId, {
+      peerId,
+      displayName,
+      cursorOffset: Math.max(0, Math.floor(cursorOffset)),
+      updatedAt: Date.now(),
+    });
+
+    syncRemoteEditorCursorState();
+  };
+
+  const sendEditorCursorUpdate = (cursorOffset: number | null): void => {
+    const room = activeRoomRef.current;
+    if (!room) {
+      return;
+    }
+
+    const message = {
+      type: "editor-crdt-cursor",
+      roomId: room.roomId,
+      senderPeerId: room.myPeerId,
+      senderDisplayName: room.myDisplayName,
+      cursorOffset,
+    };
+
+    for (const manager of peerWebRtcManagersRef.current.values()) {
+      manager.sendAppDataMessage(JSON.stringify(message));
+    }
   };
 
   const sendEditorSyncRequestToPeer = (peerId: string): void => {
@@ -284,6 +343,8 @@ export default function App(): JSX.Element {
     peerFileManagersRef.current.get(peerId)?.resetRoom("peer left");
     peerFileManagersRef.current.delete(peerId);
     peerFileStatesRef.current.delete(peerId);
+    remoteEditorCursorsRef.current.delete(peerId);
+    syncRemoteEditorCursorState();
     negotiatedPeersRef.current.delete(peerId);
     aggregateFileTransferState();
     updateOverallWebRtcStatus();
@@ -300,6 +361,8 @@ export default function App(): JSX.Element {
     peerFileManagersRef.current.clear();
     peerWebRtcManagersRef.current.clear();
     peerFileStatesRef.current.clear();
+    remoteEditorCursorsRef.current.clear();
+    syncRemoteEditorCursorState();
     negotiatedPeersRef.current.clear();
     aggregateFileTransferState();
     updateOverallWebRtcStatus();
@@ -437,6 +500,21 @@ export default function App(): JSX.Element {
                 if (typeof message.updateBase64 === "string" && message.updateBase64.length > 0) {
                   editorCrdtRef.current.applyRemoteUpdate(message.updateBase64);
                 }
+              } else if (message.type === "editor-crdt-cursor") {
+                const senderPeerId = typeof message.senderPeerId === "string" ? message.senderPeerId : remotePeer.peerId;
+                if (senderPeerId === activeRoomRef.current?.myPeerId) {
+                  return;
+                }
+
+                const senderDisplayName = typeof message.senderDisplayName === "string"
+                  ? message.senderDisplayName
+                  : remotePeer.displayName;
+
+                const cursorOffset = typeof message.cursorOffset === "number" && Number.isFinite(message.cursorOffset)
+                  ? message.cursorOffset
+                  : null;
+
+                updateRemoteEditorCursor(senderPeerId, senderDisplayName, cursorOffset);
               } else if (message.type === "editor-update") {
                 applyLegacyEditorSnapshot(message);
               } else if (message.type === "editor-state") {
@@ -516,6 +594,16 @@ export default function App(): JSX.Element {
   useEffect(() => {
     currentUserIdRef.current = currentUserId;
   }, [currentUserId]);
+
+  useEffect(() => {
+    const intervalHandle = window.setInterval(() => {
+      syncRemoteEditorCursorState();
+    }, 4000);
+
+    return () => {
+      window.clearInterval(intervalHandle);
+    };
+  }, []);
 
   useEffect(() => {
     if (!activeRoom) {
@@ -1234,6 +1322,8 @@ export default function App(): JSX.Element {
                       onEditorTextChange={(nextText) => {
                         editorCrdtRef.current.applyLocalText(nextText);
                       }}
+                      onCursorChange={sendEditorCursorUpdate}
+                      remoteCursors={remoteEditorCursors}
                     />
                   </section>
                 ) : (

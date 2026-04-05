@@ -1,17 +1,37 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 interface TextEditorPanelProps {
   editorText: string;
   onEditorTextChange: (nextText: string) => void;
+  onCursorChange: (offset: number | null) => void;
+  remoteCursors: Array<{
+    peerId: string;
+    displayName: string;
+    cursorOffset: number;
+    updatedAt: number;
+  }>;
 }
 
-export function TextEditorPanel({ editorText, onEditorTextChange }: TextEditorPanelProps) {
+interface SelectionSnapshot {
+  hasFocus: boolean;
+  anchorOffset: number;
+  focusOffset: number;
+}
+
+export function TextEditorPanel({
+  editorText,
+  onEditorTextChange,
+  onCursorChange,
+  remoteCursors,
+}: TextEditorPanelProps) {
   const editorRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isConfirmingClear, setIsConfirmingClear] = useState(false);
   const [formatState, setFormatState] = useState({ bold: false, italic: false, underline: false });
   const isApplyingRemoteRef = useRef(false);
   const inputDebounceRef = useRef<number | null>(null);
+  const cursorDebounceRef = useRef<number | null>(null);
+  const lastSentCursorOffsetRef = useRef<number | null>(null);
 
   const updateFormatState = () => {
     setFormatState({
@@ -21,46 +41,121 @@ export function TextEditorPanel({ editorText, onEditorTextChange }: TextEditorPa
     });
   };
 
-  const getSelectionOffset = (root: HTMLElement): { hasFocus: boolean; offset: number } => {
-    const selection = window.getSelection();
-    if (!selection || selection.rangeCount === 0 || !root.contains(selection.anchorNode)) {
-      return { hasFocus: false, offset: 0 };
+  const computeDiffRange = (
+    previousText: string,
+    nextText: string,
+  ): { prefixLength: number; previousReplaceEnd: number; nextReplaceEnd: number } => {
+    let prefixLength = 0;
+
+    while (
+      prefixLength < previousText.length &&
+      prefixLength < nextText.length &&
+      previousText.charCodeAt(prefixLength) === nextText.charCodeAt(prefixLength)
+    ) {
+      prefixLength += 1;
     }
 
-    const range = selection.getRangeAt(0);
-    const beforeRange = range.cloneRange();
-    beforeRange.selectNodeContents(root);
-    beforeRange.setEnd(range.startContainer, range.startOffset);
-    return { hasFocus: true, offset: beforeRange.toString().length };
+    let suffixLength = 0;
+    const maxSuffixLength = Math.min(previousText.length - prefixLength, nextText.length - prefixLength);
+
+    while (
+      suffixLength < maxSuffixLength &&
+      previousText.charCodeAt(previousText.length - 1 - suffixLength) === nextText.charCodeAt(nextText.length - 1 - suffixLength)
+    ) {
+      suffixLength += 1;
+    }
+
+    return {
+      prefixLength,
+      previousReplaceEnd: previousText.length - suffixLength,
+      nextReplaceEnd: nextText.length - suffixLength,
+    };
   };
 
-  const restoreSelectionOffset = (root: HTMLElement, offset: number): void => {
-    const selection = window.getSelection();
-    if (!selection) {
-      return;
+  const mapOffsetThroughTextChange = (previousText: string, nextText: string, previousOffset: number): number => {
+    const clampedOffset = Math.max(0, Math.min(previousOffset, previousText.length));
+    const { prefixLength, previousReplaceEnd, nextReplaceEnd } = computeDiffRange(previousText, nextText);
+
+    if (clampedOffset <= prefixLength) {
+      return clampedOffset;
     }
 
+    if (clampedOffset >= previousReplaceEnd) {
+      const delta = nextReplaceEnd - previousReplaceEnd;
+      return Math.max(0, Math.min(clampedOffset + delta, nextText.length));
+    }
+
+    return nextReplaceEnd;
+  };
+
+  const getNodeOffset = (root: HTMLElement, container: Node, nodeOffset: number): number => {
+    const range = document.createRange();
+    range.selectNodeContents(root);
+    range.setEnd(container, nodeOffset);
+    return range.toString().length;
+  };
+
+  const findNodeAtOffset = (root: HTMLElement, offset: number): { node: Node; offset: number } => {
+    const normalizedOffset = Math.max(0, offset);
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
     let traversed = 0;
+
     while (walker.nextNode()) {
       const node = walker.currentNode;
       const length = node.nodeValue?.length ?? 0;
-      if (traversed + length >= offset) {
-        const nodeOffset = offset - traversed;
-        const range = document.createRange();
-        range.setStart(node, nodeOffset);
-        range.collapse(true);
-        selection.removeAllRanges();
-        selection.addRange(range);
-        return;
+      if (traversed + length >= normalizedOffset) {
+        return {
+          node,
+          offset: normalizedOffset - traversed,
+        };
       }
       traversed += length;
     }
 
-    const range = document.createRange();
-    range.selectNodeContents(root);
-    range.collapse(false);
+    return {
+      node: root,
+      offset: root.childNodes.length,
+    };
+  };
+
+  const getSelectionSnapshot = (root: HTMLElement): SelectionSnapshot => {
+    const selection = window.getSelection();
+    if (
+      !selection ||
+      selection.rangeCount === 0 ||
+      !selection.anchorNode ||
+      !selection.focusNode ||
+      !root.contains(selection.anchorNode) ||
+      !root.contains(selection.focusNode)
+    ) {
+      return { hasFocus: false, anchorOffset: 0, focusOffset: 0 };
+    }
+
+    return {
+      hasFocus: true,
+      anchorOffset: getNodeOffset(root, selection.anchorNode, selection.anchorOffset),
+      focusOffset: getNodeOffset(root, selection.focusNode, selection.focusOffset),
+    };
+  };
+
+  const restoreSelectionSnapshot = (root: HTMLElement, snapshot: SelectionSnapshot): void => {
+    const selection = window.getSelection();
+    if (!selection || !snapshot.hasFocus) {
+      return;
+    }
+
+    const anchor = findNodeAtOffset(root, snapshot.anchorOffset);
+    const focus = findNodeAtOffset(root, snapshot.focusOffset);
     selection.removeAllRanges();
+
+    if (typeof selection.setBaseAndExtent === "function") {
+      selection.setBaseAndExtent(anchor.node, anchor.offset, focus.node, focus.offset);
+      return;
+    }
+
+    const range = document.createRange();
+    range.setStart(anchor.node, anchor.offset);
+    range.setEnd(focus.node, focus.offset);
     selection.addRange(range);
   };
 
@@ -85,8 +180,41 @@ export function TextEditorPanel({ editorText, onEditorTextChange }: TextEditorPa
       if (inputDebounceRef.current !== null) {
         window.clearTimeout(inputDebounceRef.current);
       }
+
+      if (cursorDebounceRef.current !== null) {
+        window.clearTimeout(cursorDebounceRef.current);
+      }
     };
   }, []);
+
+  const getCaretOffset = (root: HTMLElement): number | null => {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || !selection.focusNode || !root.contains(selection.focusNode)) {
+      return null;
+    }
+
+    return getNodeOffset(root, selection.focusNode, selection.focusOffset);
+  };
+
+  const sendCursorChange = (offset: number | null): void => {
+    if (lastSentCursorOffsetRef.current === offset) {
+      return;
+    }
+
+    lastSentCursorOffsetRef.current = offset;
+    onCursorChange(offset);
+  };
+
+  const scheduleCursorUpdate = (): void => {
+    if (cursorDebounceRef.current !== null) {
+      window.clearTimeout(cursorDebounceRef.current);
+    }
+
+    cursorDebounceRef.current = window.setTimeout(() => {
+      cursorDebounceRef.current = null;
+      sendCursorChange(editorRef.current ? getCaretOffset(editorRef.current) : null);
+    }, 60);
+  };
 
   const handleInput = () => {
     updateFormatState();
@@ -94,6 +222,7 @@ export function TextEditorPanel({ editorText, onEditorTextChange }: TextEditorPa
       return;
     }
     scheduleEditorTextFlush();
+    scheduleCursorUpdate();
   };
 
   useEffect(() => {
@@ -102,17 +231,24 @@ export function TextEditorPanel({ editorText, onEditorTextChange }: TextEditorPa
     }
 
     const nextText = editorText ?? "";
-    if (editorRef.current.innerText === nextText) {
+    const previousText = editorRef.current.innerText;
+    if (previousText === nextText) {
       return;
     }
 
-    const { hasFocus, offset } = getSelectionOffset(editorRef.current);
+    const previousSelection = getSelectionSnapshot(editorRef.current);
     isApplyingRemoteRef.current = true;
     editorRef.current.textContent = nextText;
     isApplyingRemoteRef.current = false;
 
-    if (hasFocus) {
-      restoreSelectionOffset(editorRef.current, Math.min(offset, nextText.length));
+    if (previousSelection.hasFocus) {
+      restoreSelectionSnapshot(editorRef.current, {
+        hasFocus: true,
+        anchorOffset: mapOffsetThroughTextChange(previousText, nextText, previousSelection.anchorOffset),
+        focusOffset: mapOffsetThroughTextChange(previousText, nextText, previousSelection.focusOffset),
+      });
+
+      scheduleCursorUpdate();
     }
   }, [editorText]);
 
@@ -127,6 +263,29 @@ export function TextEditorPanel({ editorText, onEditorTextChange }: TextEditorPa
     } else if (e.key === "Enter") {
       // let default take over
     }
+  };
+
+  const handleKeyUp = (): void => {
+    updateFormatState();
+    scheduleCursorUpdate();
+  };
+
+  const handleMouseUp = (): void => {
+    updateFormatState();
+    scheduleCursorUpdate();
+  };
+
+  const handleEditorFocus = (): void => {
+    scheduleCursorUpdate();
+  };
+
+  const handleEditorBlur = (): void => {
+    if (cursorDebounceRef.current !== null) {
+      window.clearTimeout(cursorDebounceRef.current);
+      cursorDebounceRef.current = null;
+    }
+
+    sendCursorChange(null);
   };
 
   const applyFormat = (command: string) => {
@@ -169,6 +328,35 @@ export function TextEditorPanel({ editorText, onEditorTextChange }: TextEditorPa
     }
   };
 
+  const remoteCursorSummary = useMemo(() => {
+    const text = editorText ?? "";
+
+    const offsetToLineColumn = (offset: number): { line: number; column: number } => {
+      const clampedOffset = Math.max(0, Math.min(offset, text.length));
+      let line = 1;
+      let column = 1;
+
+      for (let index = 0; index < clampedOffset; index += 1) {
+        if (text.charCodeAt(index) === 10) {
+          line += 1;
+          column = 1;
+        } else {
+          column += 1;
+        }
+      }
+
+      return { line, column };
+    };
+
+    return remoteCursors
+      .slice()
+      .sort((left, right) => left.displayName.localeCompare(right.displayName))
+      .map((cursor) => ({
+        ...cursor,
+        ...offsetToLineColumn(cursor.cursorOffset),
+      }));
+  }, [editorText, remoteCursors]);
+
   return (
     <div 
       className="card" 
@@ -190,7 +378,33 @@ export function TextEditorPanel({ editorText, onEditorTextChange }: TextEditorPa
       }}
     >
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "16px", borderBottom: "1px solid #eee", paddingBottom: "12px" }}>
-        <h2 style={{ margin: 0, fontSize: "1.1rem", whiteSpace: "nowrap" }}>Shared Text Editor</h2>
+        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+          <h2 style={{ margin: 0, fontSize: "1.1rem", whiteSpace: "nowrap" }}>Shared Text Editor</h2>
+          {remoteCursorSummary.length > 0 ? (
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+              {remoteCursorSummary.map((cursor) => (
+                <span
+                  key={cursor.peerId}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    fontSize: "0.78rem",
+                    padding: "4px 8px",
+                    borderRadius: "999px",
+                    background: "#f0f9ff",
+                    color: "#0f172a",
+                    border: "1px solid #bfdbfe",
+                  }}
+                  title={`Cursor at line ${cursor.line}, column ${cursor.column}`}
+                >
+                  <span style={{ width: "7px", height: "7px", borderRadius: "999px", background: "#0369a1" }} />
+                  {cursor.displayName}: L{cursor.line}, C{cursor.column}
+                </span>
+              ))}
+            </div>
+          ) : null}
+        </div>
         
         <div style={{ display: "flex", gap: "24px", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
           {/* Tools Group */}
@@ -260,8 +474,10 @@ export function TextEditorPanel({ editorText, onEditorTextChange }: TextEditorPa
           contentEditable
           onInput={handleInput}
           onKeyDown={handleKeyDown}
-          onKeyUp={updateFormatState}
-          onMouseUp={updateFormatState}
+          onKeyUp={handleKeyUp}
+          onMouseUp={handleMouseUp}
+          onFocus={handleEditorFocus}
+          onBlur={handleEditorBlur}
           style={{
             flex: 1,
             padding: "16px",
