@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ReactSketchCanvas, ReactSketchCanvasRef } from "react-sketch-canvas";
 
 interface WhiteboardPanelProps {
