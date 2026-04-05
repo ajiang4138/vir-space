@@ -9,6 +9,8 @@ import type {
 import { sha256Hex } from "./hash";
 import { PieceScheduler } from "./pieceScheduler";
 import {
+    DEFAULT_MAX_INFLIGHT_REQUESTS,
+    DEFAULT_PIECE_REQUEST_TIMEOUT_MS,
     DEFAULT_PIECE_SIZE,
     base64ToBitfield,
     bitfieldToBase64,
@@ -98,6 +100,8 @@ interface ReceiverSession {
   completionStartedAt?: number;
   requestTimer: number | null;
   remoteAvailabilityReceived: boolean;
+  maxInflightPieces: number;
+  successfulPiecesSinceAdjust: number;
 }
 
 interface LocalSharedFileRecord {
@@ -119,8 +123,16 @@ interface DownloadHistoryEntry {
 
 type TransferSession = SenderSession | ReceiverSession;
 
+const MIN_ADAPTIVE_INFLIGHT_PIECES = 1;
+const MAX_ADAPTIVE_INFLIGHT_PIECES = 8;
+const SUCCESSFUL_PIECES_PER_WINDOW_STEP = 6;
+
 function now(): number {
   return Date.now();
+}
+
+function isSaveCancelledError(error: unknown): boolean {
+  return error instanceof Error && error.message === "Save cancelled";
 }
 
 function emptyViewState(): FileTransferViewState {
@@ -517,6 +529,7 @@ export class FileTransferManager {
     }
 
     receiver.scheduler.markVerified(pieceIndex);
+    this.tuneReceiverWindowOnSuccess(receiver);
     receiver.receivedBitfield[Math.floor(pieceIndex / 8)] |= 1 << (pieceIndex % 8);
     receiver.transferredBytes += frame.payload.byteLength;
     receiver.completedPieces = receiver.scheduler.getCompletedCount();
@@ -541,6 +554,11 @@ export class FileTransferManager {
       return;
     }
 
+    const initialInflightPieces = Math.max(
+      MIN_ADAPTIVE_INFLIGHT_PIECES,
+      Math.min(DEFAULT_MAX_INFLIGHT_REQUESTS, MAX_ADAPTIVE_INFLIGHT_PIECES),
+    );
+
     const handle = await this.bridge.createReceiverTransfer(manifest);
     const session: ReceiverSession = {
       role: "receiver",
@@ -558,15 +576,18 @@ export class FileTransferManager {
       inFlightPieces: 0,
       completedPieces: 0,
       speedBytesPerSecond: 0,
-      scheduler: new PieceScheduler(manifest.pieceCount, 1, 12_000),
+      scheduler: new PieceScheduler(manifest.pieceCount, initialInflightPieces, DEFAULT_PIECE_REQUEST_TIMEOUT_MS),
       receivedBitfield: createBitfield(manifest.pieceCount),
       receiverTransferId: handle.transferId,
       finalizeRequested: false,
+      maxInflightPieces: initialInflightPieces,
+      successfulPiecesSinceAdjust: 0,
       requestTimer: window.setInterval(() => {
         const active = this.sessions.get(transferId);
         if (active && active.role === "receiver") {
           const timedOut = active.scheduler.consumeTimedOutPieces(now());
           if (timedOut.length > 0) {
+            this.tuneReceiverWindowOnTimeout(active, timedOut.length);
             active.status = "retrying";
             active.message = `Retrying ${timedOut.length} timed out piece(s)`;
             active.updatedAt = now();
@@ -833,6 +854,24 @@ export class FileTransferManager {
         this.emitState();
       }, 1500);
     } catch (error) {
+      if (isSaveCancelledError(error)) {
+        session.status = "cancelled";
+        session.integrityStatus = "pending";
+        session.message = "Save cancelled";
+        session.updatedAt = now();
+
+        if (session.receiverTransferId) {
+          await this.bridge.cancelReceiverTransfer(session.receiverTransferId).catch(() => undefined);
+        }
+
+        this.emitState();
+        window.setTimeout(() => {
+          this.incomingOffers.delete(session.transferId);
+          this.emitState();
+        }, 250);
+        return;
+      }
+
       session.status = "failed";
       session.integrityStatus = "mismatch";
       session.message = error instanceof Error ? error.message : "Failed to save received file";
@@ -896,6 +935,40 @@ export class FileTransferManager {
     session.speedBytesPerSecond = this.calculateSpeed(session.transferredBytes, session.createdAt);
     session.updatedAt = now();
     this.emitState();
+  }
+
+  private tuneReceiverWindowOnTimeout(session: ReceiverSession, timedOutCount: number): void {
+    session.successfulPiecesSinceAdjust = 0;
+    const nextWindow = Math.max(MIN_ADAPTIVE_INFLIGHT_PIECES, Math.floor(session.maxInflightPieces / 2));
+
+    if (nextWindow === session.maxInflightPieces) {
+      return;
+    }
+
+    session.maxInflightPieces = nextWindow;
+    session.scheduler.setMaxInflightPieces(nextWindow);
+    this.callbacks.onEvent(
+      `adaptive download window reduced to ${nextWindow} after ${timedOutCount} timeout${timedOutCount === 1 ? "" : "s"}`,
+    );
+  }
+
+  private tuneReceiverWindowOnSuccess(session: ReceiverSession): void {
+    session.successfulPiecesSinceAdjust += 1;
+
+    const threshold = Math.max(SUCCESSFUL_PIECES_PER_WINDOW_STEP, session.maxInflightPieces);
+    if (session.successfulPiecesSinceAdjust < threshold) {
+      return;
+    }
+
+    session.successfulPiecesSinceAdjust = 0;
+    const nextWindow = Math.min(MAX_ADAPTIVE_INFLIGHT_PIECES, session.maxInflightPieces + 1);
+    if (nextWindow === session.maxInflightPieces) {
+      return;
+    }
+
+    session.maxInflightPieces = nextWindow;
+    session.scheduler.setMaxInflightPieces(nextWindow);
+    this.callbacks.onEvent(`adaptive download window increased to ${nextWindow}`);
   }
 
   private calculateSpeed(bytesTransferred: number, startedAt: number): number {

@@ -9,17 +9,23 @@ interface SchedulerEntry {
 export class PieceScheduler {
   private readonly entries: SchedulerEntry[];
   private availability: Uint8Array | null = null;
+  private maxInflightPieces: number;
 
   constructor(
     private readonly pieceCount: number,
-    private readonly maxInflightPieces: number,
+    maxInflightPieces: number,
     private readonly retryTimeoutMs: number,
   ) {
+    this.maxInflightPieces = Math.max(1, Math.floor(maxInflightPieces));
     this.entries = Array.from({ length: pieceCount }, () => ({
       state: "pending",
       requestedAt: null,
       attemptCount: 0,
     }));
+  }
+
+  setMaxInflightPieces(maxInflightPieces: number): void {
+    this.maxInflightPieces = Math.max(1, Math.floor(maxInflightPieces));
   }
 
   setAvailability(bitfield: Uint8Array): void {
