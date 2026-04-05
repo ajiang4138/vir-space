@@ -4,9 +4,10 @@ interface TextEditorPanelProps {
   roomId: string;
   onSendUpdate: (data: string, displayName: string) => void;
   displayName: string;
+  editorHtml?: string;
 }
 
-export function TextEditorPanel({ roomId, onSendUpdate, displayName }: TextEditorPanelProps) {
+export function TextEditorPanel({ roomId, onSendUpdate, displayName, editorHtml }: TextEditorPanelProps) {
   const editorRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isConfirmingClear, setIsConfirmingClear] = useState(false);
@@ -125,6 +126,21 @@ export function TextEditorPanel({ roomId, onSendUpdate, displayName }: TextEdito
       document.removeEventListener("editor-update", handleEditorUpdateEvent);
     };
   }, []);
+
+  useEffect(() => {
+    if (!editorRef.current) {
+      return;
+    }
+
+    const nextHtml = editorHtml ?? "";
+    if (editorRef.current.innerHTML === nextHtml) {
+      return;
+    }
+
+    isUpdatingRef.current = true;
+    editorRef.current.innerHTML = nextHtml;
+    isUpdatingRef.current = false;
+  }, [editorHtml]);
 
   const toggleFullscreen = () => {
     setIsFullscreen((prev) => !prev);

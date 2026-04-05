@@ -5,9 +5,10 @@ interface WhiteboardPanelProps {
   roomId: string;
   onSendUpdate: (data: string, displayName: string) => void;
   displayName: string;
+  whiteboardHistory?: Array<{ action: string; data: string; senderPeerId: string; senderDisplayName: string }>;
 }
 
-export function WhiteboardPanel({ roomId, onSendUpdate, displayName }: WhiteboardPanelProps) {
+export function WhiteboardPanel({ roomId, onSendUpdate, displayName, whiteboardHistory }: WhiteboardPanelProps) {
   const canvasRef = useRef<ReactSketchCanvasRef>(null);
   const [penColor, setPenColor] = useState("#000000");
   const [highlighterColor, setHighlighterColor] = useState("#ffff00");
@@ -105,6 +106,48 @@ export function WhiteboardPanel({ roomId, onSendUpdate, displayName }: Whiteboar
       document.removeEventListener("whiteboard-update", handleWhiteboardUpdate);
     };
   }, []);
+
+  // Replay whiteboard history when component mounts or history changes
+  useEffect(() => {
+    if (!whiteboardHistory || whiteboardHistory.length === 0 || !canvasRef.current) {
+      return;
+    }
+
+    const replayHistory = async () => {
+      isUpdatingRef.current = true;
+      try {
+        for (const update of whiteboardHistory) {
+          const parsedData = JSON.parse(update.data);
+          if (parsedData.action === "stroke") {
+            try {
+              await canvasRef.current?.loadPaths([parsedData.path]);
+              lastReceivedPathRef.current = JSON.stringify(parsedData.path);
+            } catch (err) {
+              console.error("Failed to replay stroke", err);
+            }
+          } else if (parsedData.action === "paths") {
+            try {
+              await canvasRef.current?.loadPaths(parsedData.paths);
+              lastReceivedPathRef.current = JSON.stringify(parsedData.paths);
+            } catch (err) {
+              console.error("Failed to replay paths", err);
+            }
+          } else if (parsedData.action === "clear") {
+            try {
+              canvasRef.current?.clearCanvas();
+              lastReceivedPathRef.current = null;
+            } catch (err) {
+              console.error("Failed to replay clear", err);
+            }
+          }
+        }
+      } finally {
+        isUpdatingRef.current = false;
+      }
+    };
+
+    void replayHistory();
+  }, [whiteboardHistory]);
 
   const handleClear = () => {
     setIsConfirmingClear(true);
