@@ -1,4 +1,5 @@
 const { spawn, spawnSync } = require("node:child_process");
+const fs = require("node:fs");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
@@ -10,6 +11,9 @@ const relayPort = 8787;
 const connectTimeoutMs = 350;
 const classBScanWorkerCount = 900;
 const classBScanTimeoutMs = 100;
+const classBScanMaxDurationMs = 3500;
+const relayCacheFilePath = path.join(rootDir, ".relay-bootstrap-cache.json");
+const relayCacheMaxAgeMs = 24 * 60 * 60 * 1000;
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -78,6 +82,49 @@ function getLocalIPv4Addresses() {
   });
 
   return unique;
+}
+
+function readRelayHostCache() {
+  try {
+    if (!fs.existsSync(relayCacheFilePath)) {
+      return null;
+    }
+
+    const raw = fs.readFileSync(relayCacheFilePath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") {
+      return null;
+    }
+
+    const host = typeof parsed.host === "string" ? parsed.host.trim() : "";
+    const savedAt = typeof parsed.savedAt === "number" ? parsed.savedAt : 0;
+    if (!host || !isIPv4(host) || !Number.isFinite(savedAt)) {
+      return null;
+    }
+
+    if (Date.now() - savedAt > relayCacheMaxAgeMs) {
+      return null;
+    }
+
+    return host;
+  } catch {
+    return null;
+  }
+}
+
+function writeRelayHostCache(host) {
+  if (!host || !isIPv4(host)) {
+    return;
+  }
+
+  try {
+    fs.writeFileSync(relayCacheFilePath, JSON.stringify({
+      host,
+      savedAt: Date.now(),
+    }), "utf8");
+  } catch {
+    // Best-effort cache write.
+  }
 }
 
 function canReachTcp(host, port, timeoutMs = connectTimeoutMs) {
@@ -164,11 +211,17 @@ async function scanHostList(hosts, port, options = {}) {
 
   const workerCount = options.workerCount ?? 40;
   const timeoutMs = options.timeoutMs ?? connectTimeoutMs;
+  const maxDurationMs = options.maxDurationMs ?? 0;
+  const deadline = maxDurationMs > 0 ? Date.now() + maxDurationMs : 0;
   let nextIndex = 0;
   let foundHost = null;
 
   const worker = async () => {
     while (!foundHost && nextIndex < hosts.length) {
+      if (deadline && Date.now() >= deadline) {
+        return;
+      }
+
       const host = hosts[nextIndex];
       nextIndex += 1;
 
@@ -198,10 +251,19 @@ async function scanForRelayHostOnClassB(localIp, port) {
   return scanHostList(hosts, port, {
     workerCount: classBScanWorkerCount,
     timeoutMs: classBScanTimeoutMs,
+    maxDurationMs: classBScanMaxDurationMs,
   });
 }
 
 async function discoverRelayHostLocalOnly(localIps, port) {
+  for (const localIp of localIps) {
+    // eslint-disable-next-line no-await-in-loop
+    const selfReachable = await canReachTcp(localIp, port, 220);
+    if (selfReachable) {
+      return localIp;
+    }
+  }
+
   for (const localIp of localIps) {
     // eslint-disable-next-line no-await-in-loop
     const found = await scanForRelayHostOnSubnet(localIp, port);
@@ -214,6 +276,14 @@ async function discoverRelayHostLocalOnly(localIps, port) {
 }
 
 async function discoverRelayHost(localIps, port) {
+  for (const localIp of localIps) {
+    // eslint-disable-next-line no-await-in-loop
+    const selfReachable = await canReachTcp(localIp, port, 220);
+    if (selfReachable) {
+      return localIp;
+    }
+  }
+
   for (const localIp of localIps) {
     // eslint-disable-next-line no-await-in-loop
     const found = await scanForRelayHostOnSubnet(localIp, port);
@@ -291,27 +361,32 @@ function spawnDetachedRelayServer() {
     RELAY_IDLE_SHUTDOWN_MS: process.env.RELAY_IDLE_SHUTDOWN_MS || "60000",
   };
   const relayEntryPath = "server/src/index.ts";
-  const relayRunCommand = `npm --prefix server exec tsx ${relayEntryPath}`;
-
-  if (process.platform === "win32") {
-    const comspec = process.env.ComSpec || "cmd.exe";
-    const child = spawn(comspec, ["/d", "/s", "/c", relayRunCommand], {
-      cwd: rootDir,
-      env: relayEnv,
-      detached: true,
-      stdio: "ignore",
-      windowsHide: true,
-    });
-    child.unref();
-    return child;
-  }
-
-  const child = spawn("npm", ["--prefix", "server", "exec", "tsx", relayEntryPath], {
+  const detachedOptions = {
     cwd: rootDir,
     env: relayEnv,
     detached: true,
     stdio: "ignore",
-  });
+    windowsHide: true,
+  };
+
+  // Prefer direct node + tsx cli invocation to avoid spawning an extra cmd.exe window.
+  const tsxCliPath = path.join(rootDir, "server", "node_modules", "tsx", "dist", "cli.mjs");
+  if (fs.existsSync(tsxCliPath)) {
+    const child = spawn(process.execPath, [tsxCliPath, relayEntryPath], detachedOptions);
+    child.unref();
+    return child;
+  }
+
+  // Fallback to npm-cli.js directly (still avoids cmd.exe as an intermediate process).
+  const npmExecPath = process.env.npm_execpath;
+  if (npmExecPath && fs.existsSync(npmExecPath)) {
+    const child = spawn(process.execPath, [npmExecPath, "--prefix", "server", "exec", "tsx", relayEntryPath], detachedOptions);
+    child.unref();
+    return child;
+  }
+
+  const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+  const child = spawn(npmCommand, ["--prefix", "server", "exec", "tsx", relayEntryPath], detachedOptions);
   child.unref();
   return child;
 }
@@ -367,11 +442,33 @@ async function main() {
   let startedLocalRelay = false;
 
   let bootstrapUrl = "";
-  let relayHostForBootstrap = await discoverRelayHost(localIps, relayPort);
+  let relayHostForBootstrap = null;
+
+  const cachedRelayHost = readRelayHostCache();
+  if (cachedRelayHost) {
+    const cachedReachable = await canReachTcp(cachedRelayHost, relayPort, 220);
+    if (cachedReachable) {
+      relayHostForBootstrap = cachedRelayHost;
+      console.log(`[dev-all] Found cached relay at ws://${relayHostForBootstrap}:${relayPort}`);
+    }
+  }
+
+  if (!relayHostForBootstrap) {
+    const loopbackReachable = await canReachTcp("127.0.0.1", relayPort, 200);
+    if (loopbackReachable) {
+      relayHostForBootstrap = preferredLocalIp;
+      console.log(`[dev-all] Found existing local relay at ws://${relayHostForBootstrap}:${relayPort}`);
+    }
+  }
+
+  if (!relayHostForBootstrap) {
+    relayHostForBootstrap = await discoverRelayHost(localIps, relayPort);
+  }
 
   if (relayHostForBootstrap) {
     bootstrapUrl = `ws://${relayHostForBootstrap}:${relayPort}`;
     console.log(`[dev-all] Found existing relay at ${bootstrapUrl}`);
+    writeRelayHostCache(relayHostForBootstrap);
   }
 
   if (!relayHostForBootstrap) {
@@ -380,6 +477,7 @@ async function main() {
     if (relayHostForBootstrap) {
       bootstrapUrl = `ws://${relayHostForBootstrap}:${relayPort}`;
       console.log(`[dev-all] Found existing relay after retry at ${bootstrapUrl}`);
+      writeRelayHostCache(relayHostForBootstrap);
     }
   }
 
@@ -399,11 +497,12 @@ async function main() {
     relayHostForBootstrap = preferredLocalIp;
     bootstrapUrl = `ws://${relayHostForBootstrap}:${relayPort}`;
     console.log(`[dev-all] Local relay ready in background. Bootstrap URL: ${bootstrapUrl}`);
+    writeRelayHostCache(relayHostForBootstrap);
   }
 
   if (startedLocalRelay && relayHostForBootstrap) {
-    await delay(900);
-    const discoveredAfterSpawn = await discoverRelayHost(localIps, relayPort);
+    await delay(400);
+    const discoveredAfterSpawn = await discoverRelayHostLocalOnly(localIps, relayPort);
     const usableDiscoveredHost = discoveredAfterSpawn;
 
     if (usableDiscoveredHost && usableDiscoveredHost !== relayHostForBootstrap) {
