@@ -1,17 +1,17 @@
-import React, { useRef, useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 
 interface TextEditorPanelProps {
-  roomId: string;
-  onSendUpdate: (data: string, displayName: string) => void;
-  displayName: string;
+  editorText: string;
+  onEditorTextChange: (nextText: string) => void;
 }
 
-export function TextEditorPanel({ roomId, onSendUpdate, displayName }: TextEditorPanelProps) {
+export function TextEditorPanel({ editorText, onEditorTextChange }: TextEditorPanelProps) {
   const editorRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isConfirmingClear, setIsConfirmingClear] = useState(false);
   const [formatState, setFormatState] = useState({ bold: false, italic: false, underline: false });
-  const isUpdatingRef = useRef(false);
+  const isApplyingRemoteRef = useRef(false);
+  const inputDebounceRef = useRef<number | null>(null);
 
   const updateFormatState = () => {
     setFormatState({
@@ -21,110 +21,100 @@ export function TextEditorPanel({ roomId, onSendUpdate, displayName }: TextEdito
     });
   };
 
-  const pendingHtmlRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (pendingHtmlRef.current !== null && !isUpdatingRef.current) {
-        onSendUpdate(JSON.stringify({ action: "update", html: pendingHtmlRef.current }), displayName);
-        pendingHtmlRef.current = null;
-      }
-    }, 2000);
-    return () => clearInterval(interval);
-  }, [roomId, onSendUpdate, displayName]);
-
-  // Send update to peers
-  const handleInput = () => {
-    updateFormatState();
-    if (isUpdatingRef.current) return;
-    if (editorRef.current) {
-      pendingHtmlRef.current = editorRef.current.innerHTML;
+  const getSelectionOffset = (root: HTMLElement): { hasFocus: boolean; offset: number } => {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || !root.contains(selection.anchorNode)) {
+      return { hasFocus: false, offset: 0 };
     }
+
+    const range = selection.getRangeAt(0);
+    const beforeRange = range.cloneRange();
+    beforeRange.selectNodeContents(root);
+    beforeRange.setEnd(range.startContainer, range.startOffset);
+    return { hasFocus: true, offset: beforeRange.toString().length };
+  };
+
+  const restoreSelectionOffset = (root: HTMLElement, offset: number): void => {
+    const selection = window.getSelection();
+    if (!selection) {
+      return;
+    }
+
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+    let traversed = 0;
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      const length = node.nodeValue?.length ?? 0;
+      if (traversed + length >= offset) {
+        const nodeOffset = offset - traversed;
+        const range = document.createRange();
+        range.setStart(node, nodeOffset);
+        range.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        return;
+      }
+      traversed += length;
+    }
+
+    const range = document.createRange();
+    range.selectNodeContents(root);
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  };
+
+  const flushEditorText = (): void => {
+    const nextText = editorRef.current?.innerText ?? "";
+    onEditorTextChange(nextText);
+  };
+
+  const scheduleEditorTextFlush = (): void => {
+    if (inputDebounceRef.current !== null) {
+      window.clearTimeout(inputDebounceRef.current);
+    }
+
+    inputDebounceRef.current = window.setTimeout(() => {
+      inputDebounceRef.current = null;
+      flushEditorText();
+    }, 75);
   };
 
   useEffect(() => {
-    const handleEditorUpdateEvent = (event: Event) => {
-      const customEvent = event as CustomEvent;
-      const message = customEvent.detail;
-      if (message && message.type === "editor-update" && editorRef.current) {
-        try {
-          const parsedData = JSON.parse(message.data);
-          if (parsedData.action === "update") {
-            if (editorRef.current.innerHTML !== parsedData.html) {
-              isUpdatingRef.current = true;
-              
-              // Try to save simple selection state
-              const sel = window.getSelection();
-              let savedOffset = 0;
-              let hasFocus = false;
-              try {
-                if (sel && sel.rangeCount > 0 && editorRef.current.contains(sel.anchorNode)) {
-                  hasFocus = true;
-                  // Very basic preservation: length of text before selection
-                  const range = sel.getRangeAt(0);
-                  const preSelectionRange = range.cloneRange();
-                  preSelectionRange.selectNodeContents(editorRef.current);
-                  preSelectionRange.setEnd(range.startContainer, range.startOffset);
-                  savedOffset = preSelectionRange.toString().length;
-                }
-              } catch (e) {
-                console.error("Failed to save selection:", e);
-                hasFocus = false;
-              }
-
-              try {
-                editorRef.current.innerHTML = parsedData.html;
-              } catch (e) {
-                console.error("Failed to update HTML:", e);
-              }
-              
-              // Try to restore selection state
-              if (hasFocus && sel) {
-                try {
-                  // Find node and offset
-                  const walker = document.createTreeWalker(editorRef.current, NodeFilter.SHOW_TEXT, null);
-                  let currentOffset = 0;
-                  let foundNode = null;
-                  let nodeOffset = 0;
-
-                  while (walker.nextNode()) {
-                    const node = walker.currentNode;
-                    const length = node.nodeValue?.length || 0;
-                    if (currentOffset + length >= savedOffset) {
-                      foundNode = node;
-                      nodeOffset = savedOffset - currentOffset;
-                      break;
-                    }
-                    currentOffset += length;
-                  }
-
-                  if (foundNode) {
-                    const newRange = document.createRange();
-                    newRange.setStart(foundNode, nodeOffset);
-                    newRange.setEnd(foundNode, nodeOffset);
-                    sel.removeAllRanges();
-                    sel.addRange(newRange);
-                  }
-                } catch (e) {
-                  console.error("Failed to restore selection:", e);
-                }
-              }
-
-              isUpdatingRef.current = false;
-            }
-          }
-        } catch (error) {
-          console.error("Failed to parse editor update:", error);
-          isUpdatingRef.current = false;
-        }
+    return () => {
+      if (inputDebounceRef.current !== null) {
+        window.clearTimeout(inputDebounceRef.current);
       }
     };
-
-    document.addEventListener("editor-update", handleEditorUpdateEvent);
-    return () => {
-      document.removeEventListener("editor-update", handleEditorUpdateEvent);
-    };
   }, []);
+
+  const handleInput = () => {
+    updateFormatState();
+    if (isApplyingRemoteRef.current) {
+      return;
+    }
+    scheduleEditorTextFlush();
+  };
+
+  useEffect(() => {
+    if (!editorRef.current) {
+      return;
+    }
+
+    const nextText = editorText ?? "";
+    if (editorRef.current.innerText === nextText) {
+      return;
+    }
+
+    const { hasFocus, offset } = getSelectionOffset(editorRef.current);
+    isApplyingRemoteRef.current = true;
+    editorRef.current.textContent = nextText;
+    isApplyingRemoteRef.current = false;
+
+    if (hasFocus) {
+      restoreSelectionOffset(editorRef.current, Math.min(offset, nextText.length));
+    }
+  }, [editorText]);
 
   const toggleFullscreen = () => {
     setIsFullscreen((prev) => !prev);
@@ -152,8 +142,12 @@ export function TextEditorPanel({ roomId, onSendUpdate, displayName }: TextEdito
 
   const confirmClear = () => {
     if (editorRef.current) {
-      editorRef.current.innerHTML = "";
-      handleInput(); // Re-use handleInput to send update
+      editorRef.current.textContent = "";
+      if (inputDebounceRef.current !== null) {
+        window.clearTimeout(inputDebounceRef.current);
+        inputDebounceRef.current = null;
+      }
+      onEditorTextChange("");
     }
     setIsConfirmingClear(false);
   };

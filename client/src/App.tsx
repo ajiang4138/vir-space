@@ -7,6 +7,7 @@ import { ParticipantList } from "./components/ParticipantList";
 import { RoomInfo } from "./components/RoomInfo";
 import { TextEditorPanel } from "./components/TextEditorPanel";
 import { WhiteboardPanel } from "./components/WhiteboardPanel";
+import { EditorCrdtManager } from "./lib/editorCrdt";
 import {
   FileTransferManager,
   type FileTransferTransport
@@ -83,6 +84,12 @@ function isWsProtocol(protocol: string): boolean {
   return protocol === "ws:" || protocol === "wss:";
 }
 
+function htmlToPlainText(html: string): string {
+  const parserNode = document.createElement("div");
+  parserNode.innerHTML = html;
+  return parserNode.innerText ?? "";
+}
+
 function buildActiveRoom(
   roomState: RoomStatePayload,
   myPeerId: string,
@@ -110,6 +117,8 @@ export default function App(): JSX.Element {
     activeTransfers: [],
     sharedFilesBySender: [],
   });
+  const [whiteboardHistory, setWhiteboardHistory] = useState<Array<{ action: string; data: string; senderPeerId: string; senderDisplayName: string }>>([]);
+  const [editorText, setEditorText] = useState("");
   const [setupStep, setSetupStep] = useState<SetupStep>("user-id");
   const [userIdDraft, setUserIdDraft] = useState("");
   const [currentUserId, setCurrentUserId] = useState("");
@@ -130,6 +139,8 @@ export default function App(): JSX.Element {
   const peerWebRtcManagersRef = useRef<Map<string, WebRtcPeerManager>>(new Map());
   const peerFileManagersRef = useRef<Map<string, FileTransferManager>>(new Map());
   const peerFileStatesRef = useRef<Map<string, FileTransferViewState>>(new Map());
+  const whiteboardHistoryRef = useRef<Array<{ action: string; data: string; senderPeerId: string; senderDisplayName: string }>>([]);
+  const editorCrdtRef = useRef<EditorCrdtManager>(new EditorCrdtManager());
 
   const collapsedLaneWidth = "44px";
 
@@ -149,6 +160,63 @@ export default function App(): JSX.Element {
 
   const setSessionState = (nextStatus: ConnectionStatus): void => {
     setStatus(nextStatus);
+  };
+
+  const ensureEditorCrdtInitialized = (roomId: string): void => {
+    editorCrdtRef.current.init(roomId);
+  };
+
+  const sendEditorSyncRequestToPeer = (peerId: string): void => {
+    const room = activeRoomRef.current;
+    const manager = peerWebRtcManagersRef.current.get(peerId);
+    if (!room || !manager) {
+      return;
+    }
+
+    manager.sendAppDataMessage(
+      JSON.stringify({
+        type: "editor-crdt-sync-request",
+        roomId: room.roomId,
+        senderPeerId: room.myPeerId,
+        senderDisplayName: room.myDisplayName,
+      }),
+    );
+  };
+
+  const applyLegacyEditorSnapshot = (message: unknown): void => {
+    const activeRoom = activeRoomRef.current;
+    if (!activeRoom) {
+      return;
+    }
+
+    ensureEditorCrdtInitialized(activeRoom.roomId);
+
+    const incoming = message as { data?: string; text?: string; html?: string };
+    const parsedData: { text?: string; html?: string } = {};
+
+    if (typeof incoming.data === "string") {
+      try {
+        const decoded = JSON.parse(incoming.data) as { text?: string; html?: string };
+        if (typeof decoded.text === "string") {
+          parsedData.text = decoded.text;
+        }
+        if (typeof decoded.html === "string") {
+          parsedData.html = decoded.html;
+        }
+      } catch {
+        parsedData.text = incoming.data;
+      }
+    }
+
+    if (!parsedData.text && typeof incoming.text === "string") {
+      parsedData.text = incoming.text;
+    }
+    if (!parsedData.html && typeof incoming.html === "string") {
+      parsedData.html = incoming.html;
+    }
+
+    const nextText = parsedData.text || (parsedData.html ? htmlToPlainText(parsedData.html) : "");
+    editorCrdtRef.current.applyLocalText(nextText);
   };
 
   const aggregateFileTransferState = (): void => {
@@ -264,6 +332,28 @@ export default function App(): JSX.Element {
             setSessionState("peer connected");
             addEvent(`peer connected via WebRTC data channel: ${remotePeer.displayName}`);
             updateOverallWebRtcStatus();
+
+            // Send current whiteboard history to the newly connected peer
+            const activeRoom = activeRoomRef.current;
+            if (whiteboardHistoryRef.current.length > 0 && activeRoom) {
+              const historyMessage = {
+                type: "whiteboard-history",
+                roomId: activeRoom.roomId,
+                senderPeerId: activeRoom.myPeerId,
+                senderDisplayName: activeRoom.myDisplayName,
+                updates: whiteboardHistoryRef.current,
+              };
+              const manager = peerWebRtcManagersRef.current.get(remotePeer.peerId);
+              if (manager) {
+                manager.sendAppDataMessage(JSON.stringify(historyMessage));
+              }
+            }
+
+            const activeRoomForEditor = activeRoomRef.current;
+            if (activeRoomForEditor) {
+              ensureEditorCrdtInitialized(activeRoomForEditor.roomId);
+              sendEditorSyncRequestToPeer(remotePeer.peerId);
+            }
           },
           onDataChannelClose: () => {
             addEvent(`peer data channel closed: ${remotePeer.displayName}`);
@@ -284,9 +374,73 @@ export default function App(): JSX.Element {
                   },
                 ]);
               } else if (message.type === "whiteboard-update") {
+                // Save the update to history
+                try {
+                  const data = JSON.parse(message.data);
+                  if (data.action === "clear") {
+                    whiteboardHistoryRef.current = [];
+                  } else if (data.action === "stroke" || data.action === "paths") {
+                    whiteboardHistoryRef.current.push({
+                      action: data.action,
+                      data: message.data,
+                      senderPeerId: message.senderPeerId,
+                      senderDisplayName: message.senderDisplayName,
+                    });
+                  }
+                  setWhiteboardHistory([...whiteboardHistoryRef.current]);
+                } catch {
+                  // If parsing fails, just keep the raw data
+                  whiteboardHistoryRef.current.push({
+                    action: "unknown",
+                    data: message.data,
+                    senderPeerId: message.senderPeerId,
+                    senderDisplayName: message.senderDisplayName,
+                  });
+                }
                 document.dispatchEvent(new CustomEvent("whiteboard-update", { detail: message }));
+              } else if (message.type === "whiteboard-history") {
+                // Receive the whiteboard history from a peer
+                whiteboardHistoryRef.current = message.updates;
+                setWhiteboardHistory([...message.updates]);
+                // Replay the history on the canvas
+                for (const update of message.updates) {
+                  const historyMessage = {
+                    type: "whiteboard-update",
+                    data: update.data,
+                    senderPeerId: update.senderPeerId,
+                    senderDisplayName: update.senderDisplayName,
+                  };
+                  document.dispatchEvent(new CustomEvent("whiteboard-update", { detail: historyMessage }));
+                }
+              } else if (message.type === "editor-crdt-sync-request") {
+                const activeRoomForEditor = activeRoomRef.current;
+                const manager = peerWebRtcManagersRef.current.get(remotePeer.peerId);
+                if (!activeRoomForEditor || !manager) {
+                  return;
+                }
+
+                ensureEditorCrdtInitialized(activeRoomForEditor.roomId);
+                manager.sendAppDataMessage(
+                  JSON.stringify({
+                    type: "editor-crdt-sync-state",
+                    roomId: activeRoomForEditor.roomId,
+                    senderPeerId: activeRoomForEditor.myPeerId,
+                    senderDisplayName: activeRoomForEditor.myDisplayName,
+                    updateBase64: editorCrdtRef.current.encodeStateAsUpdateBase64(),
+                  }),
+                );
+              } else if (message.type === "editor-crdt-sync-state") {
+                if (typeof message.updateBase64 === "string" && message.updateBase64.length > 0) {
+                  editorCrdtRef.current.applyRemoteUpdate(message.updateBase64);
+                }
+              } else if (message.type === "editor-crdt-update") {
+                if (typeof message.updateBase64 === "string" && message.updateBase64.length > 0) {
+                  editorCrdtRef.current.applyRemoteUpdate(message.updateBase64);
+                }
               } else if (message.type === "editor-update") {
-                document.dispatchEvent(new CustomEvent("editor-update", { detail: message }));
+                applyLegacyEditorSnapshot(message);
+              } else if (message.type === "editor-state") {
+                applyLegacyEditorSnapshot(message);
               }
             } catch {
               addEvent(`received direct data-channel message from ${remotePeer.displayName}: ${text.length > 100 ? text.substring(0, 100) + "..." : text}`);
@@ -343,6 +497,10 @@ export default function App(): JSX.Element {
     cleanupPeerConnection();
     updateActiveRoom(null);
     setMessages([]);
+    whiteboardHistoryRef.current = [];
+    setWhiteboardHistory([]);
+    editorCrdtRef.current.dispose();
+    setEditorText("");
     setSessionState(nextStatus);
     setSetupStep(currentUserIdRef.current ? "mode" : "user-id");
   };
@@ -358,6 +516,42 @@ export default function App(): JSX.Element {
   useEffect(() => {
     currentUserIdRef.current = currentUserId;
   }, [currentUserId]);
+
+  useEffect(() => {
+    if (!activeRoom) {
+      return;
+    }
+
+    ensureEditorCrdtInitialized(activeRoom.roomId);
+    setEditorText(editorCrdtRef.current.getText());
+
+    const unsubscribeText = editorCrdtRef.current.onTextChanged((nextText) => {
+      setEditorText(nextText);
+    });
+    const unsubscribeLocal = editorCrdtRef.current.onLocalUpdate((updateBase64) => {
+      const room = activeRoomRef.current;
+      if (!room) {
+        return;
+      }
+
+      const message = {
+        type: "editor-crdt-update",
+        roomId: room.roomId,
+        senderPeerId: room.myPeerId,
+        senderDisplayName: room.myDisplayName,
+        updateBase64,
+      };
+
+      for (const manager of peerWebRtcManagersRef.current.values()) {
+        manager.sendAppDataMessage(JSON.stringify(message));
+      }
+    });
+
+    return () => {
+      unsubscribeText();
+      unsubscribeLocal();
+    };
+  }, [activeRoom?.roomId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -670,6 +864,7 @@ export default function App(): JSX.Element {
     return () => {
       pendingActionRef.current = null;
       cleanupPeerConnection("application shutdown");
+      editorCrdtRef.current.dispose();
       signalingRef.current?.disconnect();
       void stopLocalHostService();
     };
@@ -998,8 +1193,28 @@ export default function App(): JSX.Element {
                     <WhiteboardPanel
                       roomId={activeRoom.roomId}
                       displayName={activeRoom.myDisplayName}
+                      whiteboardHistory={whiteboardHistory}
                       onSendUpdate={(data, displayName) => {
                         const msg = { type: "whiteboard-update", roomId: activeRoom.roomId, senderPeerId: activeRoom.myPeerId, senderDisplayName: displayName, data };
+                        
+                        // Save the local update to history
+                        try {
+                          const parsedData = JSON.parse(data);
+                          if (parsedData.action === "clear") {
+                            whiteboardHistoryRef.current = [];
+                          } else if (parsedData.action === "stroke" || parsedData.action === "paths") {
+                            whiteboardHistoryRef.current.push({
+                              action: parsedData.action,
+                              data: data,
+                              senderPeerId: activeRoom.myPeerId,
+                              senderDisplayName: displayName,
+                            });
+                          }
+                          setWhiteboardHistory([...whiteboardHistoryRef.current]);
+                        } catch {
+                          // If parsing fails, ignore
+                        }
+                        
                         for (const manager of peerWebRtcManagersRef.current.values()) {
                           manager.sendAppDataMessage(JSON.stringify(msg));
                         }
@@ -1015,13 +1230,9 @@ export default function App(): JSX.Element {
                 activeRoom && signalingRef.current ? (
                   <section className="workspace-panel editor-row">
                     <TextEditorPanel
-                      roomId={activeRoom.roomId}
-                      displayName={activeRoom.myDisplayName}
-                      onSendUpdate={(data, displayName) => {
-                        const msg = { type: "editor-update", roomId: activeRoom.roomId, senderPeerId: activeRoom.myPeerId, senderDisplayName: displayName, data };
-                        for (const manager of peerWebRtcManagersRef.current.values()) {
-                          manager.sendAppDataMessage(JSON.stringify(msg));
-                        }
+                      editorText={editorText}
+                      onEditorTextChange={(nextText) => {
+                        editorCrdtRef.current.applyLocalText(nextText);
                       }}
                     />
                   </section>
