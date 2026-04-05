@@ -210,10 +210,6 @@ async function discoverRelayHostLocalOnly(localIps, port) {
     }
   }
 
-  if (await canReachTcp("127.0.0.1", port)) {
-    return "127.0.0.1";
-  }
-
   return null;
 }
 
@@ -246,10 +242,6 @@ async function discoverRelayHost(localIps, port) {
     if (found) {
       return found;
     }
-  }
-
-  if (await canReachTcp("127.0.0.1", port)) {
-    return "127.0.0.1";
   }
 
   return null;
@@ -365,7 +357,12 @@ function stopChildren() {
 
 async function main() {
   const localIps = getLocalIPv4Addresses();
-  const preferredLocalIp = localIps[0] || "127.0.0.1";
+  const preferredLocalIp = localIps[0] || null;
+  if (!preferredLocalIp) {
+    console.error("[dev-all] No non-loopback IPv4 network interface found. Cannot start network relay.");
+    process.exit(1);
+    return;
+  }
   let localRelayCandidate = null;
   let startedLocalRelay = false;
 
@@ -391,9 +388,9 @@ async function main() {
     localRelayCandidate = spawnDetachedRelayServer();
     startedLocalRelay = true;
 
-    const localReady = await waitForLocalRelay("127.0.0.1", relayPort);
+    const localReady = await waitForLocalRelay(preferredLocalIp, relayPort);
     if (!localReady) {
-      console.error("[dev-all] Local relay failed to become reachable on 127.0.0.1:8787");
+      console.error(`[dev-all] Local relay failed to become reachable on ${preferredLocalIp}:${relayPort}`);
       stopChildren();
       process.exit(1);
       return;
@@ -407,9 +404,7 @@ async function main() {
   if (startedLocalRelay && relayHostForBootstrap) {
     await delay(900);
     const discoveredAfterSpawn = await discoverRelayHost(localIps, relayPort);
-    const usableDiscoveredHost = discoveredAfterSpawn && discoveredAfterSpawn !== "127.0.0.1"
-      ? discoveredAfterSpawn
-      : null;
+    const usableDiscoveredHost = discoveredAfterSpawn;
 
     if (usableDiscoveredHost && usableDiscoveredHost !== relayHostForBootstrap) {
       const leaderHost = compareIPv4(usableDiscoveredHost, relayHostForBootstrap) < 0
