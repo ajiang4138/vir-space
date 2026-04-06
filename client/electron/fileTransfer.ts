@@ -40,6 +40,19 @@ function guessMimeType(fileName: string): string {
   }
 }
 
+function preserveOriginalExtension(savedPath: string, originalFileName: string): string {
+  const originalExtension = path.extname(originalFileName);
+  if (!originalExtension) {
+    return savedPath;
+  }
+
+  if (path.extname(savedPath)) {
+    return savedPath;
+  }
+
+  return `${savedPath}${originalExtension}`;
+}
+
 function createFileId(filePath: string, fileSize: number, createdAt: number): string {
   const hash = createHash("sha256");
   hash.update(filePath);
@@ -232,18 +245,28 @@ export async function finalizeReceiverTransfer(transferId: string): Promise<{ sa
 
   const saveResult = await dialog.showSaveDialog({
     defaultPath: handle.manifest.fileName,
+    filters: path.extname(handle.manifest.fileName)
+      ? [
+          {
+            name: `${path.extname(handle.manifest.fileName).slice(1).toUpperCase()} files`,
+            extensions: [path.extname(handle.manifest.fileName).slice(1)],
+          },
+        ]
+      : undefined,
   });
 
   if (saveResult.canceled || !saveResult.filePath) {
     throw new Error("Save cancelled");
   }
 
-  await fs.mkdir(path.dirname(saveResult.filePath), { recursive: true });
-  await fs.copyFile(handle.tempFilePath, saveResult.filePath);
+  const finalPath = preserveOriginalExtension(saveResult.filePath, handle.manifest.fileName);
+
+  await fs.mkdir(path.dirname(finalPath), { recursive: true });
+  await fs.copyFile(handle.tempFilePath, finalPath);
   await removeReceiverTransfer(transferId);
 
   return {
-    savedPath: saveResult.filePath,
+    savedPath: finalPath,
     verifiedHash,
   };
 }

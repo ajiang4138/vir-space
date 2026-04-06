@@ -118,7 +118,7 @@ function createWindow(): void {
     return;
   }
 
-  const indexPath = path.join(__dirname, "../../dist/index.html");
+  const indexPath = path.join(__dirname, "../../dist-renderer/index.html");
   void win.loadFile(indexPath);
 }
 

@@ -827,6 +827,21 @@ export class FileTransferManager {
     }
   }
 
+  private dismissIncomingOfferAfterDelay(transferId: string, delayMs: number, removeSharedCatalog = false): void {
+    window.setTimeout(() => {
+      this.incomingOffers.delete(transferId);
+
+      if (removeSharedCatalog) {
+        const session = this.sessions.get(transferId);
+        if (session) {
+          this.sharedCatalog.delete(`${session.manifest.senderPeerId}:${session.manifest.fileId}`);
+        }
+      }
+
+      this.emitState();
+    }, delayMs);
+  }
+
   private async completeReceiverTransfer(session: ReceiverSession): Promise<void> {
     if (session.finalizeRequested) {
       return;
@@ -839,6 +854,8 @@ export class FileTransferManager {
     session.updatedAt = now();
     this.emitState();
 
+    this.dismissIncomingOfferAfterDelay(session.transferId, 1500);
+
     try {
       const result = await this.bridge.finalizeReceiverTransfer(session.receiverTransferId ?? session.transferId);
       session.status = "completed";
@@ -847,12 +864,6 @@ export class FileTransferManager {
       session.updatedAt = now();
       this.markFileDownloaded(session.manifest);
       this.emitState();
-
-      // Remove the incoming offer after a short delay to show the completed status
-      window.setTimeout(() => {
-        this.incomingOffers.delete(session.transferId);
-        this.emitState();
-      }, 1500);
     } catch (error) {
       if (isSaveCancelledError(error)) {
         session.status = "cancelled";
@@ -865,10 +876,7 @@ export class FileTransferManager {
         }
 
         this.emitState();
-        window.setTimeout(() => {
-          this.incomingOffers.delete(session.transferId);
-          this.emitState();
-        }, 250);
+        this.dismissIncomingOfferAfterDelay(session.transferId, 250);
         return;
       }
 
