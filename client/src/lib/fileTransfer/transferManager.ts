@@ -49,6 +49,7 @@ export interface FileTransferTransport {
 interface FileTransferCallbacks {
   onUpdate: (state: FileTransferViewState) => void;
   onEvent: (text: string) => void;
+  onSeedableDownloadReady?: (preparedShare: PreparedLocalShare) => void;
 }
 
 interface SenderSession {
@@ -545,9 +546,9 @@ export class FileTransferManager {
     }
 
     const pieceIndex = frame.header.pieceIndex;
-    const expectedHash = receiver.manifest.pieceHashes[pieceIndex];
+    const expectedHash = frame.header.pieceHash || receiver.manifest.pieceHashes?.[pieceIndex];
     const actualHash = await sha256Hex(frame.payload);
-    if (actualHash !== expectedHash) {
+    if (!expectedHash || actualHash !== expectedHash) {
       receiver.scheduler.markFailed(pieceIndex);
       receiver.inFlightPieces = Math.max(0, receiver.inFlightPieces - 1);
       receiver.message = `Piece ${pieceIndex} failed integrity verification`;
@@ -853,6 +854,7 @@ export class FileTransferManager {
             fileId: session.manifest.fileId,
             pieceIndex,
             byteLength: payload.byteLength,
+            pieceHash: await sha256Hex(payload),
           },
           payload,
         );
@@ -987,7 +989,19 @@ export class FileTransferManager {
       session.updatedAt = now();
       aggregate.finalized = true;
       this.markFileDownloaded(session.manifest);
-      this.registerSeederFromDownloadedFile(session.manifest, result.savedPath);
+
+      if (this.context) {
+        this.callbacks.onSeedableDownloadReady?.({
+          filePath: result.savedPath,
+          manifest: {
+            ...session.manifest,
+            senderPeerId: this.context.myPeerId,
+            roomId: this.context.roomId,
+          },
+          senderDisplayName: this.context.myDisplayName,
+        });
+      }
+
       this.emitState();
     } catch (error) {
       if (isSaveCancelledError(error)) {
@@ -1286,7 +1300,10 @@ export class FileTransferManager {
       return;
     }
 
-    this.transport.sendFileControlMessage(encodeControlMessage(message));
+    const sent = this.transport.sendFileControlMessage(encodeControlMessage(message));
+    if (!sent) {
+      this.callbacks.onEvent(`file transfer control send failed: ${message.type}`);
+    }
   }
 
   private startSenderTransfer(

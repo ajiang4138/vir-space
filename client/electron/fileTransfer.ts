@@ -80,9 +80,8 @@ async function ensureDirectory(dirPath: string): Promise<void> {
   await fs.mkdir(dirPath, { recursive: true });
 }
 
-async function hashFileByPieces(filePath: string, pieceSize: number): Promise<{ fullFileHash: string; pieceHashes: string[] }> {
+async function hashFile(filePath: string, pieceSize: number): Promise<string> {
   const fileHandle = await fs.open(filePath, "r");
-  const pieceHashes: string[] = [];
   const fullHash = createHash("sha256");
 
   try {
@@ -93,17 +92,13 @@ async function hashFileByPieces(filePath: string, pieceSize: number): Promise<{ 
       const bytesToRead = Math.min(pieceSize, stat.size - offset);
       const { bytesRead } = await fileHandle.read(buffer, 0, bytesToRead, offset);
       const piece = Buffer.from(buffer.subarray(0, bytesRead));
-      pieceHashes.push(createHash("sha256").update(piece).digest("hex"));
       fullHash.update(piece);
     }
   } finally {
     await fileHandle.close();
   }
 
-  return {
-    fullFileHash: fullHash.digest("hex"),
-    pieceHashes,
-  };
+  return fullHash.digest("hex");
 }
 
 export async function selectFileForSharing(): Promise<PickedFileInfo | null> {
@@ -137,8 +132,9 @@ export async function buildFileManifest(
   const fileName = path.basename(filePath);
   const createdAt = Date.now();
   const pieceCount = stats.size === 0 ? 0 : Math.ceil(stats.size / pieceSize);
-  const hashes = await hashFileByPieces(filePath, pieceSize);
-  const infoHash = computeInfoHash(fileName, stats.size, pieceSize, hashes.pieceHashes);
+  const fullFileHash = await hashFile(filePath, pieceSize);
+  // Compute infoHash based on file metadata only (no piece hashes for compact manifests)
+  const infoHash = computeInfoHash(fileName, stats.size, pieceSize, []);
   const fileId = createFileId(infoHash);
 
   return {
@@ -150,8 +146,7 @@ export async function buildFileManifest(
     fileSize: stats.size,
     pieceSize,
     pieceCount,
-    fullFileHash: hashes.fullFileHash,
-    pieceHashes: hashes.pieceHashes,
+    fullFileHash,
     createdAt,
     senderPeerId,
     roomId,
@@ -239,7 +234,7 @@ export async function writeReceiverPiece(transferId: string, pieceIndex: number,
   }
 }
 
-async function hashFile(filePath: string): Promise<string> {
+async function hashFileStream(filePath: string): Promise<string> {
   const stream = createReadStream(filePath);
   const hash = createHash("sha256");
 
@@ -257,7 +252,7 @@ export async function finalizeReceiverTransfer(transferId: string): Promise<{ sa
   }
 
   const { handle, tempDirectory } = record;
-  const verifiedHash = await hashFile(handle.tempFilePath);
+  const verifiedHash = await hashFileStream(handle.tempFilePath);
   if (verifiedHash !== handle.manifest.fullFileHash) {
     throw new Error("Full-file integrity mismatch");
   }

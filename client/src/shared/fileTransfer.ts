@@ -9,7 +9,7 @@ export interface FileManifest {
   pieceSize: number;
   pieceCount: number;
   fullFileHash: string;
-  pieceHashes: string[];
+  pieceHashes?: string[];
   createdAt: number;
   senderPeerId: string;
   roomId: string;

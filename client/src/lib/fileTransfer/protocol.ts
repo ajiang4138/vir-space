@@ -131,6 +131,7 @@ export interface FileBinaryFrameHeader {
   fileId: string;
   pieceIndex: number;
   byteLength: number;
+  pieceHash: string;
 }
 
 export interface DecodedFileBinaryFrame {

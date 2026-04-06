@@ -10,10 +10,15 @@ import { WhiteboardPanel } from "./components/WhiteboardPanel";
 import { EditorCrdtManager } from "./lib/editorCrdt";
 import {
     FileTransferManager,
-    type FileTransferTransport
+    type FileTransferTransport,
+    type PreparedLocalShare
 } from "./lib/fileTransfer/transferManager";
 import { SignalingClient } from "./lib/signalingClient";
-import { WebRtcPeerManager, type WebRtcStatus } from "./lib/webrtc";
+import {
+    WebRtcPeerManager,
+    type WebRtcConnectionRoute,
+    type WebRtcStatus,
+} from "./lib/webrtc";
 import type {
     ChatMessage,
     ConnectionStatus,
@@ -51,6 +56,12 @@ interface RemoteEditorCursor {
   displayName: string;
   cursorOffset: number;
   updatedAt: number;
+}
+
+interface DebugRouteBadge {
+  peerId: string;
+  displayName: string;
+  route: WebRtcConnectionRoute;
 }
 
 const defaultBootstrapUrl = import.meta.env.VITE_BOOTSTRAP_SIGNALING_URL ?? "ws://localhost:8787";
@@ -137,6 +148,7 @@ export default function App(): JSX.Element {
   const [isLeftLaneCollapsed, setIsLeftLaneCollapsed] = useState(false);
   const [isRightLaneCollapsed, setIsRightLaneCollapsed] = useState(false);
   const [remoteEditorCursors, setRemoteEditorCursors] = useState<RemoteEditorCursor[]>([]);
+  const [debugRouteBadges, setDebugRouteBadges] = useState<DebugRouteBadge[]>([]);
 
   const activeRoomRef = useRef<ActiveRoom | null>(null);
   const currentUserIdRef = useRef("");
@@ -148,6 +160,8 @@ export default function App(): JSX.Element {
   const peerWebRtcManagersRef = useRef<Map<string, WebRtcPeerManager>>(new Map());
   const peerFileManagersRef = useRef<Map<string, FileTransferManager>>(new Map());
   const peerFileStatesRef = useRef<Map<string, FileTransferViewState>>(new Map());
+  const localSeedSharesRef = useRef<Map<string, PreparedLocalShare>>(new Map());
+  const localSeedAnnouncementsRef = useRef<Map<string, Set<string>>>(new Map());
   const whiteboardHistoryRef = useRef<Array<{ action: string; data: string; senderPeerId: string; senderDisplayName: string }>>([]);
   const editorCrdtRef = useRef<EditorCrdtManager>(new EditorCrdtManager());
   const remoteEditorCursorsRef = useRef<Map<string, RemoteEditorCursor>>(new Map());
@@ -337,12 +351,49 @@ export default function App(): JSX.Element {
     setWebRtcStatus("connecting");
   };
 
+  const announceLocalSeedSharesToPeer = (peerId: string): void => {
+    const manager = peerFileManagersRef.current.get(peerId);
+    if (!manager) {
+      return;
+    }
+
+    let announcedFileIds = localSeedAnnouncementsRef.current.get(peerId);
+    if (!announcedFileIds) {
+      announcedFileIds = new Set<string>();
+      localSeedAnnouncementsRef.current.set(peerId, announcedFileIds);
+    }
+
+    for (const preparedShare of localSeedSharesRef.current.values()) {
+      if (announcedFileIds.has(preparedShare.manifest.fileId)) {
+        continue;
+      }
+
+      const transferId = manager.sharePreparedFile(preparedShare);
+      if (transferId) {
+        announcedFileIds.add(preparedShare.manifest.fileId);
+      }
+    }
+  };
+
+  const registerLocalSeedShare = (preparedShare: PreparedLocalShare, sourcePeerId?: string): void => {
+    localSeedSharesRef.current.set(preparedShare.manifest.fileId, preparedShare);
+
+    for (const peerId of peerFileManagersRef.current.keys()) {
+      if (sourcePeerId && peerId === sourcePeerId) {
+        continue;
+      }
+
+      announceLocalSeedSharesToPeer(peerId);
+    }
+  };
+
   const removePeerControllers = (peerId: string): void => {
     peerWebRtcManagersRef.current.get(peerId)?.close();
     peerWebRtcManagersRef.current.delete(peerId);
     peerFileManagersRef.current.get(peerId)?.resetRoom("peer left");
     peerFileManagersRef.current.delete(peerId);
     peerFileStatesRef.current.delete(peerId);
+    localSeedAnnouncementsRef.current.delete(peerId);
     remoteEditorCursorsRef.current.delete(peerId);
     syncRemoteEditorCursorState();
     negotiatedPeersRef.current.delete(peerId);
@@ -361,6 +412,7 @@ export default function App(): JSX.Element {
     peerFileManagersRef.current.clear();
     peerWebRtcManagersRef.current.clear();
     peerFileStatesRef.current.clear();
+    localSeedAnnouncementsRef.current.clear();
     remoteEditorCursorsRef.current.clear();
     syncRemoteEditorCursorState();
     negotiatedPeersRef.current.clear();
@@ -548,6 +600,10 @@ export default function App(): JSX.Element {
             aggregateFileTransferState();
           },
           onEvent: addEvent,
+          onSeedableDownloadReady: (preparedShare) => {
+            registerLocalSeedShare(preparedShare, remotePeer.peerId);
+            addEvent(`seeding ready: ${preparedShare.manifest.fileName}`);
+          },
         });
 
         fileManager.setTransport(webRtcManager as FileTransferTransport);
@@ -560,6 +616,8 @@ export default function App(): JSX.Element {
         myDisplayName: room.myDisplayName,
         remotePeerId: remotePeer.peerId,
       });
+
+      announceLocalSeedSharesToPeer(remotePeer.peerId);
     }
 
     for (const existingPeerId of Array.from(peerWebRtcManagersRef.current.keys())) {
@@ -573,6 +631,8 @@ export default function App(): JSX.Element {
 
   const clearRoomState = (nextStatus: ConnectionStatus): void => {
     cleanupPeerConnection();
+    localSeedSharesRef.current.clear();
+    setDebugRouteBadges([]);
     updateActiveRoom(null);
     setMessages([]);
     whiteboardHistoryRef.current = [];
@@ -604,6 +664,55 @@ export default function App(): JSX.Element {
       window.clearInterval(intervalHandle);
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const collectRoutes = async (): Promise<void> => {
+      const room = activeRoomRef.current;
+      if (!room) {
+        if (!cancelled) {
+          setDebugRouteBadges([]);
+        }
+        return;
+      }
+
+      const remotePeers = room.participants.filter((participant) => participant.peerId !== room.myPeerId);
+      const nextBadges = await Promise.all(
+        remotePeers.map(async (peer) => {
+          const manager = peerWebRtcManagersRef.current.get(peer.peerId);
+          const route = manager
+            ? await manager.getConnectionRoute()
+            : {
+                kind: "unknown" as const,
+                localCandidateType: null,
+                remoteCandidateType: null,
+                protocol: null,
+              };
+
+          return {
+            peerId: peer.peerId,
+            displayName: peer.displayName,
+            route,
+          };
+        }),
+      );
+
+      if (!cancelled) {
+        setDebugRouteBadges(nextBadges);
+      }
+    };
+
+    void collectRoutes();
+    const intervalHandle = window.setInterval(() => {
+      void collectRoutes();
+    }, 2000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalHandle);
+    };
+  }, [activeRoom]);
 
   useEffect(() => {
     if (!activeRoom) {
@@ -1159,9 +1268,7 @@ export default function App(): JSX.Element {
         return;
       }
 
-      for (const manager of managers) {
-        manager.sharePreparedFile(preparedShare);
-      }
+      registerLocalSeedShare(preparedShare);
     })();
   };
 
@@ -1451,7 +1558,7 @@ export default function App(): JSX.Element {
         </section>
       )}
 
-      <DebugWindow events={events} />
+      <DebugWindow events={events} routeBadges={debugRouteBadges} />
     </main>
   );
 }
