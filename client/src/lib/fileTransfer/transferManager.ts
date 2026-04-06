@@ -73,6 +73,9 @@ interface SenderSession {
   pieceAvailability: Uint8Array;
   pendingRequests: number[];
   requestQueueRunning: boolean;
+  pieceShardModulo?: number;
+  pieceShardRemainder?: number;
+  peerChoked: boolean;
   acceptedAt?: number;
 }
 
@@ -102,6 +105,20 @@ interface ReceiverSession {
   remoteAvailabilityReceived: boolean;
   maxInflightPieces: number;
   successfulPiecesSinceAdjust: number;
+  chokedByRemote: boolean;
+}
+
+interface SwarmAggregateState {
+  pieceCount: number;
+  verified: Uint8Array;
+  finalized: boolean;
+}
+
+export interface DownloadRequestOptions {
+  infoHash?: string;
+  swarmTransferId?: string;
+  pieceShardModulo?: number;
+  pieceShardRemainder?: number;
 }
 
 interface LocalSharedFileRecord {
@@ -126,6 +143,12 @@ type TransferSession = SenderSession | ReceiverSession;
 const MIN_ADAPTIVE_INFLIGHT_PIECES = 1;
 const MAX_ADAPTIVE_INFLIGHT_PIECES = 8;
 const SUCCESSFUL_PIECES_PER_WINDOW_STEP = 6;
+const CHOKE_HIGH_WATER_PENDING_REQUESTS = 12;
+const CHOKE_LOW_WATER_PENDING_REQUESTS = 6;
+
+function createMagnetUri(infoHash: string, fileName: string): string {
+  return `magnet:?xt=urn:btih:${encodeURIComponent(infoHash)}&dn=${encodeURIComponent(fileName)}`;
+}
 
 function now(): number {
   return Date.now();
@@ -180,6 +203,8 @@ function bitfieldAllOnes(pieceCount: number): Uint8Array {
 }
 
 export class FileTransferManager {
+  private static readonly swarmAggregates = new Map<string, SwarmAggregateState>();
+
   private readonly bridge: FileTransferBridge;
   private readonly callbacks: FileTransferCallbacks;
   private transport: FileTransferTransport | null = null;
@@ -267,14 +292,14 @@ export class FileTransferManager {
     this.sharePreparedFile(preparedShare);
   }
 
-  requestDownload(fileId: string, senderPeerId: string): void {
+  requestDownload(fileId: string, senderPeerId: string, options?: DownloadRequestOptions): void {
     if (!this.context || !this.transport?.isFileTransferReady()) {
       return;
     }
 
     const catalogKey = `${senderPeerId}:${fileId}`;
     const catalogItem = this.sharedCatalog.get(catalogKey);
-    if (!catalogItem || !catalogItem.hasAcceptedOffer) {
+    if ((!catalogItem || !catalogItem.hasAcceptedOffer) && !options?.swarmTransferId) {
       this.callbacks.onEvent("download blocked: accept an incoming offer for this file first");
       return;
     }
@@ -285,6 +310,10 @@ export class FileTransferManager {
       targetSenderPeerId: senderPeerId,
       roomId: this.context.roomId,
       fileId,
+      infoHash: options?.infoHash,
+      swarmTransferId: options?.swarmTransferId,
+      pieceShardModulo: options?.pieceShardModulo,
+      pieceShardRemainder: options?.pieceShardRemainder,
     });
   }
 
@@ -415,6 +444,13 @@ export class FileTransferManager {
           createdAt: now(),
         });
         }
+        {
+          const existingCatalog = this.sharedCatalog.get(`${message.manifest.senderPeerId}:${message.manifest.fileId}`);
+          if (existingCatalog?.hasAcceptedOffer && !this.sessions.has(message.transferId)) {
+            this.acceptIncomingOffer(message.transferId);
+            this.downloadAcceptedOffer(message.transferId);
+          }
+        }
         this.callbacks.onEvent(`incoming file offer: ${message.manifest.fileName}`);
         this.emitState();
         return;
@@ -436,7 +472,14 @@ export class FileTransferManager {
         return;
 
       case "file-download-request":
-        await this.handleDownloadRequest(message.fileId, message.targetSenderPeerId, message.requesterPeerId);
+        await this.handleDownloadRequest(
+          message.fileId,
+          message.targetSenderPeerId,
+          message.requesterPeerId,
+          message.swarmTransferId,
+          message.pieceShardModulo,
+          message.pieceShardRemainder,
+        );
         return;
 
       case "file-offer-accepted":
@@ -457,6 +500,14 @@ export class FileTransferManager {
 
       case "piece-reject":
         this.callbacks.onEvent(`piece rejected: ${message.pieceIndex}`);
+        return;
+
+      case "choke":
+        this.handleChoke(message.transferId, message.reason);
+        return;
+
+      case "unchoke":
+        this.handleUnchoke(message.transferId, message.reason);
         return;
 
       case "transfer-progress":
@@ -529,6 +580,7 @@ export class FileTransferManager {
     }
 
     receiver.scheduler.markVerified(pieceIndex);
+    this.markSwarmPieceVerified(receiver.transferId, receiver.manifest.pieceCount, pieceIndex);
     this.tuneReceiverWindowOnSuccess(receiver);
     receiver.receivedBitfield[Math.floor(pieceIndex / 8)] |= 1 << (pieceIndex % 8);
     receiver.transferredBytes += frame.payload.byteLength;
@@ -553,6 +605,8 @@ export class FileTransferManager {
     if (!this.context) {
       return;
     }
+
+    const aggregate = this.ensureSwarmAggregate(transferId, manifest.pieceCount);
 
     const initialInflightPieces = Math.max(
       MIN_ADAPTIVE_INFLIGHT_PIECES,
@@ -582,6 +636,7 @@ export class FileTransferManager {
       finalizeRequested: false,
       maxInflightPieces: initialInflightPieces,
       successfulPiecesSinceAdjust: 0,
+      chokedByRemote: false,
       requestTimer: window.setInterval(() => {
         const active = this.sessions.get(transferId);
         if (active && active.role === "receiver") {
@@ -598,6 +653,8 @@ export class FileTransferManager {
       }, 2500),
       remoteAvailabilityReceived: false,
     };
+
+    this.syncReceiverWithAggregate(session, aggregate);
 
     this.sessions.set(transferId, session);
     if (session.scheduler.isComplete()) {
@@ -624,13 +681,26 @@ export class FileTransferManager {
     session.receiverDisplayName = receiverPeerId;
     session.acceptedAt = now();
     session.updatedAt = now();
+    session.peerChoked = false;
+
+    const availability = this.buildSenderAvailabilityBitfield(session);
+    session.pieceAvailability = availability;
     this.sendControl({
       type: "piece-availability",
       transferId,
       senderPeerId: context.myPeerId,
       roomId: session.manifest.roomId,
-      availablePieces: bitfieldToBase64(session.pieceAvailability),
+      availablePieces: bitfieldToBase64(availability),
       pieceCount: session.manifest.pieceCount,
+    });
+
+    this.sendControl({
+      type: "unchoke",
+      transferId,
+      senderPeerId: context.myPeerId,
+      receiverPeerId,
+      roomId: session.manifest.roomId,
+      reason: "ready",
     });
 
     this.sendControl({
@@ -653,7 +723,14 @@ export class FileTransferManager {
     this.emitState();
   }
 
-  private async handleDownloadRequest(fileId: string, targetSenderPeerId: string, requesterPeerId: string): Promise<void> {
+  private async handleDownloadRequest(
+    fileId: string,
+    targetSenderPeerId: string,
+    requesterPeerId: string,
+    swarmTransferId?: string,
+    pieceShardModulo?: number,
+    pieceShardRemainder?: number,
+  ): Promise<void> {
     const context = this.context;
     if (!context || context.myPeerId !== targetSenderPeerId) {
       return;
@@ -671,7 +748,11 @@ export class FileTransferManager {
       return;
     }
 
-    const transferId = this.startSenderTransfer(localRecord, requesterPeerId);
+    const transferId = this.startSenderTransfer(localRecord, requesterPeerId, {
+      transferId: swarmTransferId,
+      pieceShardModulo,
+      pieceShardRemainder,
+    });
     if (transferId) {
       this.callbacks.onEvent(`resend requested for ${localRecord.manifest.fileName}`);
       this.emitState();
@@ -697,6 +778,7 @@ export class FileTransferManager {
     }
 
     session.scheduler.setAvailability(base64ToBitfield(availablePieces));
+    session.scheduler.setPieceRarity(this.buildSinglePeerRarity(session.manifest.pieceCount));
     session.remoteAvailabilityReceived = true;
     session.requestedPieces = session.scheduler.getRequestedCount();
     session.inFlightPieces = session.scheduler.getInflightCount();
@@ -709,6 +791,32 @@ export class FileTransferManager {
     const session = this.sessions.get(transferId);
     const context = this.context;
     if (!session || session.role !== "sender" || !context || !this.transport) {
+      return;
+    }
+
+    if (session.peerChoked) {
+      this.sendControl({
+        type: "piece-reject",
+        transferId,
+        senderPeerId: context.myPeerId,
+        receiverPeerId: context.remotePeerId,
+        roomId: context.roomId,
+        pieceIndex,
+        reason: "Peer is choked",
+      });
+      return;
+    }
+
+    if (!this.senderOwnsPiece(session, pieceIndex)) {
+      this.sendControl({
+        type: "piece-reject",
+        transferId,
+        senderPeerId: context.myPeerId,
+        receiverPeerId: context.remotePeerId,
+        roomId: context.roomId,
+        pieceIndex,
+        reason: "Piece not served by this sender shard",
+      });
       return;
     }
 
@@ -732,6 +840,7 @@ export class FileTransferManager {
     }
 
     session.requestQueueRunning = true;
+    this.evaluateSenderCongestion(session);
 
     try {
       while (session.pendingRequests.length > 0 && this.transport?.isFileTransferReady()) {
@@ -776,6 +885,8 @@ export class FileTransferManager {
           inFlightPieces: session.inFlightPieces,
           speedBytesPerSecond: session.speedBytesPerSecond,
         });
+
+        this.evaluateSenderCongestion(session);
       }
 
       if (
@@ -807,6 +918,7 @@ export class FileTransferManager {
       this.emitState();
     } finally {
       session.requestQueueRunning = false;
+      this.evaluateSenderCongestion(session);
 
       if (session.pendingRequests.length > 0 && this.transport?.isFileTransferReady()) {
         window.setTimeout(() => {
@@ -847,6 +959,17 @@ export class FileTransferManager {
       return;
     }
 
+    const aggregate = this.ensureSwarmAggregate(session.transferId, session.manifest.pieceCount);
+    if (aggregate.finalized) {
+      session.finalizeRequested = true;
+      session.status = "completed";
+      session.integrityStatus = "verified";
+      session.message = "Swarm transfer finalized by peer session";
+      session.updatedAt = now();
+      this.emitState();
+      return;
+    }
+
     session.finalizeRequested = true;
     session.status = "verifying";
     session.integrityStatus = "pending";
@@ -862,7 +985,9 @@ export class FileTransferManager {
       session.integrityStatus = "verified";
       session.message = `Saved to ${result.savedPath}`;
       session.updatedAt = now();
+      aggregate.finalized = true;
       this.markFileDownloaded(session.manifest);
+      this.registerSeederFromDownloadedFile(session.manifest, result.savedPath);
       this.emitState();
     } catch (error) {
       if (isSaveCancelledError(error)) {
@@ -916,6 +1041,16 @@ export class FileTransferManager {
 
     const context = this.context;
     if (!context) {
+      return;
+    }
+
+    const aggregate = this.ensureSwarmAggregate(session.transferId, session.manifest.pieceCount);
+    this.syncReceiverWithAggregate(session, aggregate);
+
+    if (aggregate.finalized || session.chokedByRemote) {
+      session.status = aggregate.finalized ? "verifying" : "retrying";
+      session.updatedAt = now();
+      this.emitState();
       return;
     }
 
@@ -979,6 +1114,128 @@ export class FileTransferManager {
     this.callbacks.onEvent(`adaptive download window increased to ${nextWindow}`);
   }
 
+  private ensureSwarmAggregate(transferId: string, pieceCount: number): SwarmAggregateState {
+    const existing = FileTransferManager.swarmAggregates.get(transferId);
+    if (existing) {
+      return existing;
+    }
+
+    const created: SwarmAggregateState = {
+      pieceCount,
+      verified: createBitfield(pieceCount),
+      finalized: false,
+    };
+    FileTransferManager.swarmAggregates.set(transferId, created);
+    return created;
+  }
+
+  private markSwarmPieceVerified(transferId: string, pieceCount: number, pieceIndex: number): void {
+    const aggregate = this.ensureSwarmAggregate(transferId, pieceCount);
+    const byteIndex = Math.floor(pieceIndex / 8);
+    const bitIndex = pieceIndex % 8;
+    aggregate.verified[byteIndex] |= 1 << bitIndex;
+  }
+
+  private syncReceiverWithAggregate(session: ReceiverSession, aggregate: SwarmAggregateState): void {
+    for (let pieceIndex = 0; pieceIndex < aggregate.pieceCount; pieceIndex += 1) {
+      const byteIndex = Math.floor(pieceIndex / 8);
+      const bitIndex = pieceIndex % 8;
+      const isVerified = (aggregate.verified[byteIndex] & (1 << bitIndex)) !== 0;
+      if (!isVerified) {
+        continue;
+      }
+
+      if (session.scheduler.getState(pieceIndex) !== "verified") {
+        session.scheduler.markVerified(pieceIndex);
+      }
+    }
+
+    session.completedPieces = session.scheduler.getCompletedCount();
+    session.verifiedPieces = session.completedPieces;
+  }
+
+  private senderOwnsPiece(session: SenderSession, pieceIndex: number): boolean {
+    const modulo = session.pieceShardModulo;
+    const remainder = session.pieceShardRemainder;
+    if (!modulo || modulo <= 1 || remainder === undefined) {
+      return true;
+    }
+
+    return pieceIndex % modulo === remainder;
+  }
+
+  private buildSenderAvailabilityBitfield(session: SenderSession): Uint8Array {
+    const bitfield = createBitfield(session.manifest.pieceCount);
+    for (let pieceIndex = 0; pieceIndex < session.manifest.pieceCount; pieceIndex += 1) {
+      if (!this.senderOwnsPiece(session, pieceIndex)) {
+        continue;
+      }
+
+      const byteIndex = Math.floor(pieceIndex / 8);
+      const bitIndex = pieceIndex % 8;
+      bitfield[byteIndex] |= 1 << bitIndex;
+    }
+
+    return bitfield;
+  }
+
+  private evaluateSenderCongestion(session: SenderSession): void {
+    const context = this.context;
+    if (!context || session.status === "failed") {
+      return;
+    }
+
+    if (!session.peerChoked && session.pendingRequests.length >= CHOKE_HIGH_WATER_PENDING_REQUESTS) {
+      session.peerChoked = true;
+      this.sendControl({
+        type: "choke",
+        transferId: session.transferId,
+        senderPeerId: context.myPeerId,
+        receiverPeerId: context.remotePeerId,
+        roomId: context.roomId,
+        reason: "sender queue pressure",
+      });
+      return;
+    }
+
+    if (session.peerChoked && session.pendingRequests.length <= CHOKE_LOW_WATER_PENDING_REQUESTS) {
+      session.peerChoked = false;
+      this.sendControl({
+        type: "unchoke",
+        transferId: session.transferId,
+        senderPeerId: context.myPeerId,
+        receiverPeerId: context.remotePeerId,
+        roomId: context.roomId,
+        reason: "sender queue recovered",
+      });
+    }
+  }
+
+  private handleChoke(transferId: string, reason?: string): void {
+    const session = this.sessions.get(transferId);
+    if (!session || session.role !== "receiver") {
+      return;
+    }
+
+    session.chokedByRemote = true;
+    session.status = "retrying";
+    session.message = reason ?? "Remote peer choked this transfer";
+    session.updatedAt = now();
+    this.emitState();
+  }
+
+  private handleUnchoke(transferId: string, reason?: string): void {
+    const session = this.sessions.get(transferId);
+    if (!session || session.role !== "receiver") {
+      return;
+    }
+
+    session.chokedByRemote = false;
+    session.message = reason ? `unchoked: ${reason}` : undefined;
+    session.updatedAt = now();
+    this.requestMorePieces(session);
+  }
+
   private calculateSpeed(bytesTransferred: number, startedAt: number): number {
     const elapsedSeconds = Math.max(1, (now() - startedAt) / 1000);
     return bytesTransferred / elapsedSeconds;
@@ -1032,13 +1289,17 @@ export class FileTransferManager {
     this.transport.sendFileControlMessage(encodeControlMessage(message));
   }
 
-  private startSenderTransfer(localRecord: LocalSharedFileRecord, receiverDisplayName: string): string | null {
+  private startSenderTransfer(
+    localRecord: LocalSharedFileRecord,
+    receiverDisplayName: string,
+    options?: { transferId?: string; pieceShardModulo?: number; pieceShardRemainder?: number },
+  ): string | null {
     const context = this.context;
     if (!context) {
       return null;
     }
 
-    const transferId = crypto.randomUUID();
+    const transferId = options?.transferId ?? crypto.randomUUID();
     const session: SenderSession = {
       role: "sender",
       transferId,
@@ -1060,6 +1321,9 @@ export class FileTransferManager {
       pieceAvailability: bitfieldAllOnes(localRecord.manifest.pieceCount),
       pendingRequests: [],
       requestQueueRunning: false,
+      pieceShardModulo: options?.pieceShardModulo,
+      pieceShardRemainder: options?.pieceShardRemainder,
+      peerChoked: false,
     };
 
     this.sessions.set(transferId, session);
@@ -1088,6 +1352,8 @@ export class FileTransferManager {
     const downloadHistory = this.downloadHistory.get(key);
     const next: SharedFileCatalogItem = {
       fileId: manifest.fileId,
+      infoHash: this.resolveInfoHash(manifest),
+      magnetUri: createMagnetUri(this.resolveInfoHash(manifest), manifest.fileName),
       transferId,
       fileName: manifest.fileName,
       mimeType: manifest.mimeType,
@@ -1104,6 +1370,41 @@ export class FileTransferManager {
     };
 
     this.sharedCatalog.set(key, next);
+  }
+
+  private resolveInfoHash(manifest: FileManifest): string {
+    const runtimeManifest = manifest as FileManifest & { infoHash?: string };
+    return runtimeManifest.infoHash && runtimeManifest.infoHash.length > 0
+      ? runtimeManifest.infoHash
+      : manifest.fullFileHash.slice(0, 40);
+  }
+
+  private buildSinglePeerRarity(pieceCount: number): number[] {
+    // With one remote peer per manager, rarity is uniform. This keeps the
+    // scheduler API compatible with future multi-peer swarm routing.
+    return Array.from({ length: pieceCount }, () => 1);
+  }
+
+  private registerSeederFromDownloadedFile(sourceManifest: FileManifest, savedPath: string): void {
+    if (!this.context || !this.transport?.isFileTransferReady()) {
+      return;
+    }
+
+    const seedingManifest: FileManifest = {
+      ...sourceManifest,
+      senderPeerId: this.context.myPeerId,
+      createdAt: now(),
+    };
+
+    const localRecord: LocalSharedFileRecord = {
+      manifest: seedingManifest,
+      filePath: savedPath,
+      senderDisplayName: this.context.myDisplayName,
+    };
+
+    this.localSharedFiles.set(seedingManifest.fileId, localRecord);
+    this.startSenderTransfer(localRecord, "swarm");
+    this.callbacks.onEvent(`seeding enabled for ${seedingManifest.fileName}`);
   }
 
   private markOfferAccepted(manifest: FileManifest): void {

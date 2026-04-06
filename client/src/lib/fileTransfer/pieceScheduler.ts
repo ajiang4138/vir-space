@@ -10,6 +10,7 @@ export class PieceScheduler {
   private readonly entries: SchedulerEntry[];
   private availability: Uint8Array | null = null;
   private maxInflightPieces: number;
+  private pieceRarity: number[] | null = null;
 
   constructor(
     private readonly pieceCount: number,
@@ -30,6 +31,10 @@ export class PieceScheduler {
 
   setAvailability(bitfield: Uint8Array): void {
     this.availability = bitfield;
+  }
+
+  setPieceRarity(rarityByPiece: number[]): void {
+    this.pieceRarity = rarityByPiece.length === this.pieceCount ? rarityByPiece : null;
   }
 
   markRequested(pieceIndex: number, now: number): void {
@@ -114,6 +119,7 @@ export class PieceScheduler {
 
   getNextRequestPieces(now: number): number[] {
     const requests: number[] = [];
+    const candidates: number[] = [];
 
     for (let index = 0; index < this.entries.length; index += 1) {
       const entry = this.entries[index];
@@ -130,8 +136,28 @@ export class PieceScheduler {
         }
       }
 
-      requests.push(index);
-      this.markRequested(index, now);
+      candidates.push(index);
+    }
+
+    candidates.sort((left, right) => {
+      const leftRarity = this.pieceRarity?.[left] ?? Number.MAX_SAFE_INTEGER;
+      const rightRarity = this.pieceRarity?.[right] ?? Number.MAX_SAFE_INTEGER;
+      if (leftRarity !== rightRarity) {
+        return leftRarity - rightRarity;
+      }
+
+      const leftAttempts = this.entries[left]?.attemptCount ?? 0;
+      const rightAttempts = this.entries[right]?.attemptCount ?? 0;
+      if (leftAttempts !== rightAttempts) {
+        return leftAttempts - rightAttempts;
+      }
+
+      return left - right;
+    });
+
+    for (const pieceIndex of candidates) {
+      requests.push(pieceIndex);
+      this.markRequested(pieceIndex, now);
 
       if (this.getInflightCount() >= this.maxInflightPieces) {
         break;

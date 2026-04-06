@@ -9,17 +9,17 @@ import { TextEditorPanel } from "./components/TextEditorPanel";
 import { WhiteboardPanel } from "./components/WhiteboardPanel";
 import { EditorCrdtManager } from "./lib/editorCrdt";
 import {
-  FileTransferManager,
-  type FileTransferTransport
+    FileTransferManager,
+    type FileTransferTransport
 } from "./lib/fileTransfer/transferManager";
 import { SignalingClient } from "./lib/signalingClient";
 import { WebRtcPeerManager, type WebRtcStatus } from "./lib/webrtc";
 import type {
-  ChatMessage,
-  ConnectionStatus,
-  ParticipantRole,
-  ParticipantSummary,
-  RoomStatePayload,
+    ChatMessage,
+    ConnectionStatus,
+    ParticipantRole,
+    ParticipantSummary,
+    RoomStatePayload,
 } from "./types";
 import type { FileTransferViewState } from "./types/fileTransfer";
 
@@ -1174,7 +1174,47 @@ export default function App(): JSX.Element {
   };
 
   const requestDownload = (fileId: string, senderPeerId: string): void => {
-    peerFileManagersRef.current.get(senderPeerId)?.requestDownload(fileId, senderPeerId);
+    const room = activeRoomRef.current;
+    if (!room) {
+      return;
+    }
+
+    const selectedSender = fileTransfers.sharedFilesBySender.find((group) => group.senderPeerId === senderPeerId);
+    const selectedFile = selectedSender?.files.find((file) => file.fileId === fileId);
+    const infoHash = selectedFile?.infoHash;
+
+    const seederPeerIds = new Set<string>();
+    if (infoHash) {
+      for (const senderGroup of fileTransfers.sharedFilesBySender) {
+        if (senderGroup.senderPeerId === room.myPeerId) {
+          continue;
+        }
+
+        if (senderGroup.files.some((file) => file.infoHash === infoHash)) {
+          seederPeerIds.add(senderGroup.senderPeerId);
+        }
+      }
+    }
+
+    if (seederPeerIds.size === 0) {
+      seederPeerIds.add(senderPeerId);
+    }
+
+    const orderedSeeders = Array.from(seederPeerIds.values()).sort((left, right) => left.localeCompare(right));
+    const swarmTransferId = infoHash
+      ? `swarm-${infoHash}-${room.myPeerId}`
+      : `swarm-${fileId}-${room.myPeerId}`;
+
+    orderedSeeders.forEach((peerId, index) => {
+      peerFileManagersRef.current.get(peerId)?.requestDownload(fileId, peerId, {
+        infoHash,
+        swarmTransferId,
+        pieceShardModulo: orderedSeeders.length,
+        pieceShardRemainder: index,
+      });
+    });
+
+    addEvent(`swarm download requested from ${orderedSeeders.length} seeder(s)`);
   };
 
   const downloadAcceptedOffer = (transferId: string): void => {

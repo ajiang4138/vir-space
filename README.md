@@ -7,6 +7,7 @@ Vir Space is a desktop collaboration app for creating or joining shared rooms wi
 - Room creation and join flow with password validation.
 - WebSocket-based signaling for room lifecycle and peer negotiation.
 - WebRTC peer connections for real-time data exchange.
+- BitTorrent-style file transfer flow with piece hashing, content `infoHash` identity, adaptive piece windows, and seeding after download completion.
 - Multi-workspace collaboration UI:
   - Chatroom
   - Shared whiteboard
@@ -20,6 +21,7 @@ Vir Space is a desktop collaboration app for creating or joining shared rooms wi
 - Frontend: React, Vite
 - Desktop Runtime: Electron
 - Realtime Networking: WebSocket (`ws`), WebRTC
+- File Transfer Protocol: BitTorrent-inspired piece protocol over WebRTC data channels (room-scoped swarm)
 - Collaboration: Yjs (CRDT)
 - Whiteboard: `react-sketch-canvas`
 - Tooling: npm, tsx, concurrently, wait-on, cross-env

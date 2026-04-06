@@ -53,12 +53,23 @@ function preserveOriginalExtension(savedPath: string, originalFileName: string):
   return `${savedPath}${originalExtension}`;
 }
 
-function createFileId(filePath: string, fileSize: number, createdAt: number): string {
+function createFileId(infoHash: string): string {
   const hash = createHash("sha256");
-  hash.update(filePath);
-  hash.update(String(fileSize));
-  hash.update(String(createdAt));
+  hash.update(infoHash);
   return hash.digest("hex").slice(0, 24);
+}
+
+function computeInfoHash(fileName: string, fileSize: number, pieceSize: number, pieceHashes: string[]): string {
+  // BitTorrent-style stable content fingerprint used as swarm identity.
+  const hash = createHash("sha1");
+  hash.update(fileName);
+  hash.update("|");
+  hash.update(String(fileSize));
+  hash.update("|");
+  hash.update(String(pieceSize));
+  hash.update("|");
+  hash.update(pieceHashes.join(""));
+  return hash.digest("hex");
 }
 
 function createTempDirectory(transferId: string): string {
@@ -125,12 +136,15 @@ export async function buildFileManifest(
   const stats = await fs.stat(filePath);
   const fileName = path.basename(filePath);
   const createdAt = Date.now();
-  const fileId = createFileId(filePath, stats.size, createdAt);
   const pieceCount = stats.size === 0 ? 0 : Math.ceil(stats.size / pieceSize);
   const hashes = await hashFileByPieces(filePath, pieceSize);
+  const infoHash = computeInfoHash(fileName, stats.size, pieceSize, hashes.pieceHashes);
+  const fileId = createFileId(infoHash);
 
   return {
     fileId,
+    infoHash,
+    torrentVersion: 1,
     fileName,
     mimeType: guessMimeType(fileName),
     fileSize: stats.size,
@@ -173,6 +187,11 @@ const receiverTransfers = new Map<string, ReceiverTransferRecord>();
 
 export async function createReceiverTransfer(manifest: FileManifest): Promise<ReceiverTransferHandle> {
   const transferId = manifest.fileId;
+  const existing = receiverTransfers.get(transferId);
+  if (existing) {
+    return existing.handle;
+  }
+
   const tempDirectory = createTempDirectory(transferId);
   await ensureDirectory(tempDirectory);
 

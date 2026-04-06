@@ -31,6 +31,10 @@ export type FileTransferControlMessage =
       targetSenderPeerId: string;
       roomId: string;
       fileId: string;
+      infoHash?: string;
+      swarmTransferId?: string;
+      pieceShardModulo?: number;
+      pieceShardRemainder?: number;
     }
   | {
       type: "file-offer-accepted";
@@ -71,6 +75,22 @@ export type FileTransferControlMessage =
       roomId: string;
       pieceIndex: number;
       reason: string;
+    }
+  | {
+      type: "choke";
+      transferId: string;
+      senderPeerId: string;
+      receiverPeerId: string;
+      roomId: string;
+      reason?: string;
+    }
+  | {
+      type: "unchoke";
+      transferId: string;
+      senderPeerId: string;
+      receiverPeerId: string;
+      roomId: string;
+      reason?: string;
     }
   | {
       type: "transfer-progress";

@@ -47,6 +47,8 @@ export interface FileTransferSummary {
 
 export interface SharedFileCatalogItem {
   fileId: string;
+  infoHash: string;
+  magnetUri: string;
   transferId: string;
   fileName: string;
   mimeType: string;

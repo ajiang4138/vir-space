@@ -177,6 +177,7 @@ export function FileSharePanel({
                           <p className="meta">
                             {file.pieceCount} pieces x {formatBytes(file.pieceSize)}
                           </p>
+                          <p className="meta">infoHash: {file.infoHash.slice(0, 12)}...</p>
                           {file.downloadedCount > 0 ? (
                             <div className="download-history-row">
                               <span className="download-history-badge">Already downloaded x{file.downloadedCount}</span>
