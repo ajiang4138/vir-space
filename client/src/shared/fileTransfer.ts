@@ -1,18 +1,16 @@
-export interface FileManifest {
-  fileId: string;
-  // SHA-1 content identity inspired by BitTorrent info hash semantics.
-  infoHash: string;
-  torrentVersion: 1;
+export interface TorrentManifest {
+  torrentId: string;
+  roomId: string;
   fileName: string;
   mimeType: string;
   fileSize: number;
   pieceSize: number;
   pieceCount: number;
   fullFileHash: string;
-  pieceHashes?: string[];
+  pieceHashes: string[];
+  initialSeederPeerId: string;
   createdAt: number;
-  senderPeerId: string;
-  roomId: string;
+  protocolVersion: 1;
 }
 
 export interface PickedFileInfo {
@@ -24,6 +22,6 @@ export interface PickedFileInfo {
 
 export interface ReceiverTransferHandle {
   transferId: string;
-  manifest: FileManifest;
+  manifest: TorrentManifest;
   tempFilePath: string;
 }

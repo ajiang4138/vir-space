@@ -8,12 +8,12 @@ import { RoomInfo } from "./components/RoomInfo";
 import { TextEditorPanel } from "./components/TextEditorPanel";
 import { WhiteboardPanel } from "./components/WhiteboardPanel";
 import { EditorCrdtManager } from "./lib/editorCrdt";
+import { SignalingClient } from "./lib/signalingClient";
 import {
     FileTransferManager,
     type FileTransferTransport,
     type PreparedLocalShare
-} from "./lib/fileTransfer/transferManager";
-import { SignalingClient } from "./lib/signalingClient";
+} from "./lib/swarm/swarmManager";
 import {
     WebRtcPeerManager,
     type WebRtcConnectionRoute,
@@ -132,9 +132,10 @@ export default function App(): JSX.Element {
   const [events, setEvents] = useState<string[]>([]);
   const [activeRoom, setActiveRoom] = useState<ActiveRoom | null>(null);
   const [fileTransfers, setFileTransfers] = useState<FileTransferViewState>({
-    incomingOffers: [],
-    activeTransfers: [],
-    sharedFilesBySender: [],
+    incomingAnnouncements: [],
+    rejectedAnnouncements: [],
+    activeSwarms: [],
+    acceptedSwarmsBySender: [],
   });
   const [whiteboardHistory, setWhiteboardHistory] = useState<Array<{ action: string; data: string; senderPeerId: string; senderDisplayName: string }>>([]);
   const [editorText, setEditorText] = useState("");
@@ -159,9 +160,7 @@ export default function App(): JSX.Element {
   const signalingRef = useRef<SignalingClient | null>(null);
   const peerWebRtcManagersRef = useRef<Map<string, WebRtcPeerManager>>(new Map());
   const peerFileManagersRef = useRef<Map<string, FileTransferManager>>(new Map());
-  const peerFileStatesRef = useRef<Map<string, FileTransferViewState>>(new Map());
   const localSeedSharesRef = useRef<Map<string, PreparedLocalShare>>(new Map());
-  const localSeedAnnouncementsRef = useRef<Map<string, Set<string>>>(new Map());
   const whiteboardHistoryRef = useRef<Array<{ action: string; data: string; senderPeerId: string; senderDisplayName: string }>>([]);
   const editorCrdtRef = useRef<EditorCrdtManager>(new EditorCrdtManager());
   const remoteEditorCursorsRef = useRef<Map<string, RemoteEditorCursor>>(new Map());
@@ -293,47 +292,7 @@ export default function App(): JSX.Element {
   };
 
   const aggregateFileTransferState = (): void => {
-    const aggregate: FileTransferViewState = {
-      incomingOffers: [],
-      activeTransfers: [],
-      sharedFilesBySender: [],
-    };
-
-    const sharedByKey = new Map<string, FileTransferViewState["sharedFilesBySender"][number]>();
-
-    for (const state of peerFileStatesRef.current.values()) {
-      aggregate.incomingOffers.push(...state.incomingOffers);
-      aggregate.activeTransfers.push(...state.activeTransfers);
-
-      for (const senderGroup of state.sharedFilesBySender) {
-        const existingGroup = sharedByKey.get(senderGroup.senderPeerId);
-        if (!existingGroup) {
-          sharedByKey.set(senderGroup.senderPeerId, {
-            senderPeerId: senderGroup.senderPeerId,
-            senderDisplayName: senderGroup.senderDisplayName,
-            files: [...senderGroup.files],
-          });
-          continue;
-        }
-
-        const byFileId = new Map(existingGroup.files.map((file) => [file.fileId, file]));
-        for (const file of senderGroup.files) {
-          byFileId.set(file.fileId, file);
-        }
-
-        existingGroup.files = Array.from(byFileId.values());
-      }
-    }
-
-    aggregate.sharedFilesBySender = Array.from(sharedByKey.values()).map((group) => ({
-      ...group,
-      files: group.files.sort((left, right) => right.createdAt - left.createdAt),
-    }));
-    aggregate.sharedFilesBySender.sort((left, right) => left.senderDisplayName.localeCompare(right.senderDisplayName));
-    aggregate.incomingOffers.sort((left, right) => right.createdAt - left.createdAt);
-    aggregate.activeTransfers.sort((left, right) => right.updatedAt - left.updatedAt);
-
-    setFileTransfers(aggregate);
+    return;
   };
 
   const updateOverallWebRtcStatus = (): void => {
@@ -352,48 +311,20 @@ export default function App(): JSX.Element {
   };
 
   const announceLocalSeedSharesToPeer = (peerId: string): void => {
-    const manager = peerFileManagersRef.current.get(peerId);
-    if (!manager) {
-      return;
-    }
-
-    let announcedFileIds = localSeedAnnouncementsRef.current.get(peerId);
-    if (!announcedFileIds) {
-      announcedFileIds = new Set<string>();
-      localSeedAnnouncementsRef.current.set(peerId, announcedFileIds);
-    }
-
-    for (const preparedShare of localSeedSharesRef.current.values()) {
-      if (announcedFileIds.has(preparedShare.manifest.fileId)) {
-        continue;
-      }
-
-      const transferId = manager.sharePreparedFile(preparedShare);
-      if (transferId) {
-        announcedFileIds.add(preparedShare.manifest.fileId);
-      }
-    }
+    void peerId;
   };
 
   const registerLocalSeedShare = (preparedShare: PreparedLocalShare, sourcePeerId?: string): void => {
-    localSeedSharesRef.current.set(preparedShare.manifest.fileId, preparedShare);
-
-    for (const peerId of peerFileManagersRef.current.keys()) {
-      if (sourcePeerId && peerId === sourcePeerId) {
-        continue;
-      }
-
-      announceLocalSeedSharesToPeer(peerId);
-    }
+    localSeedSharesRef.current.set(preparedShare.manifest.torrentId, preparedShare);
+    const excluded = sourcePeerId ? [sourcePeerId] : [];
+    getPrimaryFileManager()?.sharePreparedFile(preparedShare, { excludePeerIds: excluded });
   };
 
   const removePeerControllers = (peerId: string): void => {
     peerWebRtcManagersRef.current.get(peerId)?.close();
     peerWebRtcManagersRef.current.delete(peerId);
-    peerFileManagersRef.current.get(peerId)?.resetRoom("peer left");
+    peerFileManagersRef.current.get(peerId)?.detachFromPeer(peerId);
     peerFileManagersRef.current.delete(peerId);
-    peerFileStatesRef.current.delete(peerId);
-    localSeedAnnouncementsRef.current.delete(peerId);
     remoteEditorCursorsRef.current.delete(peerId);
     syncRemoteEditorCursorState();
     negotiatedPeersRef.current.delete(peerId);
@@ -411,8 +342,6 @@ export default function App(): JSX.Element {
 
     peerFileManagersRef.current.clear();
     peerWebRtcManagersRef.current.clear();
-    peerFileStatesRef.current.clear();
-    localSeedAnnouncementsRef.current.clear();
     remoteEditorCursorsRef.current.clear();
     syncRemoteEditorCursorState();
     negotiatedPeersRef.current.clear();
@@ -596,8 +525,7 @@ export default function App(): JSX.Element {
 
         const fileManager = new FileTransferManager(window.electronApi, {
           onUpdate: (state) => {
-            peerFileStatesRef.current.set(remotePeer.peerId, state);
-            aggregateFileTransferState();
+            setFileTransfers(state);
           },
           onEvent: addEvent,
           onSeedableDownloadReady: (preparedShare) => {
@@ -616,8 +544,6 @@ export default function App(): JSX.Element {
         myDisplayName: room.myDisplayName,
         remotePeerId: remotePeer.peerId,
       });
-
-      announceLocalSeedSharesToPeer(remotePeer.peerId);
     }
 
     for (const existingPeerId of Array.from(peerWebRtcManagersRef.current.keys())) {
@@ -1241,91 +1167,24 @@ export default function App(): JSX.Element {
     ]);
   };
 
-  const findManagerByTransferId = (transferId: string): FileTransferManager | null => {
-    for (const [peerId, state] of peerFileStatesRef.current.entries()) {
-      if (state.incomingOffers.some((offer) => offer.transferId === transferId)) {
-        return peerFileManagersRef.current.get(peerId) ?? null;
-      }
-
-      if (state.activeTransfers.some((transfer) => transfer.transferId === transferId)) {
-        return peerFileManagersRef.current.get(peerId) ?? null;
-      }
-    }
-
-    return null;
-  };
+  const getPrimaryFileManager = (): FileTransferManager | null => Array.from(peerFileManagersRef.current.values())[0] ?? null;
 
   const shareFile = (): void => {
-    void (async () => {
-      const managers = Array.from(peerFileManagersRef.current.values());
-      if (managers.length === 0) {
-        addEvent("warning: no peer file channels available yet");
-        return;
-      }
-
-      const preparedShare = await managers[0].prepareShareFile();
-      if (!preparedShare) {
-        return;
-      }
-
-      registerLocalSeedShare(preparedShare);
-    })();
+    void getPrimaryFileManager()?.shareFile();
   };
 
-  const acceptOffer = (transferId: string): void => {
-    findManagerByTransferId(transferId)?.acceptIncomingOffer(transferId);
-  };
-
-  const declineOffer = (transferId: string): void => {
-    findManagerByTransferId(transferId)?.declineIncomingOffer(transferId);
-  };
-
-  const requestDownload = (fileId: string, senderPeerId: string): void => {
+  const requestDownload = (torrentId: string, senderPeerId: string): void => {
     const room = activeRoomRef.current;
     if (!room) {
       return;
     }
-
-    const selectedSender = fileTransfers.sharedFilesBySender.find((group) => group.senderPeerId === senderPeerId);
-    const selectedFile = selectedSender?.files.find((file) => file.fileId === fileId);
-    const infoHash = selectedFile?.infoHash;
-
-    const seederPeerIds = new Set<string>();
-    if (infoHash) {
-      for (const senderGroup of fileTransfers.sharedFilesBySender) {
-        if (senderGroup.senderPeerId === room.myPeerId) {
-          continue;
-        }
-
-        if (senderGroup.files.some((file) => file.infoHash === infoHash)) {
-          seederPeerIds.add(senderGroup.senderPeerId);
-        }
-      }
-    }
-
-    if (seederPeerIds.size === 0) {
-      seederPeerIds.add(senderPeerId);
-    }
-
-    const orderedSeeders = Array.from(seederPeerIds.values()).sort((left, right) => left.localeCompare(right));
-    const swarmTransferId = infoHash
-      ? `swarm-${infoHash}-${room.myPeerId}`
-      : `swarm-${fileId}-${room.myPeerId}`;
-
-    orderedSeeders.forEach((peerId, index) => {
-      peerFileManagersRef.current.get(peerId)?.requestDownload(fileId, peerId, {
-        infoHash,
-        swarmTransferId,
-        pieceShardModulo: orderedSeeders.length,
-        pieceShardRemainder: index,
-      });
-    });
-
-    addEvent(`swarm download requested from ${orderedSeeders.length} seeder(s)`);
+    getPrimaryFileManager()?.requestDownload(torrentId, senderPeerId, { swarmTransferId: torrentId });
+    addEvent(`swarm download requested for ${torrentId.slice(0, 12)}...`);
   };
 
-  const downloadAcceptedOffer = (transferId: string): void => {
-    findManagerByTransferId(transferId)?.downloadAcceptedOffer(transferId);
+  const rejectAnnouncement = (torrentId: string, senderPeerId: string): void => {
+    getPrimaryFileManager()?.rejectAnnouncement(torrentId, senderPeerId, "Declined by receiver");
+    addEvent(`rejected incoming announcement for ${torrentId.slice(0, 12)}...`);
   };
 
   const inRoom = Boolean(activeRoom);
@@ -1483,10 +1342,8 @@ export default function App(): JSX.Element {
                   <FileSharePanel
                     viewState={fileTransfers}
                     onShareFile={shareFile}
-                    onAcceptOffer={acceptOffer}
-                    onDeclineOffer={declineOffer}
                     onRequestDownload={requestDownload}
-                    onDownloadAcceptedOffer={downloadAcceptedOffer}
+                    onRejectAnnouncement={rejectAnnouncement}
                     shareDisabled={webRtcStatus !== "connected"}
                     currentPeerId={activeRoom?.myPeerId}
                   />

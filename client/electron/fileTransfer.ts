@@ -2,7 +2,7 @@ import { app, dialog } from "electron";
 import { createHash } from "node:crypto";
 import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
-import type { FileManifest, PickedFileInfo, ReceiverTransferHandle } from "../src/shared/fileTransfer.js";
+import type { PickedFileInfo, ReceiverTransferHandle, TorrentManifest } from "../src/shared/fileTransfer.js";
 
 function guessMimeType(fileName: string): string {
   const extension = path.extname(fileName).toLowerCase();
@@ -53,22 +53,31 @@ function preserveOriginalExtension(savedPath: string, originalFileName: string):
   return `${savedPath}${originalExtension}`;
 }
 
-function createFileId(infoHash: string): string {
+function createTorrentId(
+  roomId: string,
+  fileName: string,
+  fileSize: number,
+  pieceSize: number,
+  fullFileHash: string,
+  pieceHashes: string[],
+  initialSeederPeerId: string,
+): string {
   const hash = createHash("sha256");
-  hash.update(infoHash);
-  return hash.digest("hex").slice(0, 24);
-}
-
-function computeInfoHash(fileName: string, fileSize: number, pieceSize: number, pieceHashes: string[]): string {
-  // BitTorrent-style stable content fingerprint used as swarm identity.
-  const hash = createHash("sha1");
+  hash.update(roomId);
+  hash.update("|");
   hash.update(fileName);
   hash.update("|");
   hash.update(String(fileSize));
   hash.update("|");
   hash.update(String(pieceSize));
   hash.update("|");
+  hash.update(fullFileHash);
+  hash.update("|");
   hash.update(pieceHashes.join(""));
+  hash.update("|");
+  hash.update(initialSeederPeerId);
+  hash.update("|");
+  hash.update("1");
   return hash.digest("hex");
 }
 
@@ -101,6 +110,28 @@ async function hashFile(filePath: string, pieceSize: number): Promise<string> {
   return fullHash.digest("hex");
 }
 
+async function hashFilePieces(filePath: string, pieceSize: number): Promise<string[]> {
+  const fileHandle = await fs.open(filePath, "r");
+  const pieceHashes: string[] = [];
+
+  try {
+    const stat = await fileHandle.stat();
+    const buffer = Buffer.alloc(pieceSize);
+
+    for (let offset = 0; offset < stat.size; offset += pieceSize) {
+      const bytesToRead = Math.min(pieceSize, stat.size - offset);
+      const { bytesRead } = await fileHandle.read(buffer, 0, bytesToRead, offset);
+      const piece = Buffer.from(buffer.subarray(0, bytesRead));
+      const pieceHash = createHash("sha256").update(piece).digest("hex");
+      pieceHashes.push(pieceHash);
+    }
+  } finally {
+    await fileHandle.close();
+  }
+
+  return pieceHashes;
+}
+
 export async function selectFileForSharing(): Promise<PickedFileInfo | null> {
   const result = await dialog.showOpenDialog({
     properties: ["openFile"],
@@ -127,29 +158,28 @@ export async function buildFileManifest(
   roomId: string,
   senderPeerId: string,
   pieceSize: number,
-): Promise<FileManifest> {
+): Promise<TorrentManifest> {
   const stats = await fs.stat(filePath);
   const fileName = path.basename(filePath);
   const createdAt = Date.now();
   const pieceCount = stats.size === 0 ? 0 : Math.ceil(stats.size / pieceSize);
   const fullFileHash = await hashFile(filePath, pieceSize);
-  // Compute infoHash based on file metadata only (no piece hashes for compact manifests)
-  const infoHash = computeInfoHash(fileName, stats.size, pieceSize, []);
-  const fileId = createFileId(infoHash);
+  const pieceHashes = await hashFilePieces(filePath, pieceSize);
+  const torrentId = createTorrentId(roomId, fileName, stats.size, pieceSize, fullFileHash, pieceHashes, senderPeerId);
 
   return {
-    fileId,
-    infoHash,
-    torrentVersion: 1,
+    torrentId,
+    protocolVersion: 1,
     fileName,
     mimeType: guessMimeType(fileName),
     fileSize: stats.size,
     pieceSize,
     pieceCount,
     fullFileHash,
+    pieceHashes,
     createdAt,
-    senderPeerId,
     roomId,
+    initialSeederPeerId: senderPeerId,
   };
 }
 
@@ -180,8 +210,8 @@ interface ReceiverTransferRecord {
 
 const receiverTransfers = new Map<string, ReceiverTransferRecord>();
 
-export async function createReceiverTransfer(manifest: FileManifest): Promise<ReceiverTransferHandle> {
-  const transferId = manifest.fileId;
+export async function createReceiverTransfer(manifest: TorrentManifest): Promise<ReceiverTransferHandle> {
+  const transferId = manifest.torrentId;
   const existing = receiverTransfers.get(transferId);
   if (existing) {
     return existing.handle;
