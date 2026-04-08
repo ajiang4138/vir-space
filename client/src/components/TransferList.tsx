@@ -1,8 +1,8 @@
-import type { FileTransferSummary } from "../types/fileTransfer";
+import type { TorrentSwarmSummary } from "../types/fileTransfer";
 
 interface TransferListProps {
-  transfers: FileTransferSummary[];
-  onCancelTransfer: (transferId: string) => void;
+  transfers: TorrentSwarmSummary[];
+  onCancelTransfer: (torrentId: string) => void;
 }
 
 function formatBytes(bytes: number): string {
@@ -38,11 +38,11 @@ export function TransferList({ transfers, onCancelTransfer }: TransferListProps)
         {transfers.map((transfer) => {
           const percent = Math.round(transfer.progress * 100);
           return (
-            <article key={transfer.transferId} className={`transfer-card ${transfer.status}`}>
+            <article key={transfer.torrentId} className={`transfer-card ${transfer.status}`}>
               <header>
                 <div>
                   <strong>{transfer.manifest.fileName}</strong>
-                  <p className="meta">{transfer.direction}</p>
+                  <p className="meta">{transfer.direction} • {transfer.localRole}</p>
                 </div>
                 <span className={`status-badge ${transfer.status}`}>{transfer.status}</span>
               </header>
@@ -54,7 +54,7 @@ export function TransferList({ transfers, onCancelTransfer }: TransferListProps)
                 <div className="transfer-meter-meta">
                   <span>{percent}%</span>
                   <span>
-                    {formatBytes(transfer.transferredBytes)} / {formatBytes(transfer.manifest.fileSize)}
+                    {formatBytes(transfer.downloadedBytes)} / {formatBytes(transfer.manifest.fileSize)}
                   </span>
                 </div>
               </div>
@@ -75,13 +75,17 @@ export function TransferList({ transfers, onCancelTransfer }: TransferListProps)
                   <dd>{transfer.integrityStatus}</dd>
                 </div>
                 <div>
-                  <dt>State</dt>
-                  <dd>{transfer.message ?? transfer.status}</dd>
+                  <dt>Peers</dt>
+                  <dd>{transfer.peerCount}</dd>
+                </div>
+                <div>
+                  <dt>Availability</dt>
+                  <dd>{transfer.availabilityPercent}%</dd>
                 </div>
               </dl>
 
               <div className="transfer-actions">
-                <button type="button" className="ghost" onClick={() => onCancelTransfer(transfer.transferId)} disabled={transfer.status === "completed"}>
+                <button type="button" className="ghost" onClick={() => onCancelTransfer(transfer.torrentId)} disabled={transfer.status === "completed"}>
                   Cancel
                 </button>
               </div>

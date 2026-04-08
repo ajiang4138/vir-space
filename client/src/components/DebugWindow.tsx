@@ -1,7 +1,15 @@
 import { useEffect, useRef } from "react";
+import type { WebRtcConnectionRoute } from "../lib/webrtc";
+
+interface DebugRouteBadge {
+  peerId: string;
+  displayName: string;
+  route: WebRtcConnectionRoute;
+}
 
 interface DebugWindowProps {
   events: string[];
+  routeBadges: DebugRouteBadge[];
 }
 
 const debugWindowName = "vir-space-debug-window";
@@ -36,7 +44,7 @@ function ensureDebugWindow(target: Window | null): Window | null {
 
       .debug-shell {
         display: grid;
-        gap: 12px;
+        gap: 14px;
         min-height: 100vh;
         padding: 14px;
         box-sizing: border-box;
@@ -47,16 +55,78 @@ function ensureDebugWindow(target: Window | null): Window | null {
         font-size: 1rem;
       }
 
-      ul {
+      .route-panel {
+        background: #ffffffcc;
+        border: 1px solid #d7e3f4;
+        border-radius: 10px;
+        padding: 10px;
+      }
+
+      .route-list {
+        margin: 8px 0 0;
+        padding: 0;
+        list-style: none;
+        display: grid;
+        gap: 8px;
+      }
+
+      .route-item {
+        display: grid;
+        gap: 4px;
+        border: 1px solid #e4ebf7;
+        border-radius: 8px;
+        padding: 8px;
+        background: #fff;
+      }
+
+      .route-item-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .route-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 999px;
+        font-size: 0.75rem;
+        font-weight: 700;
+        padding: 3px 9px;
+        letter-spacing: 0.02em;
+      }
+
+      .route-badge.direct {
+        color: #0e6b35;
+        background: #dff7e8;
+      }
+
+      .route-badge.relayed {
+        color: #854f00;
+        background: #ffe8bf;
+      }
+
+      .route-badge.unknown {
+        color: #4f5b6b;
+        background: #e6ebf2;
+      }
+
+      .route-item small {
+        color: #4b5d73;
+        font-size: 0.78rem;
+      }
+
+      .events-list {
         margin: 0;
         padding-left: 18px;
         display: grid;
         gap: 6px;
-        max-height: calc(100vh - 84px);
+        max-height: calc(100vh - 300px);
         overflow: auto;
       }
 
-      li {
+      .events-list li {
         color: #334d57;
         font-size: 0.9rem;
       }
@@ -64,8 +134,15 @@ function ensureDebugWindow(target: Window | null): Window | null {
   </head>
   <body data-initialized="true">
     <section class="debug-shell">
-      <h1>Debug Events</h1>
-      <ul id="events-list"></ul>
+      <section class="route-panel">
+        <h1>Connection Route</h1>
+        <ul id="route-list" class="route-list"></ul>
+      </section>
+
+      <section class="route-panel">
+        <h1>Debug Events</h1>
+        <ul id="events-list" class="events-list"></ul>
+      </section>
     </section>
   </body>
 </html>`);
@@ -73,6 +150,55 @@ function ensureDebugWindow(target: Window | null): Window | null {
   }
 
   return created;
+}
+
+function renderRouteBadges(target: Window, routeBadges: DebugRouteBadge[]): void {
+  const list = target.document.getElementById("route-list");
+  if (!list) {
+    return;
+  }
+
+  list.replaceChildren();
+
+  if (routeBadges.length === 0) {
+    const empty = target.document.createElement("li");
+    empty.className = "route-item";
+    empty.textContent = "No active peer connections.";
+    list.appendChild(empty);
+    return;
+  }
+
+  for (const badge of routeBadges) {
+    const item = target.document.createElement("li");
+    item.className = "route-item";
+
+    const header = target.document.createElement("div");
+    header.className = "route-item-header";
+
+    const name = target.document.createElement("strong");
+    name.textContent = badge.displayName;
+
+    const routeBadge = target.document.createElement("span");
+    routeBadge.className = `route-badge ${badge.route.kind}`;
+    routeBadge.textContent = badge.route.kind === "direct"
+      ? "Direct"
+      : badge.route.kind === "relayed"
+      ? "Relayed"
+      : "Unknown";
+
+    header.appendChild(name);
+    header.appendChild(routeBadge);
+
+    const details = target.document.createElement("small");
+    const localType = badge.route.localCandidateType ?? "?";
+    const remoteType = badge.route.remoteCandidateType ?? "?";
+    const protocol = badge.route.protocol ?? "?";
+    details.textContent = `local:${localType} remote:${remoteType} proto:${protocol}`;
+
+    item.appendChild(header);
+    item.appendChild(details);
+    list.appendChild(item);
+  }
 }
 
 function renderEvents(target: Window, events: string[]): void {
@@ -99,7 +225,7 @@ function renderEvents(target: Window, events: string[]): void {
   list.scrollTop = list.scrollHeight;
 }
 
-export function DebugWindow({ events }: DebugWindowProps): null {
+export function DebugWindow({ events, routeBadges }: DebugWindowProps): null {
   const debugWindowRef = useRef<Window | null>(null);
 
   useEffect(() => {
@@ -109,8 +235,9 @@ export function DebugWindow({ events }: DebugWindowProps): null {
     }
 
     debugWindowRef.current = debugWindow;
+    renderRouteBadges(debugWindow, routeBadges);
     renderEvents(debugWindow, events);
-  }, [events]);
+  }, [events, routeBadges]);
 
   useEffect(() => {
     return () => {

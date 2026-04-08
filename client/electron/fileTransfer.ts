@@ -2,7 +2,7 @@ import { app, dialog } from "electron";
 import { createHash } from "node:crypto";
 import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
-import type { FileManifest, PickedFileInfo, ReceiverTransferHandle } from "../src/shared/fileTransfer.js";
+import type { PickedFileInfo, ReceiverTransferHandle, TorrentManifest } from "../src/shared/fileTransfer.js";
 
 function guessMimeType(fileName: string): string {
   const extension = path.extname(fileName).toLowerCase();
@@ -53,12 +53,32 @@ function preserveOriginalExtension(savedPath: string, originalFileName: string):
   return `${savedPath}${originalExtension}`;
 }
 
-function createFileId(filePath: string, fileSize: number, createdAt: number): string {
+function createTorrentId(
+  roomId: string,
+  fileName: string,
+  fileSize: number,
+  pieceSize: number,
+  fullFileHash: string,
+  pieceHashes: string[],
+  initialSeederPeerId: string,
+): string {
   const hash = createHash("sha256");
-  hash.update(filePath);
+  hash.update(roomId);
+  hash.update("|");
+  hash.update(fileName);
+  hash.update("|");
   hash.update(String(fileSize));
-  hash.update(String(createdAt));
-  return hash.digest("hex").slice(0, 24);
+  hash.update("|");
+  hash.update(String(pieceSize));
+  hash.update("|");
+  hash.update(fullFileHash);
+  hash.update("|");
+  hash.update(pieceHashes.join(""));
+  hash.update("|");
+  hash.update(initialSeederPeerId);
+  hash.update("|");
+  hash.update("1");
+  return hash.digest("hex");
 }
 
 function createTempDirectory(transferId: string): string {
@@ -69,9 +89,8 @@ async function ensureDirectory(dirPath: string): Promise<void> {
   await fs.mkdir(dirPath, { recursive: true });
 }
 
-async function hashFileByPieces(filePath: string, pieceSize: number): Promise<{ fullFileHash: string; pieceHashes: string[] }> {
+async function hashFile(filePath: string, pieceSize: number): Promise<string> {
   const fileHandle = await fs.open(filePath, "r");
-  const pieceHashes: string[] = [];
   const fullHash = createHash("sha256");
 
   try {
@@ -82,17 +101,35 @@ async function hashFileByPieces(filePath: string, pieceSize: number): Promise<{ 
       const bytesToRead = Math.min(pieceSize, stat.size - offset);
       const { bytesRead } = await fileHandle.read(buffer, 0, bytesToRead, offset);
       const piece = Buffer.from(buffer.subarray(0, bytesRead));
-      pieceHashes.push(createHash("sha256").update(piece).digest("hex"));
       fullHash.update(piece);
     }
   } finally {
     await fileHandle.close();
   }
 
-  return {
-    fullFileHash: fullHash.digest("hex"),
-    pieceHashes,
-  };
+  return fullHash.digest("hex");
+}
+
+async function hashFilePieces(filePath: string, pieceSize: number): Promise<string[]> {
+  const fileHandle = await fs.open(filePath, "r");
+  const pieceHashes: string[] = [];
+
+  try {
+    const stat = await fileHandle.stat();
+    const buffer = Buffer.alloc(pieceSize);
+
+    for (let offset = 0; offset < stat.size; offset += pieceSize) {
+      const bytesToRead = Math.min(pieceSize, stat.size - offset);
+      const { bytesRead } = await fileHandle.read(buffer, 0, bytesToRead, offset);
+      const piece = Buffer.from(buffer.subarray(0, bytesRead));
+      const pieceHash = createHash("sha256").update(piece).digest("hex");
+      pieceHashes.push(pieceHash);
+    }
+  } finally {
+    await fileHandle.close();
+  }
+
+  return pieceHashes;
 }
 
 export async function selectFileForSharing(): Promise<PickedFileInfo | null> {
@@ -121,26 +158,28 @@ export async function buildFileManifest(
   roomId: string,
   senderPeerId: string,
   pieceSize: number,
-): Promise<FileManifest> {
+): Promise<TorrentManifest> {
   const stats = await fs.stat(filePath);
   const fileName = path.basename(filePath);
   const createdAt = Date.now();
-  const fileId = createFileId(filePath, stats.size, createdAt);
   const pieceCount = stats.size === 0 ? 0 : Math.ceil(stats.size / pieceSize);
-  const hashes = await hashFileByPieces(filePath, pieceSize);
+  const fullFileHash = await hashFile(filePath, pieceSize);
+  const pieceHashes = await hashFilePieces(filePath, pieceSize);
+  const torrentId = createTorrentId(roomId, fileName, stats.size, pieceSize, fullFileHash, pieceHashes, senderPeerId);
 
   return {
-    fileId,
+    torrentId,
+    protocolVersion: 1,
     fileName,
     mimeType: guessMimeType(fileName),
     fileSize: stats.size,
     pieceSize,
     pieceCount,
-    fullFileHash: hashes.fullFileHash,
-    pieceHashes: hashes.pieceHashes,
+    fullFileHash,
+    pieceHashes,
     createdAt,
-    senderPeerId,
     roomId,
+    initialSeederPeerId: senderPeerId,
   };
 }
 
@@ -171,8 +210,13 @@ interface ReceiverTransferRecord {
 
 const receiverTransfers = new Map<string, ReceiverTransferRecord>();
 
-export async function createReceiverTransfer(manifest: FileManifest): Promise<ReceiverTransferHandle> {
-  const transferId = manifest.fileId;
+export async function createReceiverTransfer(manifest: TorrentManifest): Promise<ReceiverTransferHandle> {
+  const transferId = manifest.torrentId;
+  const existing = receiverTransfers.get(transferId);
+  if (existing) {
+    return existing.handle;
+  }
+
   const tempDirectory = createTempDirectory(transferId);
   await ensureDirectory(tempDirectory);
 
@@ -220,7 +264,7 @@ export async function writeReceiverPiece(transferId: string, pieceIndex: number,
   }
 }
 
-async function hashFile(filePath: string): Promise<string> {
+async function hashFileStream(filePath: string): Promise<string> {
   const stream = createReadStream(filePath);
   const hash = createHash("sha256");
 
@@ -238,7 +282,7 @@ export async function finalizeReceiverTransfer(transferId: string): Promise<{ sa
   }
 
   const { handle, tempDirectory } = record;
-  const verifiedHash = await hashFile(handle.tempFilePath);
+  const verifiedHash = await hashFileStream(handle.tempFilePath);
   if (verifiedHash !== handle.manifest.fullFileHash) {
     throw new Error("Full-file integrity mismatch");
   }

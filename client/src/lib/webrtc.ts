@@ -12,6 +12,15 @@ export type WebRtcStatus =
   | "failed"
   | "closed";
 
+export type WebRtcRouteKind = "direct" | "relayed" | "unknown";
+
+export interface WebRtcConnectionRoute {
+  kind: WebRtcRouteKind;
+  localCandidateType: string | null;
+  remoteCandidateType: string | null;
+  protocol: string | null;
+}
+
 interface WebRtcHandlers {
   onIceCandidate: (candidate: RTCIceCandidateInit) => void;
   onDataChannelOpen: () => void;
@@ -185,8 +194,12 @@ export class WebRtcPeerManager {
       return false;
     }
 
-    this.fileControlChannel.send(text);
-    return true;
+    try {
+      this.fileControlChannel.send(text);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   sendFileDataMessage(data: ArrayBuffer): boolean {
@@ -212,6 +225,101 @@ export class WebRtcPeerManager {
 
   isFileTransferReady(): boolean {
     return this.fileControlChannel?.readyState === "open" && this.fileDataChannel?.readyState === "open";
+  }
+
+  async getConnectionRoute(): Promise<WebRtcConnectionRoute> {
+    if (!this.pc || this.pc.connectionState !== "connected") {
+      return {
+        kind: "unknown",
+        localCandidateType: null,
+        remoteCandidateType: null,
+        protocol: null,
+      };
+    }
+
+    try {
+      const stats = await this.pc.getStats();
+      let selectedPair: {
+        type?: string;
+        nominated?: boolean;
+        state?: string;
+        localCandidateId?: string;
+        remoteCandidateId?: string;
+      } | null = null;
+
+      for (const report of stats.values()) {
+        const reportLike = report as { type?: string; selectedCandidatePairId?: string };
+        if (reportLike.type === "transport" && reportLike.selectedCandidatePairId) {
+          const pairReport = stats.get(reportLike.selectedCandidatePairId) as {
+            type?: string;
+            nominated?: boolean;
+            state?: string;
+            localCandidateId?: string;
+            remoteCandidateId?: string;
+          } | undefined;
+
+          if (pairReport) {
+            selectedPair = pairReport;
+            break;
+          }
+        }
+      }
+
+      if (!selectedPair) {
+        for (const report of stats.values()) {
+          const pairReport = report as {
+            type?: string;
+            nominated?: boolean;
+            state?: string;
+            localCandidateId?: string;
+            remoteCandidateId?: string;
+          };
+
+          if (pairReport.type === "candidate-pair" && (pairReport.nominated || pairReport.state === "succeeded")) {
+            selectedPair = pairReport;
+            break;
+          }
+        }
+      }
+
+      if (!selectedPair || selectedPair.type !== "candidate-pair") {
+        return {
+          kind: "unknown",
+          localCandidateType: null,
+          remoteCandidateType: null,
+          protocol: null,
+        };
+      }
+
+      const localReport = selectedPair.localCandidateId ? stats.get(selectedPair.localCandidateId) : null;
+      const remoteReport = selectedPair.remoteCandidateId ? stats.get(selectedPair.remoteCandidateId) : null;
+
+      const localCandidate = localReport && (localReport as { type?: string }).type === "local-candidate"
+        ? (localReport as { candidateType?: string; protocol?: string })
+        : null;
+      const remoteCandidate = remoteReport && (remoteReport as { type?: string }).type === "remote-candidate"
+        ? (remoteReport as { candidateType?: string; protocol?: string })
+        : null;
+
+      const localType = localCandidate?.candidateType ?? null;
+      const remoteType = remoteCandidate?.candidateType ?? null;
+      const protocol = localCandidate?.protocol ?? remoteCandidate?.protocol ?? null;
+      const isRelayed = localType === "relay" || remoteType === "relay";
+
+      return {
+        kind: isRelayed ? "relayed" : "direct",
+        localCandidateType: localType,
+        remoteCandidateType: remoteType,
+        protocol,
+      };
+    } catch {
+      return {
+        kind: "unknown",
+        localCandidateType: null,
+        remoteCandidateType: null,
+        protocol: null,
+      };
+    }
   }
 
   close(): void {

@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { FileManifest, PickedFileInfo, ReceiverTransferHandle } from "./shared/fileTransfer";
+import type { PickedFileInfo, ReceiverTransferHandle, TorrentManifest } from "./shared/fileTransfer";
 import type { HostServiceInfo, LocalNetworkInfo } from "./shared/signaling";
 
 interface ImportMetaEnv {
@@ -25,9 +25,9 @@ declare global {
       getHostServiceStatus: () => Promise<HostServiceInfo>;
       getLocalNetworkInfo: () => Promise<LocalNetworkInfo>;
       selectFileForSharing: () => Promise<PickedFileInfo | null>;
-      buildFileManifest: (filePath: string, roomId: string, senderPeerId: string, pieceSize: number) => Promise<FileManifest>;
+      buildFileManifest: (filePath: string, roomId: string, senderPeerId: string, pieceSize: number) => Promise<TorrentManifest>;
       readFilePiece: (filePath: string, pieceIndex: number, pieceSize: number) => Promise<Uint8Array>;
-      createReceiverTransfer: (manifest: FileManifest) => Promise<ReceiverTransferHandle>;
+      createReceiverTransfer: (manifest: TorrentManifest) => Promise<ReceiverTransferHandle>;
       writeReceiverPiece: (transferId: string, pieceIndex: number, data: Uint8Array) => Promise<void>;
       finalizeReceiverTransfer: (transferId: string) => Promise<{ savedPath: string; verifiedHash: string }>;
       cancelReceiverTransfer: (transferId: string) => Promise<void>;

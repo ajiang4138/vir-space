@@ -1,5 +1,6 @@
-export interface FileManifest {
-  fileId: string;
+export interface TorrentManifest {
+  torrentId: string;
+  roomId: string;
   fileName: string;
   mimeType: string;
   fileSize: number;
@@ -7,9 +8,9 @@ export interface FileManifest {
   pieceCount: number;
   fullFileHash: string;
   pieceHashes: string[];
+  initialSeederPeerId: string;
   createdAt: number;
-  senderPeerId: string;
-  roomId: string;
+  protocolVersion: 1;
 }
 
 export interface PickedFileInfo {
@@ -21,6 +22,6 @@ export interface PickedFileInfo {
 
 export interface ReceiverTransferHandle {
   transferId: string;
-  manifest: FileManifest;
+  manifest: TorrentManifest;
   tempFilePath: string;
 }
