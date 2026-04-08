@@ -329,7 +329,14 @@ export class FileTransferManager {
 
     session.joinRequested = true;
     session.preferredSourcePeerId = sourcePeerId;
-    session.status = session.localRole === "leecher" ? "downloading" : session.status;
+    // When rejoining or redownloading, always set status to downloading state
+    if (session.status === "completed" || session.localRole === "partial-seeder") {
+      session.status = "downloading";
+      session.localRole = "leecher";
+      session.integrityStatus = "pending";
+    } else if (session.status !== "downloading") {
+      session.status = session.localRole === "leecher" ? "downloading" : session.status;
+    }
 
     if (options?.swarmTransferId && options.swarmTransferId !== torrentId) {
       this.callbacks.onEvent("warning: ignored mismatched swarm transfer id");
