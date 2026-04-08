@@ -355,13 +355,13 @@ export class FileTransferManager {
       session.message = "Preparing download storage..."
       session.updatedAt = now();
       this.emitState();
-      this.callbacks.onEvent(`joining swarm for ${session.manifest.fileName}; waiting for local storage`);
+      this.callbacks.onEvent(`starting download for ${session.manifest.fileName}; waiting for local storage`);
       return;
     }
 
     this.requestMorePieces(session);
     this.emitState();
-    this.callbacks.onEvent(`joined swarm for ${session.manifest.fileName}`);
+    this.callbacks.onEvent(`download started for ${session.manifest.fileName}`);
   }
 
   cancelTransfer(torrentId: string, reason = "Cancelled by user"): void {
@@ -945,6 +945,12 @@ export class FileTransferManager {
     return map;
   }
 
+  private calculateInflightLimit(session: TorrentRuntimeState, availablePeerCount: number): number {
+    const peerBonus = Math.max(0, availablePeerCount - 1) * 2;
+    const pieceBonus = session.manifest.pieceCount >= 128 ? 4 : session.manifest.pieceCount >= 32 ? 2 : 0;
+    return Math.min(16, DEFAULT_MAX_INFLIGHT_REQUESTS + peerBonus + pieceBonus);
+  }
+
   private requestMorePieces(session: TorrentRuntimeState): void {
     if (!this.context || !this.transport?.isFileTransferReady() || session.status === "cancelled" || session.status === "failed") {
       return;
@@ -970,6 +976,8 @@ export class FileTransferManager {
     if (peerBitfields.size === 0) {
       return;
     }
+
+    session.pieceScheduler.setMaxInflightPieces(this.calculateInflightLimit(session, peerBitfields.size));
 
     const requests = session.pieceScheduler.selectRequests(
       session.localBitfield,

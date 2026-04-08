@@ -133,7 +133,7 @@ export function FileSharePanel({
                         <p className="meta">torrent: {announcement.torrentId.slice(0, 12)}...</p>
                         <div className="offer-actions">
                           <button type="button" onClick={() => onRequestDownload(announcement.torrentId, announcement.senderPeerId)} disabled={shareDisabled}>
-                            Join swarm
+                            Download
                           </button>
                           <button type="button" className="ghost" onClick={() => onRejectAnnouncement(announcement.torrentId, announcement.senderPeerId)}>
                             Reject offer
@@ -213,7 +213,7 @@ export function FileSharePanel({
                         <p className="meta">torrent: {announcement.torrentId.slice(0, 12)}...</p>
                         <div className="offer-actions">
                           <button type="button" onClick={() => onRequestDownload(announcement.torrentId, announcement.senderPeerId)} disabled={shareDisabled}>
-                            Join swarm
+                            Download
                           </button>
                         </div>
                         {renderSummary(announcement.torrentId)}

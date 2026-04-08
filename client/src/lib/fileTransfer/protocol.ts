@@ -3,7 +3,7 @@ import type { TorrentManifest } from "../../shared/fileTransfer";
 // Keep piece payloads comfortably below common RTCDataChannel per-message caps.
 // Frame headers add overhead, so using 64 KiB avoids edge-case send failures.
 export const DEFAULT_PIECE_SIZE = 64 * 1024;
-export const DEFAULT_MAX_INFLIGHT_REQUESTS = 4;
+export const DEFAULT_MAX_INFLIGHT_REQUESTS = 6;
 export const DEFAULT_PIECE_REQUEST_TIMEOUT_MS = 12_000;
 export const FILE_CONTROL_CHANNEL_LABEL = "file-transfer-control";
 export const FILE_DATA_CHANNEL_LABEL = "file-transfer-data";
