@@ -10,21 +10,21 @@ import { WhiteboardPanel } from "./components/WhiteboardPanel";
 import { EditorCrdtManager } from "./lib/editorCrdt";
 import { SignalingClient } from "./lib/signalingClient";
 import {
-    FileTransferManager,
-    type FileTransferTransport,
-    type PreparedLocalShare
+  FileTransferManager,
+  type FileTransferTransport,
+  type PreparedLocalShare
 } from "./lib/swarm/swarmManager";
 import {
-    WebRtcPeerManager,
-    type WebRtcConnectionRoute,
-    type WebRtcStatus,
+  WebRtcPeerManager,
+  type WebRtcConnectionRoute,
+  type WebRtcStatus,
 } from "./lib/webrtc";
 import type {
-    ChatMessage,
-    ConnectionStatus,
-    ParticipantRole,
-    ParticipantSummary,
-    RoomStatePayload,
+  ChatMessage,
+  ConnectionStatus,
+  ParticipantRole,
+  ParticipantSummary,
+  RoomStatePayload,
 } from "./types";
 import type { FileTransferViewState } from "./types/fileTransfer";
 
@@ -311,13 +311,23 @@ export default function App(): JSX.Element {
   };
 
   const announceLocalSeedSharesToPeer = (peerId: string): void => {
-    void peerId;
+    const targetManager = peerFileManagersRef.current.get(peerId);
+    if (!targetManager) {
+      return;
+    }
+
+    const excludedPeerIds = Array.from(peerFileManagersRef.current.keys()).filter((id) => id !== peerId);
+    for (const preparedShare of localSeedSharesRef.current.values()) {
+      targetManager.sharePreparedFile(preparedShare, { excludePeerIds: excludedPeerIds });
+    }
   };
 
   const registerLocalSeedShare = (preparedShare: PreparedLocalShare, sourcePeerId?: string): void => {
     localSeedSharesRef.current.set(preparedShare.manifest.torrentId, preparedShare);
     const excluded = sourcePeerId ? [sourcePeerId] : [];
-    getPrimaryFileManager()?.sharePreparedFile(preparedShare, { excludePeerIds: excluded });
+    for (const manager of peerFileManagersRef.current.values()) {
+      manager.sharePreparedFile(preparedShare, { excludePeerIds: excluded });
+    }
   };
 
   const removePeerControllers = (peerId: string): void => {
@@ -398,6 +408,8 @@ export default function App(): JSX.Element {
               ensureEditorCrdtInitialized(activeRoomForEditor.roomId);
               sendEditorSyncRequestToPeer(remotePeer.peerId);
             }
+
+            announceLocalSeedSharesToPeer(remotePeer.peerId);
           },
           onDataChannelClose: () => {
             addEvent(`peer data channel closed: ${remotePeer.displayName}`);
@@ -1167,10 +1179,24 @@ export default function App(): JSX.Element {
     ]);
   };
 
-  const getPrimaryFileManager = (): FileTransferManager | null => Array.from(peerFileManagersRef.current.values())[0] ?? null;
+  const getFileManagers = (): FileTransferManager[] => Array.from(peerFileManagersRef.current.values());
 
   const shareFile = (): void => {
-    void getPrimaryFileManager()?.shareFile();
+    const managers = getFileManagers();
+    const primaryManager = managers[0];
+    if (!primaryManager) {
+      addEvent("warning: no peer file channels available yet");
+      return;
+    }
+
+    void (async () => {
+      const preparedShare = await primaryManager.prepareShareFile();
+      if (!preparedShare) {
+        return;
+      }
+
+      registerLocalSeedShare(preparedShare);
+    })();
   };
 
   const requestDownload = (torrentId: string, senderPeerId: string): void => {
@@ -1178,12 +1204,26 @@ export default function App(): JSX.Element {
     if (!room) {
       return;
     }
-    getPrimaryFileManager()?.requestDownload(torrentId, senderPeerId, { swarmTransferId: torrentId });
+
+    const managers = getFileManagers();
+    if (managers.length === 0) {
+      addEvent("warning: no peer file channels available yet");
+      return;
+    }
+
+    for (const manager of managers) {
+      manager.requestDownload(torrentId, senderPeerId, { swarmTransferId: torrentId });
+    }
+
     addEvent(`swarm download requested for ${torrentId.slice(0, 12)}...`);
   };
 
   const rejectAnnouncement = (torrentId: string, senderPeerId: string): void => {
-    getPrimaryFileManager()?.rejectAnnouncement(torrentId, senderPeerId, "Declined by receiver");
+    const managers = getFileManagers();
+    for (const manager of managers) {
+      manager.rejectAnnouncement(torrentId, senderPeerId, "Declined by receiver");
+    }
+
     addEvent(`rejected incoming announcement for ${torrentId.slice(0, 12)}...`);
   };
 
