@@ -16,12 +16,12 @@ import {
   type FileTransferTransport,
   type PreparedLocalShare
 } from "./lib/swarm/swarmManager";
+import { getUserHash } from "./lib/userHash";
 import {
   WebRtcPeerManager,
   type WebRtcConnectionRoute,
   type WebRtcStatus,
 } from "./lib/webrtc";
-import { getUserHash } from "./lib/userHash";
 import type {
   ChatMessage,
   ConnectionStatus,
