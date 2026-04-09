@@ -1162,6 +1162,38 @@ textarea:disabled {
   background: rgba(248, 251, 255, 0.94);
 }
 
+.participant-item {
+  position: relative;
+}
+
+.kick-button {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: #ef4444;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-weight: bold;
+  font-size: 12px;
+  transition: background-color 0.2s ease;
+}
+
+.kick-button:hover {
+  background: #dc2626;
+}
+
+.kick-button:active {
+  background: #b91c1c;
+}
+
 .participant-list .meta {
   color: #3f5560;
   font-size: 0.9rem;
