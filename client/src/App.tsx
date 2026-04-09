@@ -4,8 +4,10 @@ import { DebugWindow } from "./components/DebugWindow";
 import { FileSharePanel } from "./components/FileSharePanel";
 import { JoinForm } from "./components/JoinForm";
 import { ParticipantList } from "./components/ParticipantList";
+import { RoomEndedModal } from "./components/RoomEndedModal";
 import { RoomInfo } from "./components/RoomInfo";
 import { TextEditorPanel } from "./components/TextEditorPanel";
+import { UserKickedModal } from "./components/UserKickedModal";
 import { WhiteboardPanel } from "./components/WhiteboardPanel";
 import { EditorCrdtManager } from "./lib/editorCrdt";
 import { SignalingClient } from "./lib/signalingClient";
@@ -19,6 +21,7 @@ import {
   type WebRtcConnectionRoute,
   type WebRtcStatus,
 } from "./lib/webrtc";
+import { getUserHash } from "./lib/userHash";
 import type {
   ChatMessage,
   ConnectionStatus,
@@ -150,6 +153,8 @@ export default function App(): JSX.Element {
   const [isRightLaneCollapsed, setIsRightLaneCollapsed] = useState(false);
   const [remoteEditorCursors, setRemoteEditorCursors] = useState<RemoteEditorCursor[]>([]);
   const [debugRouteBadges, setDebugRouteBadges] = useState<DebugRouteBadge[]>([]);
+  const [roomClosedReason, setRoomClosedReason] = useState<"host-ended" | "host-disconnected" | null>(null);
+  const [wasUserKicked, setWasUserKicked] = useState(false);
 
   const activeRoomRef = useRef<ActiveRoom | null>(null);
   const currentUserIdRef = useRef("");
@@ -798,12 +803,14 @@ export default function App(): JSX.Element {
           return;
         }
 
+        const userHash = getUserHash();
+
         if (pending.intent === "create") {
           signalingRef.current?.createRoom({
             roomId: pending.roomId,
             displayName: pending.displayName,
             roomPassword: pending.roomPassword,
-          });
+          }, userHash);
           return;
         }
 
@@ -812,7 +819,7 @@ export default function App(): JSX.Element {
           roomId: pending.roomId,
           displayName: pending.displayName,
           roomPassword: pending.roomPassword,
-        });
+        }, userHash);
       },
       onClose: () => {
         setSignalingState("disconnected");
@@ -961,21 +968,18 @@ export default function App(): JSX.Element {
           void stopLocalHostService();
         }
 
-        // Add a system message to chat when room is closed
-        if (message.reason === "host-ended" || message.reason === "host-disconnected") {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: crypto.randomUUID(),
-              author: "System",
-              text: "The host has left the room.",
-              sentAt: nowLabel(),
-              own: false,
-            },
-          ]);
+        // Only show modal to guests, not the host
+        const room = activeRoomRef.current;
+        if (room?.myRole === "guest") {
+          setRoomClosedReason(message.reason);
+        } else {
+          // Host just closes cleanly
+          clearRoomState(message.reason === "host-disconnected" ? "host disconnected" : "room closed by host");
         }
-
-        clearRoomState(message.reason === "host-disconnected" ? "host disconnected" : "room closed by host");
+      },
+      onUserKicked: (message) => {
+        addEvent(`you have been kicked from the room: ${message.message}`);
+        setWasUserKicked(true);
       },
       onServerError: (message) => {
         addEvent(`error: ${message.message}`);
@@ -1153,6 +1157,28 @@ export default function App(): JSX.Element {
     }
 
     addEvent("host requested room shutdown");
+  };
+
+  const handleRoomEndedModalClose = (): void => {
+    const reason = roomClosedReason;
+    setRoomClosedReason(null);
+    clearRoomState(reason === "host-disconnected" ? "host disconnected" : "room closed by host");
+  };
+
+  const handleUserKickedModalClose = (): void => {
+    setWasUserKicked(false);
+    clearRoomState("kicked from room");
+  };
+
+  const kickUser = (peerId: string): void => {
+    const room = activeRoomRef.current;
+    if (!room || room.myRole !== "host") {
+      addEvent("error: only host can kick users");
+      return;
+    }
+
+    signalingRef.current?.kickUser(room.roomId, peerId);
+    addEvent(`kicked user from room: ${peerId}`);
   };
 
   const sendMessage = (text: string): void => {
@@ -1432,8 +1458,10 @@ export default function App(): JSX.Element {
                   <ParticipantList
                     participants={activeRoom?.participants ?? []}
                     currentPeerId={activeRoom?.myPeerId ?? ""}
+                    currentRole={activeRoom?.myRole}
                     compact
                     showTitle={false}
+                    onKickUser={kickUser}
                   />
                 </details>
 
@@ -1456,6 +1484,10 @@ export default function App(): JSX.Element {
       )}
 
       <DebugWindow events={events} routeBadges={debugRouteBadges} />
+      {roomClosedReason && <RoomEndedModal reason={roomClosedReason} onClose={handleRoomEndedModalClose} />}
+      {wasUserKicked && <UserKickedModal onClose={handleUserKickedModalClose} />}
+
+  <DebugWindow events={events} routeBadges={debugRouteBadges} />
     </main>
   );
 }
