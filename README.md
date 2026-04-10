@@ -1,7 +1,7 @@
-# Vir Space
+# VIR
 
 ## Description
-Vir Space is a desktop collaboration app for creating or joining shared rooms with real-time communication tools. It combines Electron, React, WebSocket signaling, and WebRTC to support chat and peer-to-peer collaboration workflows.
+VIR is a desktop collaboration app for creating or joining shared rooms with real-time communication tools. It combines Electron, React, WebSocket signaling, and WebRTC to support chat and peer-to-peer collaboration workflows.
 
 ## Key Features
 - Room creation and join flow with password validation.

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { WebRtcConnectionRoute } from "../lib/webrtc";
+import { THEME_DEFAULTS } from "../theme/themeDefaults";
 
 interface DebugRouteBadge {
   peerId: string;
@@ -29,17 +30,30 @@ function ensureDebugWindow(target: Window | null): Window | null {
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>VIR Space Debug</title>
+    <title>VIR Debug</title>
     <style>
       :root {
         color-scheme: light;
+        --dbg-bg: ${THEME_DEFAULTS.debug.background};
+        --dbg-text-primary: ${THEME_DEFAULTS.debug.textPrimary};
+        --dbg-text-secondary: ${THEME_DEFAULTS.debug.textSecondary};
+        --dbg-panel-bg: ${THEME_DEFAULTS.debug.panelBg};
+        --dbg-panel-item-bg: ${THEME_DEFAULTS.debug.panelItemBg};
+        --dbg-border-strong: ${THEME_DEFAULTS.debug.borderStrong};
+        --dbg-border-soft: ${THEME_DEFAULTS.debug.borderSoft};
+        --dbg-success-fg: ${THEME_DEFAULTS.debug.successFg};
+        --dbg-success-bg: ${THEME_DEFAULTS.debug.successBg};
+        --dbg-warning-fg: ${THEME_DEFAULTS.debug.warningFg};
+        --dbg-warning-bg: ${THEME_DEFAULTS.debug.warningBg};
+        --dbg-neutral-fg: ${THEME_DEFAULTS.debug.neutralFg};
+        --dbg-neutral-bg: ${THEME_DEFAULTS.debug.neutralBg};
       }
 
       body {
         margin: 0;
         font-family: "Segoe UI Variable", "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
-        background: linear-gradient(180deg, #f5f8ff 0%, #eef3fb 100%);
-        color: #16222d;
+        background: var(--dbg-bg);
+        color: var(--dbg-text-primary);
       }
 
       .debug-shell {
@@ -56,8 +70,8 @@ function ensureDebugWindow(target: Window | null): Window | null {
       }
 
       .route-panel {
-        background: #ffffffcc;
-        border: 1px solid #d7e3f4;
+        background: var(--dbg-panel-bg);
+        border: 1px solid var(--dbg-border-strong);
         border-radius: 10px;
         padding: 10px;
       }
@@ -73,10 +87,10 @@ function ensureDebugWindow(target: Window | null): Window | null {
       .route-item {
         display: grid;
         gap: 4px;
-        border: 1px solid #e4ebf7;
+        border: 1px solid var(--dbg-border-soft);
         border-radius: 8px;
         padding: 8px;
-        background: #fff;
+        background: var(--dbg-panel-item-bg);
       }
 
       .route-item-header {
@@ -98,22 +112,22 @@ function ensureDebugWindow(target: Window | null): Window | null {
       }
 
       .route-badge.direct {
-        color: #0e6b35;
-        background: #dff7e8;
+        color: var(--dbg-success-fg);
+        background: var(--dbg-success-bg);
       }
 
       .route-badge.relayed {
-        color: #854f00;
-        background: #ffe8bf;
+        color: var(--dbg-warning-fg);
+        background: var(--dbg-warning-bg);
       }
 
       .route-badge.unknown {
-        color: #4f5b6b;
-        background: #e6ebf2;
+        color: var(--dbg-neutral-fg);
+        background: var(--dbg-neutral-bg);
       }
 
       .route-item small {
-        color: #4b5d73;
+        color: var(--dbg-text-secondary);
         font-size: 0.78rem;
       }
 
@@ -127,7 +141,7 @@ function ensureDebugWindow(target: Window | null): Window | null {
       }
 
       .events-list li {
-        color: #334d57;
+        color: var(--dbg-text-secondary);
         font-size: 0.9rem;
       }
     </style>

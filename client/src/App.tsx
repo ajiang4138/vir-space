@@ -1260,7 +1260,7 @@ export default function App(): JSX.Element {
       {!inRoom ? (
         <section className="setup-page">
           <header className="app-header card">
-            <h1>VIR Space</h1>
+            <h1>VIR</h1>
           </header>
 
           <div className="setup-page-content">

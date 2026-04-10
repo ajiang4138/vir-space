@@ -4,7 +4,7 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--ui-overlay-strong);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -12,9 +12,10 @@
 }
 
 .user-kicked-modal {
-  background: white;
+  background: var(--ui-surface-strong);
   border-radius: 8px;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1), 0 10px 25px rgba(0, 0, 0, 0.15);
+  border: 1px solid var(--ui-border-panel-strong);
+  box-shadow: var(--ui-shadow-panel-strong);
   max-width: 400px;
   width: 90%;
   overflow: hidden;
@@ -29,35 +30,35 @@
   display: flex;
   justify-content: center;
   margin-bottom: 16px;
-  color: #dc2626;
+  color: var(--ui-danger-solid-hover);
 }
 
 .user-kicked-modal-title {
   margin: 0 0 12px 0;
   font-size: 20px;
   font-weight: 600;
-  color: #1f2937;
+  color: var(--ui-text-primary);
 }
 
 .user-kicked-modal-message {
   margin: 0;
   font-size: 14px;
-  color: #6b7280;
+  color: var(--ui-text-secondary);
   line-height: 1.5;
 }
 
 .user-kicked-modal-footer {
   padding: 16px 24px;
-  background: #f9fafb;
-  border-top: 1px solid #e5e7eb;
+  background: var(--ui-surface-soft);
+  border-top: 1px solid var(--ui-border-soft);
   display: flex;
   justify-content: flex-end;
 }
 
 .user-kicked-modal-button {
   padding: 8px 16px;
-  background: #3b82f6;
-  color: white;
+  background: var(--ui-primary-gradient);
+  color: var(--ui-text-inverse);
   border: none;
   border-radius: 4px;
   font-size: 14px;
@@ -67,9 +68,9 @@
 }
 
 .user-kicked-modal-button:hover {
-  background: #2563eb;
+  background: var(--ui-primary-gradient-hover);
 }
 
 .user-kicked-modal-button:active {
-  background: #1d4ed8;
+  background: var(--ui-primary-gradient-active);
 }

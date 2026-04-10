@@ -3,13 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import type { HostServiceInfo, LocalNetworkInfo } from "../src/shared/signaling.js";
 import {
-    buildFileManifest,
-    createReceiverTransfer,
-    finalizeReceiverTransfer,
-    readFilePiece,
-    removeReceiverTransfer,
-    selectFileForSharing,
-    writeReceiverPiece,
+  buildFileManifest,
+  createReceiverTransfer,
+  finalizeReceiverTransfer,
+  readFilePiece,
+  removeReceiverTransfer,
+  selectFileForSharing,
+  writeReceiverPiece,
 } from "./fileTransfer.js";
 import { HostRoomService } from "./hostServer.js";
 
@@ -57,7 +57,7 @@ function createSplashWindow(): void {
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>Launching Vir Space</title>
+    <title>Launching VIR</title>
     <style>
       html, body {
         margin: 0;
@@ -117,7 +117,7 @@ function createSplashWindow(): void {
   </head>
   <body>
     <div class="wrap">
-      <h1>Vir Space is starting</h1>
+      <h1>VIR is starting</h1>
       <p>Preparing collaboration services and loading the workspace.</p>
       <div class="bar"></div>
     </div>
