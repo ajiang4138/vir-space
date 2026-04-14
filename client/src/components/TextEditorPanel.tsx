@@ -371,13 +371,13 @@ export function TextEditorPanel({
         top: isFullscreen ? 0 : "auto",
         left: isFullscreen ? 0 : "auto",
         zIndex: isFullscreen ? 9999 : "auto",
-        backgroundColor: "#fff",
+        backgroundColor: "var(--ui-surface-strong)",
         boxSizing: "border-box",
         borderRadius: isFullscreen ? 0 : undefined,
         margin: 0
       }}
     >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "16px", borderBottom: "1px solid #eee", paddingBottom: "12px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "16px", borderBottom: "1px solid var(--ui-border-soft)", paddingBottom: "12px" }}>
         <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
           <h2 style={{ margin: 0, fontSize: "1.1rem", whiteSpace: "nowrap" }}>Shared Text Editor</h2>
           {remoteCursorSummary.length > 0 ? (
@@ -392,13 +392,13 @@ export function TextEditorPanel({
                     fontSize: "0.78rem",
                     padding: "4px 8px",
                     borderRadius: "999px",
-                    background: "#f0f9ff",
-                    color: "#0f172a",
-                    border: "1px solid #bfdbfe",
+                    background: "var(--ui-info-bg)",
+                    color: "var(--scheme-brand-1100)",
+                    border: "1px solid var(--ui-border-strong)",
                   }}
                   title={`Cursor at line ${cursor.line}, column ${cursor.column}`}
                 >
-                  <span style={{ width: "7px", height: "7px", borderRadius: "999px", background: "#0369a1" }} />
+                  <span style={{ width: "7px", height: "7px", borderRadius: "999px", background: "var(--scheme-brand-700)" }} />
                   {cursor.displayName}: L{cursor.line}, C{cursor.column}
                 </span>
               ))}
@@ -408,24 +408,24 @@ export function TextEditorPanel({
         
         <div style={{ display: "flex", gap: "24px", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
           {/* Tools Group */}
-          <div style={{ display: "flex", gap: "4px", background: "#f1f5f9", padding: "4px", borderRadius: "8px" }}>
+          <div style={{ display: "flex", gap: "4px", background: "var(--ui-bg-muted)", padding: "4px", borderRadius: "8px" }}>
             <button 
               onClick={() => applyFormat("bold")} 
-              style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 12px", borderRadius: "6px", border: "none", background: formatState.bold ? "#fff" : "transparent", boxShadow: formatState.bold ? "0 1px 3px rgba(0,0,0,0.1)" : "none", color: "#000", cursor: "pointer", fontWeight: "bold", fontSize: "0.9rem" }}
+              style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 12px", borderRadius: "6px", border: "none", background: formatState.bold ? "var(--ui-info-bg-strong)" : "transparent", boxShadow: formatState.bold ? "var(--ui-shadow-pressable)" : "none", color: "var(--ui-text-primary)", cursor: "pointer", fontWeight: "bold", fontSize: "0.9rem" }}
               title="Bold"
             >
               B
             </button>
             <button 
               onClick={() => applyFormat("italic")} 
-              style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 12px", borderRadius: "6px", border: "none", background: formatState.italic ? "#fff" : "transparent", boxShadow: formatState.italic ? "0 1px 3px rgba(0,0,0,0.1)" : "none", color: "#000", cursor: "pointer", fontStyle: "italic", fontSize: "0.9rem" }}
+              style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 12px", borderRadius: "6px", border: "none", background: formatState.italic ? "var(--ui-info-bg-strong)" : "transparent", boxShadow: formatState.italic ? "var(--ui-shadow-pressable)" : "none", color: "var(--ui-text-primary)", cursor: "pointer", fontStyle: "italic", fontSize: "0.9rem" }}
               title="Italic"
             >
               I
             </button>
             <button 
               onClick={() => applyFormat("underline")} 
-              style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 12px", borderRadius: "6px", border: "none", background: formatState.underline ? "#fff" : "transparent", boxShadow: formatState.underline ? "0 1px 3px rgba(0,0,0,0.1)" : "none", color: "#000", cursor: "pointer", textDecoration: "underline", fontSize: "0.9rem" }}
+              style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 12px", borderRadius: "6px", border: "none", background: formatState.underline ? "var(--ui-info-bg-strong)" : "transparent", boxShadow: formatState.underline ? "var(--ui-shadow-pressable)" : "none", color: "var(--ui-text-primary)", cursor: "pointer", textDecoration: "underline", fontSize: "0.9rem" }}
               title="Underline"
             >
               U
@@ -446,11 +446,11 @@ export function TextEditorPanel({
           </div>
         </div>
       </div>
-      <div style={{ flex: 1, border: "1px solid #ccc", borderRadius: "8px", overflow: "hidden", background: "#f5f5f5", position: "relative", display: "flex", flexDirection: "column" }}>
+      <div style={{ flex: 1, border: "1px solid var(--ui-border-soft)", borderRadius: "8px", overflow: "hidden", background: "var(--ui-surface-panel)", position: "relative", display: "flex", flexDirection: "column" }}>
         {isConfirmingClear && (
-          <div style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(255,255,255,0.85)", zIndex: 10, display: "flex", justifyContent: "center", alignItems: "center" }}>
-            <div style={{ background: "#fff", padding: "24px 32px", borderRadius: "12px", boxShadow: "0 8px 24px rgba(0,0,0,0.15)", border: "1px solid #eee", textAlign: "center" }}>
-              <h3 style={{ margin: "0 0 16px 0", color: "#333" }}>This will delete all text. Are you sure?</h3>
+          <div style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, background: "var(--ui-overlay-soft)", zIndex: 10, display: "flex", justifyContent: "center", alignItems: "center" }}>
+            <div style={{ background: "var(--ui-surface-strong)", padding: "24px 32px", borderRadius: "12px", boxShadow: "var(--ui-shadow-panel)", border: "1px solid var(--ui-border-panel)", textAlign: "center" }}>
+              <h3 style={{ margin: "0 0 16px 0", color: "var(--ui-text-primary)" }}>This will delete all text. Are you sure?</h3>
               <div style={{ display: "flex", gap: "12px", justifyContent: "center" }}>
                 <button 
                   onClick={cancelClear} 
@@ -461,7 +461,7 @@ export function TextEditorPanel({
                 </button>
                 <button 
                   onClick={confirmClear} 
-                  style={{ background: "#ef4444", color: "#fff", border: "none", padding: "8px 24px", borderRadius: "6px", cursor: "pointer", fontWeight: "500" }}
+                  style={{ background: "var(--ui-danger-gradient)", color: "var(--ui-text-inverse)", border: "none", padding: "8px 24px", borderRadius: "6px", cursor: "pointer", fontWeight: "500" }}
                 >
                   Trash Anyway
                 </button>
@@ -482,7 +482,8 @@ export function TextEditorPanel({
             flex: 1,
             padding: "16px",
             outline: "none",
-            backgroundColor: "#fff",
+            backgroundColor: "var(--ui-surface-strong)",
+            color: "var(--ui-text-primary)",
             overflowY: "auto",
             whiteSpace: "pre-wrap",
             wordBreak: "break-word"

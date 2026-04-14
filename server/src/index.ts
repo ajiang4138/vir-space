@@ -141,7 +141,7 @@ const rooms = new Map<string, Room>();
 
 const httpServer = createServer((_req, res) => {
   res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("Vir Space bootstrap signaling server is running. Use ws://localhost:8787 from clients.\n");
+  res.end("VIR bootstrap signaling server is running. Use ws://localhost:8787 from clients.\n");
 });
 
 const wss = new WebSocketServer({ noServer: true });
