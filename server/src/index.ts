@@ -33,10 +33,11 @@ interface RoomStatePayload {
 }
 
 type ClientMessage =
-  | { type: "create-room"; roomId: string; displayName: string; roomPassword: string }
-  | { type: "join-room"; roomId: string; displayName: string; roomPassword: string }
+  | { type: "create-room"; roomId: string; displayName: string; roomPassword: string; userHash: string }
+  | { type: "join-room"; roomId: string; displayName: string; roomPassword: string; userHash: string }
   | { type: "leave-room"; roomId: string }
   | { type: "end-room"; roomId: string }
+  | { type: "kick-user"; roomId: string; targetPeerId: string }
   | { type: "chat-message"; roomId: string; text: string; senderDisplayName?: string }
   | { type: "offer"; roomId: string; targetPeerId: string; sdp: SessionDescriptionPayload }
   | { type: "answer"; roomId: string; targetPeerId: string; sdp: SessionDescriptionPayload }
@@ -101,6 +102,11 @@ type ServerMessage =
       message: string;
     }
   | {
+      type: "user-kicked";
+      roomId: string;
+      message: string;
+    }
+  | {
       type: "error";
       message: string;
       roomId?: string;
@@ -113,6 +119,7 @@ interface ClientContext {
   roomId?: string;
   displayName?: string;
   role?: ParticipantRole;
+  userHash?: string;
 }
 
 interface Room {
@@ -124,6 +131,7 @@ interface Room {
   guestDisplayName: string | null;
   status: "open" | "closed";
   participants: Map<string, ClientContext>;
+  bannedHashes: Set<string>;
 }
 
 const PORT = Number(process.env.PORT ?? 8787);
@@ -133,7 +141,7 @@ const rooms = new Map<string, Room>();
 
 const httpServer = createServer((_req, res) => {
   res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("Vir Space bootstrap signaling server is running. Use ws://localhost:8787 from clients.\n");
+  res.end("VIR bootstrap signaling server is running. Use ws://localhost:8787 from clients.\n");
 });
 
 const wss = new WebSocketServer({ noServer: true });
@@ -253,7 +261,7 @@ function leaveRoom(client: ClientContext, reason: "leave-request" | "disconnect"
   }
 }
 
-function createRoom(client: ClientContext, roomId: string, displayName: string, roomPassword: string): void {
+function createRoom(client: ClientContext, roomId: string, displayName: string, roomPassword: string, userHash: string): void {
   const existingRoom = rooms.get(roomId);
   if (existingRoom?.status === "open") {
     sendError(client, "Room already exists", roomId, "ROOM_EXISTS");
@@ -265,6 +273,7 @@ function createRoom(client: ClientContext, roomId: string, displayName: string, 
   client.roomId = roomId;
   client.displayName = displayName;
   client.role = "host";
+  client.userHash = userHash;
 
   const room: Room = {
     roomId,
@@ -275,6 +284,7 @@ function createRoom(client: ClientContext, roomId: string, displayName: string, 
     guestDisplayName: null,
     status: "open",
     participants: new Map([[client.id, client]]),
+    bannedHashes: new Set(),
   };
 
   rooms.set(roomId, room);
@@ -288,7 +298,7 @@ function createRoom(client: ClientContext, roomId: string, displayName: string, 
   });
 }
 
-function joinRoom(client: ClientContext, roomId: string, displayName: string, roomPassword: string): void {
+function joinRoom(client: ClientContext, roomId: string, displayName: string, roomPassword: string, userHash: string): void {
   const room = rooms.get(roomId);
   if (!room) {
     sendError(client, "Room does not exist", roomId, "ROOM_NOT_FOUND");
@@ -297,6 +307,11 @@ function joinRoom(client: ClientContext, roomId: string, displayName: string, ro
 
   if (room.status !== "open") {
     sendError(client, "Room is closed", roomId, "ROOM_CLOSED");
+    return;
+  }
+
+  if (room.bannedHashes.has(userHash)) {
+    sendError(client, "You have been banned from this room", roomId, "USER_BANNED");
     return;
   }
 
@@ -320,6 +335,7 @@ function joinRoom(client: ClientContext, roomId: string, displayName: string, ro
   client.roomId = roomId;
   client.displayName = displayName;
   client.role = "guest";
+  client.userHash = userHash;
   room.participants.set(client.id, client);
   room.guestPeerId = client.id;
   room.guestDisplayName = displayName;
@@ -387,9 +403,10 @@ function handleRoomAction(
   const roomId = message.roomId.trim();
   const displayName = message.displayName.trim();
   const roomPassword = message.roomPassword.trim();
+  const userHash = message.userHash.trim();
 
-  if (!roomId || !displayName || !roomPassword) {
-    sendError(client, "roomId, displayName, and roomPassword are required", roomId, "BAD_REQUEST");
+  if (!roomId || !displayName || !roomPassword || !userHash) {
+    sendError(client, "roomId, displayName, roomPassword, and userHash are required", roomId, "BAD_REQUEST");
     return;
   }
 
@@ -399,11 +416,11 @@ function handleRoomAction(
   }
 
   if (message.type === "create-room") {
-    createRoom(client, roomId, displayName, roomPassword);
+    createRoom(client, roomId, displayName, roomPassword, userHash);
     return;
   }
 
-  joinRoom(client, roomId, displayName, roomPassword);
+  joinRoom(client, roomId, displayName, roomPassword, userHash);
 }
 
 function handleRelay(
@@ -483,6 +500,51 @@ function handleChatMessage(
   }
 }
 
+function handleKickUser(client: ClientContext, message: Extract<ClientMessage, { type: "kick-user" }>): void {
+  const roomId = client.roomId;
+  if (!roomId || roomId !== message.roomId) {
+    sendError(client, "You must join room before kicking", message.roomId, "NOT_IN_ROOM");
+    return;
+  }
+
+  const room = rooms.get(roomId);
+  if (!room || room.status !== "open") {
+    sendError(client, "Room is not active", roomId, "ROOM_CLOSED");
+    return;
+  }
+
+  if (room.hostPeerId !== client.id) {
+    sendError(client, "Only host can kick users", message.roomId, "ONLY_HOST_CAN_KICK");
+    return;
+  }
+
+  const targetClient = room.participants.get(message.targetPeerId);
+  if (!targetClient) {
+    sendError(client, "Target user not found", message.roomId, "USER_NOT_FOUND");
+    return;
+  }
+
+  if (targetClient.id === room.hostPeerId) {
+    sendError(client, "Cannot kick the host", message.roomId, "CANNOT_KICK_HOST");
+    return;
+  }
+
+  // Ban the user's hash
+  if (targetClient.userHash) {
+    room.bannedHashes.add(targetClient.userHash);
+  }
+
+  // Send kick notification to the target user
+  sendTo(targetClient, {
+    type: "user-kicked",
+    roomId,
+    message: "You have been kicked from the room",
+  });
+
+  // Remove the kicked user from the room
+  leaveRoom(targetClient, "leave-request");
+}
+
 wss.on("connection", (socket) => {
   const client: ClientContext = {
     id: randomUUID(),
@@ -495,6 +557,11 @@ wss.on("connection", (socket) => {
 
       if (raw.type === "create-room" || raw.type === "join-room" || raw.type === "leave-room" || raw.type === "end-room") {
         handleRoomAction(client, raw);
+        return;
+      }
+
+      if (raw.type === "kick-user") {
+        handleKickUser(client, raw);
         return;
       }
 

@@ -10,6 +10,7 @@ type AnswerMessage = Extract<ServerSignalMessage, { type: "answer" }>;
 type IceCandidateMessage = Extract<ServerSignalMessage, { type: "ice-candidate" }>;
 type PeerLeftMessage = Extract<ServerSignalMessage, { type: "peer-left" }>;
 type RoomClosedMessage = Extract<ServerSignalMessage, { type: "room-closed" }>;
+type UserKickedMessage = Extract<ServerSignalMessage, { type: "user-kicked" }>;
 type ErrorMessage = Extract<ServerSignalMessage, { type: "error" }>;
 
 type MaybeAsyncHandler<T> = (message: T) => void | Promise<void>;
@@ -29,6 +30,7 @@ interface SignalingHandlers {
   onIceCandidate?: MaybeAsyncHandler<IceCandidateMessage>;
   onPeerLeft?: MaybeAsyncHandler<PeerLeftMessage>;
   onRoomClosed?: MaybeAsyncHandler<RoomClosedMessage>;
+  onUserKicked?: MaybeAsyncHandler<UserKickedMessage>;
   onServerError?: MaybeAsyncHandler<ErrorMessage>;
 }
 
@@ -67,21 +69,23 @@ export class SignalingClient {
     this.socket = null;
   }
 
-  createRoom(payload: RoomActionPayload): void {
+  createRoom(payload: RoomActionPayload, userHash: string): void {
     this.send({
       type: "create-room",
       roomId: payload.roomId,
       displayName: payload.displayName,
       roomPassword: payload.roomPassword,
+      userHash,
     });
   }
 
-  joinRoom(payload: RoomActionPayload): void {
+  joinRoom(payload: RoomActionPayload, userHash: string): void {
     this.send({
       type: "join-room",
       roomId: payload.roomId,
       displayName: payload.displayName,
       roomPassword: payload.roomPassword,
+      userHash,
     });
   }
 
@@ -96,6 +100,14 @@ export class SignalingClient {
     this.send({
       type: "end-room",
       roomId,
+    });
+  }
+
+  kickUser(roomId: string, targetPeerId: string): void {
+    this.send({
+      type: "kick-user",
+      roomId,
+      targetPeerId,
     });
   }
 
@@ -183,6 +195,12 @@ export class SignalingClient {
       case "room-closed":
         if (this.handlers.onRoomClosed) {
           void this.handlers.onRoomClosed(message);
+        }
+        return;
+
+      case "user-kicked":
+        if (this.handlers.onUserKicked) {
+          void this.handlers.onUserKicked(message);
         }
         return;
 

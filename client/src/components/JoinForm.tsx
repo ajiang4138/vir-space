@@ -95,7 +95,7 @@ export function JoinForm({
   if (step === "user-id") {
     return (
       <section className="card form room-launcher setup-screen">
-        <h2>Welcome to VIR Space!</h2>
+        <h2>Welcome to VIR!</h2>
         <p className="setup-copy">Please enter a User ID.</p>
         <form className="subform" onSubmit={submitUserId}>
           <label>
@@ -131,7 +131,13 @@ export function JoinForm({
             Join Room
           </button>
         </div>
-        <button type="button" className="ghost" disabled={roomActionDisabled} onClick={onSwitchUser}>
+        <button
+          type="button"
+          className="ghost"
+          style={{ color: "var(--ui-text-primary)" }}
+          disabled={roomActionDisabled}
+          onClick={onSwitchUser}
+        >
           Change User ID
         </button>
       </section>

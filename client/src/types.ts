@@ -23,6 +23,7 @@ export type ConnectionStatus =
   | "guest left"
   | "room closed by host"
   | "host disconnected"
+  | "kicked from room"
   | "signaling disconnected"
   | "invalid room password"
   | "room full"

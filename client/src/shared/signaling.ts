@@ -23,10 +23,11 @@ export interface RoomActionPayload {
 }
 
 export type ClientSignalMessage =
-  | ({ type: "create-room" } & RoomActionPayload)
-  | ({ type: "join-room" } & RoomActionPayload)
+  | ({ type: "create-room"; userHash: string } & RoomActionPayload)
+  | ({ type: "join-room"; userHash: string } & RoomActionPayload)
   | { type: "leave-room"; roomId: string }
   | { type: "end-room"; roomId: string }
+  | { type: "kick-user"; roomId: string; targetPeerId: string }
   | { type: "offer"; roomId: string; targetPeerId: string; sdp: RTCSessionDescriptionInit }
   | { type: "answer"; roomId: string; targetPeerId: string; sdp: RTCSessionDescriptionInit }
   | { type: "ice-candidate"; roomId: string; targetPeerId: string; candidate: RTCIceCandidateInit };
@@ -89,6 +90,11 @@ export type ServerSignalMessage =
       type: "room-closed";
       roomId: string;
       reason: "host-ended" | "host-disconnected";
+      message: string;
+    }
+  | {
+      type: "user-kicked";
+      roomId: string;
       message: string;
     }
   | {

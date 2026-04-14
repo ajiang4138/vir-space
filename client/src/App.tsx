@@ -4,27 +4,30 @@ import { DebugWindow } from "./components/DebugWindow";
 import { FileSharePanel } from "./components/FileSharePanel";
 import { JoinForm } from "./components/JoinForm";
 import { ParticipantList } from "./components/ParticipantList";
+import { RoomEndedModal } from "./components/RoomEndedModal";
 import { RoomInfo } from "./components/RoomInfo";
 import { TextEditorPanel } from "./components/TextEditorPanel";
+import { UserKickedModal } from "./components/UserKickedModal";
 import { WhiteboardPanel } from "./components/WhiteboardPanel";
 import { EditorCrdtManager } from "./lib/editorCrdt";
 import { SignalingClient } from "./lib/signalingClient";
 import {
-    FileTransferManager,
-    type FileTransferTransport,
-    type PreparedLocalShare
+  FileTransferManager,
+  type FileTransferTransport,
+  type PreparedLocalShare
 } from "./lib/swarm/swarmManager";
+import { getUserHash } from "./lib/userHash";
 import {
-    WebRtcPeerManager,
-    type WebRtcConnectionRoute,
-    type WebRtcStatus,
+  WebRtcPeerManager,
+  type WebRtcConnectionRoute,
+  type WebRtcStatus,
 } from "./lib/webrtc";
 import type {
-    ChatMessage,
-    ConnectionStatus,
-    ParticipantRole,
-    ParticipantSummary,
-    RoomStatePayload,
+  ChatMessage,
+  ConnectionStatus,
+  ParticipantRole,
+  ParticipantSummary,
+  RoomStatePayload,
 } from "./types";
 import type { FileTransferViewState } from "./types/fileTransfer";
 
@@ -150,6 +153,8 @@ export default function App(): JSX.Element {
   const [isRightLaneCollapsed, setIsRightLaneCollapsed] = useState(false);
   const [remoteEditorCursors, setRemoteEditorCursors] = useState<RemoteEditorCursor[]>([]);
   const [debugRouteBadges, setDebugRouteBadges] = useState<DebugRouteBadge[]>([]);
+  const [roomClosedReason, setRoomClosedReason] = useState<"host-ended" | "host-disconnected" | null>(null);
+  const [wasUserKicked, setWasUserKicked] = useState(false);
 
   const activeRoomRef = useRef<ActiveRoom | null>(null);
   const currentUserIdRef = useRef("");
@@ -311,13 +316,23 @@ export default function App(): JSX.Element {
   };
 
   const announceLocalSeedSharesToPeer = (peerId: string): void => {
-    void peerId;
+    const targetManager = peerFileManagersRef.current.get(peerId);
+    if (!targetManager) {
+      return;
+    }
+
+    const excludedPeerIds = Array.from(peerFileManagersRef.current.keys()).filter((id) => id !== peerId);
+    for (const preparedShare of localSeedSharesRef.current.values()) {
+      targetManager.sharePreparedFile(preparedShare, { excludePeerIds: excludedPeerIds });
+    }
   };
 
   const registerLocalSeedShare = (preparedShare: PreparedLocalShare, sourcePeerId?: string): void => {
     localSeedSharesRef.current.set(preparedShare.manifest.torrentId, preparedShare);
     const excluded = sourcePeerId ? [sourcePeerId] : [];
-    getPrimaryFileManager()?.sharePreparedFile(preparedShare, { excludePeerIds: excluded });
+    for (const manager of peerFileManagersRef.current.values()) {
+      manager.sharePreparedFile(preparedShare, { excludePeerIds: excluded });
+    }
   };
 
   const removePeerControllers = (peerId: string): void => {
@@ -398,6 +413,8 @@ export default function App(): JSX.Element {
               ensureEditorCrdtInitialized(activeRoomForEditor.roomId);
               sendEditorSyncRequestToPeer(remotePeer.peerId);
             }
+
+            announceLocalSeedSharesToPeer(remotePeer.peerId);
           },
           onDataChannelClose: () => {
             addEvent(`peer data channel closed: ${remotePeer.displayName}`);
@@ -786,12 +803,14 @@ export default function App(): JSX.Element {
           return;
         }
 
+        const userHash = getUserHash();
+
         if (pending.intent === "create") {
           signalingRef.current?.createRoom({
             roomId: pending.roomId,
             displayName: pending.displayName,
             roomPassword: pending.roomPassword,
-          });
+          }, userHash);
           return;
         }
 
@@ -800,7 +819,7 @@ export default function App(): JSX.Element {
           roomId: pending.roomId,
           displayName: pending.displayName,
           roomPassword: pending.roomPassword,
-        });
+        }, userHash);
       },
       onClose: () => {
         setSignalingState("disconnected");
@@ -949,21 +968,18 @@ export default function App(): JSX.Element {
           void stopLocalHostService();
         }
 
-        // Add a system message to chat when room is closed
-        if (message.reason === "host-ended" || message.reason === "host-disconnected") {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: crypto.randomUUID(),
-              author: "System",
-              text: "The host has left the room.",
-              sentAt: nowLabel(),
-              own: false,
-            },
-          ]);
+        // Only show modal to guests, not the host
+        const room = activeRoomRef.current;
+        if (room?.myRole === "guest") {
+          setRoomClosedReason(message.reason);
+        } else {
+          // Host just closes cleanly
+          clearRoomState(message.reason === "host-disconnected" ? "host disconnected" : "room closed by host");
         }
-
-        clearRoomState(message.reason === "host-disconnected" ? "host disconnected" : "room closed by host");
+      },
+      onUserKicked: (message) => {
+        addEvent(`you have been kicked from the room: ${message.message}`);
+        setWasUserKicked(true);
       },
       onServerError: (message) => {
         addEvent(`error: ${message.message}`);
@@ -1143,6 +1159,28 @@ export default function App(): JSX.Element {
     addEvent("host requested room shutdown");
   };
 
+  const handleRoomEndedModalClose = (): void => {
+    const reason = roomClosedReason;
+    setRoomClosedReason(null);
+    clearRoomState(reason === "host-disconnected" ? "host disconnected" : "room closed by host");
+  };
+
+  const handleUserKickedModalClose = (): void => {
+    setWasUserKicked(false);
+    clearRoomState("kicked from room");
+  };
+
+  const kickUser = (peerId: string): void => {
+    const room = activeRoomRef.current;
+    if (!room || room.myRole !== "host") {
+      addEvent("error: only host can kick users");
+      return;
+    }
+
+    signalingRef.current?.kickUser(room.roomId, peerId);
+    addEvent(`kicked user from room: ${peerId}`);
+  };
+
   const sendMessage = (text: string): void => {
     const room = activeRoomRef.current;
     if (!room) {
@@ -1167,10 +1205,24 @@ export default function App(): JSX.Element {
     ]);
   };
 
-  const getPrimaryFileManager = (): FileTransferManager | null => Array.from(peerFileManagersRef.current.values())[0] ?? null;
+  const getFileManagers = (): FileTransferManager[] => Array.from(peerFileManagersRef.current.values());
 
   const shareFile = (): void => {
-    void getPrimaryFileManager()?.shareFile();
+    const managers = getFileManagers();
+    const primaryManager = managers[0];
+    if (!primaryManager) {
+      addEvent("warning: no peer file channels available yet");
+      return;
+    }
+
+    void (async () => {
+      const preparedShare = await primaryManager.prepareShareFile();
+      if (!preparedShare) {
+        return;
+      }
+
+      registerLocalSeedShare(preparedShare);
+    })();
   };
 
   const requestDownload = (torrentId: string, senderPeerId: string): void => {
@@ -1178,12 +1230,26 @@ export default function App(): JSX.Element {
     if (!room) {
       return;
     }
-    getPrimaryFileManager()?.requestDownload(torrentId, senderPeerId, { swarmTransferId: torrentId });
+
+    const managers = getFileManagers();
+    if (managers.length === 0) {
+      addEvent("warning: no peer file channels available yet");
+      return;
+    }
+
+    for (const manager of managers) {
+      manager.requestDownload(torrentId, senderPeerId, { swarmTransferId: torrentId });
+    }
+
     addEvent(`swarm download requested for ${torrentId.slice(0, 12)}...`);
   };
 
   const rejectAnnouncement = (torrentId: string, senderPeerId: string): void => {
-    getPrimaryFileManager()?.rejectAnnouncement(torrentId, senderPeerId, "Declined by receiver");
+    const managers = getFileManagers();
+    for (const manager of managers) {
+      manager.rejectAnnouncement(torrentId, senderPeerId, "Declined by receiver");
+    }
+
     addEvent(`rejected incoming announcement for ${torrentId.slice(0, 12)}...`);
   };
 
@@ -1194,7 +1260,7 @@ export default function App(): JSX.Element {
       {!inRoom ? (
         <section className="setup-page">
           <header className="app-header card">
-            <h1>VIR Space</h1>
+            <h1>VIR</h1>
           </header>
 
           <div className="setup-page-content">
@@ -1392,8 +1458,10 @@ export default function App(): JSX.Element {
                   <ParticipantList
                     participants={activeRoom?.participants ?? []}
                     currentPeerId={activeRoom?.myPeerId ?? ""}
+                    currentRole={activeRoom?.myRole}
                     compact
                     showTitle={false}
+                    onKickUser={kickUser}
                   />
                 </details>
 
@@ -1416,6 +1484,10 @@ export default function App(): JSX.Element {
       )}
 
       <DebugWindow events={events} routeBadges={debugRouteBadges} />
+      {roomClosedReason && <RoomEndedModal reason={roomClosedReason} onClose={handleRoomEndedModalClose} />}
+      {wasUserKicked && <UserKickedModal onClose={handleUserKickedModalClose} />}
+
+  <DebugWindow events={events} routeBadges={debugRouteBadges} />
     </main>
   );
 }
