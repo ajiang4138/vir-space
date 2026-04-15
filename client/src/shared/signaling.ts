@@ -23,10 +23,11 @@ export interface RoomActionPayload {
 }
 
 export type ClientSignalMessage =
-  | ({ type: "create-room"; userHash: string } & RoomActionPayload)
-  | ({ type: "join-room"; userHash: string } & RoomActionPayload)
+  | ({ type: "create-room"; userHash: string; hostCandidateBootstrapUrl?: string } & RoomActionPayload)
+  | ({ type: "join-room"; userHash: string; hostCandidateBootstrapUrl?: string } & RoomActionPayload)
   | { type: "leave-room"; roomId: string }
   | { type: "end-room"; roomId: string }
+  | { type: "transfer-room-ownership"; roomId: string }
   | { type: "kick-user"; roomId: string; targetPeerId: string }
   | { type: "offer"; roomId: string; targetPeerId: string; sdp: RTCSessionDescriptionInit }
   | { type: "answer"; roomId: string; targetPeerId: string; sdp: RTCSessionDescriptionInit }
@@ -91,6 +92,16 @@ export type ServerSignalMessage =
       roomId: string;
       reason: "host-ended" | "host-disconnected";
       message: string;
+    }
+  | {
+      type: "room-host-transferred";
+      roomId: string;
+      previousHostPeerId: string;
+      previousHostDisplayName: string;
+      newHostPeerId: string;
+      newHostDisplayName: string;
+      newHostBootstrapUrl: string | null;
+      room: RoomStatePayload;
     }
   | {
       type: "user-kicked";

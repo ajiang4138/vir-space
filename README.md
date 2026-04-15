@@ -1,5 +1,8 @@
 # VIR
 
+## Introduction
+Project developed by Group 9 for CS6675-CS4675's Spring 2026 semester.
+
 ## Description
 VIR is a desktop collaboration app for creating or joining shared rooms with real-time communication tools. It combines Electron, React, WebSocket signaling, and WebRTC to support chat and peer-to-peer collaboration workflows.
 

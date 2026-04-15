@@ -33,10 +33,11 @@ interface RoomStatePayload {
 }
 
 type ClientMessage =
-  | { type: "create-room"; roomId: string; displayName: string; roomPassword: string; userHash: string }
-  | { type: "join-room"; roomId: string; displayName: string; roomPassword: string; userHash: string }
+  | { type: "create-room"; roomId: string; displayName: string; roomPassword: string; userHash: string; hostCandidateBootstrapUrl?: string }
+  | { type: "join-room"; roomId: string; displayName: string; roomPassword: string; userHash: string; hostCandidateBootstrapUrl?: string }
   | { type: "leave-room"; roomId: string }
   | { type: "end-room"; roomId: string }
+  | { type: "transfer-room-ownership"; roomId: string }
   | { type: "kick-user"; roomId: string; targetPeerId: string }
   | { type: "chat-message"; roomId: string; text: string; senderDisplayName?: string }
   | { type: "offer"; roomId: string; targetPeerId: string; sdp: SessionDescriptionPayload }
@@ -102,6 +103,16 @@ type ServerMessage =
       message: string;
     }
   | {
+      type: "room-host-transferred";
+      roomId: string;
+      previousHostPeerId: string;
+      previousHostDisplayName: string;
+      newHostPeerId: string;
+      newHostDisplayName: string;
+      newHostBootstrapUrl: string | null;
+      room: RoomStatePayload;
+    }
+  | {
       type: "user-kicked";
       roomId: string;
       message: string;
@@ -120,6 +131,7 @@ interface ClientContext {
   displayName?: string;
   role?: ParticipantRole;
   userHash?: string;
+  hostCandidateBootstrapUrl?: string;
 }
 
 interface Room {
@@ -183,6 +195,28 @@ function broadcastRoomState(room: Room): void {
   }
 }
 
+function refreshLegacyGuestFields(room: Room): void {
+  const guestCandidate = Array.from(room.participants.values()).find((participant) => participant.id !== room.hostPeerId);
+  room.guestPeerId = guestCandidate?.id ?? null;
+  room.guestDisplayName = guestCandidate?.displayName ?? null;
+}
+
+function getNextHostBySeniority(room: Room, currentHostPeerId: string): ClientContext | undefined {
+  for (const participant of room.participants.values()) {
+    if (participant.id === currentHostPeerId) {
+      continue;
+    }
+
+    if (participant.socket.readyState !== WebSocket.OPEN) {
+      continue;
+    }
+
+    return participant;
+  }
+
+  return undefined;
+}
+
 function closeRoom(room: Room, reason: "host-ended" | "host-disconnected"): void {
   room.status = "closed";
   const roomState = getRoomStatePayload(room);
@@ -234,10 +268,7 @@ function leaveRoom(client: ClientContext, reason: "leave-request" | "disconnect"
   }
 
   room.participants.delete(client.id);
-  if (room.guestPeerId === client.id) {
-    room.guestPeerId = null;
-    room.guestDisplayName = null;
-  }
+  refreshLegacyGuestFields(room);
 
   client.role = undefined;
 
@@ -261,7 +292,14 @@ function leaveRoom(client: ClientContext, reason: "leave-request" | "disconnect"
   }
 }
 
-function createRoom(client: ClientContext, roomId: string, displayName: string, roomPassword: string, userHash: string): void {
+function createRoom(
+  client: ClientContext,
+  roomId: string,
+  displayName: string,
+  roomPassword: string,
+  userHash: string,
+  hostCandidateBootstrapUrl?: string,
+): void {
   const existingRoom = rooms.get(roomId);
   if (existingRoom?.status === "open") {
     sendError(client, "Room already exists", roomId, "ROOM_EXISTS");
@@ -274,6 +312,7 @@ function createRoom(client: ClientContext, roomId: string, displayName: string, 
   client.displayName = displayName;
   client.role = "host";
   client.userHash = userHash;
+  client.hostCandidateBootstrapUrl = hostCandidateBootstrapUrl;
 
   const room: Room = {
     roomId,
@@ -298,7 +337,14 @@ function createRoom(client: ClientContext, roomId: string, displayName: string, 
   });
 }
 
-function joinRoom(client: ClientContext, roomId: string, displayName: string, roomPassword: string, userHash: string): void {
+function joinRoom(
+  client: ClientContext,
+  roomId: string,
+  displayName: string,
+  roomPassword: string,
+  userHash: string,
+  hostCandidateBootstrapUrl?: string,
+): void {
   const room = rooms.get(roomId);
   if (!room) {
     sendError(client, "Room does not exist", roomId, "ROOM_NOT_FOUND");
@@ -336,9 +382,9 @@ function joinRoom(client: ClientContext, roomId: string, displayName: string, ro
   client.displayName = displayName;
   client.role = "guest";
   client.userHash = userHash;
+  client.hostCandidateBootstrapUrl = hostCandidateBootstrapUrl;
   room.participants.set(client.id, client);
-  room.guestPeerId = client.id;
-  room.guestDisplayName = displayName;
+  refreshLegacyGuestFields(room);
 
   const roomState = getRoomStatePayload(room);
 
@@ -370,9 +416,43 @@ function joinRoom(client: ClientContext, roomId: string, displayName: string, ro
   broadcastRoomState(room);
 }
 
+function transferRoomOwnership(client: ClientContext, room: Room): void {
+  const nextHost = getNextHostBySeniority(room, client.id);
+  if (!nextHost) {
+    sendError(client, "No eligible participant available for transfer", room.roomId, "NO_TRANSFER_TARGET");
+    return;
+  }
+
+  const previousHostPeerId = client.id;
+  const previousHostDisplayName = client.displayName ?? room.hostDisplayName;
+
+  room.hostPeerId = nextHost.id;
+  room.hostDisplayName = nextHost.displayName ?? "Peer";
+  client.role = "guest";
+  nextHost.role = "host";
+
+  refreshLegacyGuestFields(room);
+  const roomState = getRoomStatePayload(room);
+
+  for (const member of room.participants.values()) {
+    sendTo(member, {
+      type: "room-host-transferred",
+      roomId: room.roomId,
+      previousHostPeerId,
+      previousHostDisplayName,
+      newHostPeerId: nextHost.id,
+      newHostDisplayName: room.hostDisplayName,
+      newHostBootstrapUrl: null,
+      room: roomState,
+    });
+  }
+
+  broadcastRoomState(room);
+}
+
 function handleRoomAction(
   client: ClientContext,
-  message: Extract<ClientMessage, { type: "create-room" | "join-room" | "leave-room" | "end-room" }>,
+  message: Extract<ClientMessage, { type: "create-room" | "join-room" | "leave-room" | "end-room" | "transfer-room-ownership" }>,
 ): void {
   if (message.type === "leave-room") {
     if (client.roomId !== message.roomId) {
@@ -400,10 +480,27 @@ function handleRoomAction(
     return;
   }
 
+  if (message.type === "transfer-room-ownership") {
+    const room = rooms.get(message.roomId);
+    if (!room) {
+      sendError(client, "Room does not exist", message.roomId, "ROOM_NOT_FOUND");
+      return;
+    }
+
+    if (room.hostPeerId !== client.id || room.status !== "open") {
+      sendError(client, "Only host can transfer ownership", message.roomId, "ONLY_HOST_CAN_TRANSFER");
+      return;
+    }
+
+    transferRoomOwnership(client, room);
+    return;
+  }
+
   const roomId = message.roomId.trim();
   const displayName = message.displayName.trim();
   const roomPassword = message.roomPassword.trim();
   const userHash = message.userHash.trim();
+  const hostCandidateBootstrapUrl = message.hostCandidateBootstrapUrl?.trim();
 
   if (!roomId || !displayName || !roomPassword || !userHash) {
     sendError(client, "roomId, displayName, roomPassword, and userHash are required", roomId, "BAD_REQUEST");
@@ -416,11 +513,11 @@ function handleRoomAction(
   }
 
   if (message.type === "create-room") {
-    createRoom(client, roomId, displayName, roomPassword, userHash);
+    createRoom(client, roomId, displayName, roomPassword, userHash, hostCandidateBootstrapUrl);
     return;
   }
 
-  joinRoom(client, roomId, displayName, roomPassword, userHash);
+  joinRoom(client, roomId, displayName, roomPassword, userHash, hostCandidateBootstrapUrl);
 }
 
 function handleRelay(
@@ -555,7 +652,13 @@ wss.on("connection", (socket) => {
     try {
       const raw = JSON.parse(data.toString()) as ClientMessage;
 
-      if (raw.type === "create-room" || raw.type === "join-room" || raw.type === "leave-room" || raw.type === "end-room") {
+      if (
+        raw.type === "create-room" ||
+        raw.type === "join-room" ||
+        raw.type === "leave-room" ||
+        raw.type === "end-room" ||
+        raw.type === "transfer-room-ownership"
+      ) {
         handleRoomAction(client, raw);
         return;
       }
