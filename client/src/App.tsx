@@ -7,27 +7,28 @@ import { ParticipantList } from "./components/ParticipantList";
 import { RoomEndedModal } from "./components/RoomEndedModal";
 import { RoomInfo } from "./components/RoomInfo";
 import { TextEditorPanel } from "./components/TextEditorPanel";
+import { TransferBeforeExitModal } from "./components/TransferBeforeExitModal";
 import { UserKickedModal } from "./components/UserKickedModal";
 import { WhiteboardPanel } from "./components/WhiteboardPanel";
 import { EditorCrdtManager } from "./lib/editorCrdt";
 import { SignalingClient } from "./lib/signalingClient";
 import {
-  FileTransferManager,
-  type FileTransferTransport,
-  type PreparedLocalShare
+    FileTransferManager,
+    type FileTransferTransport,
+    type PreparedLocalShare
 } from "./lib/swarm/swarmManager";
 import { getUserHash } from "./lib/userHash";
 import {
-  WebRtcPeerManager,
-  type WebRtcConnectionRoute,
-  type WebRtcStatus,
+    WebRtcPeerManager,
+    type WebRtcConnectionRoute,
+    type WebRtcStatus,
 } from "./lib/webrtc";
 import type {
-  ChatMessage,
-  ConnectionStatus,
-  ParticipantRole,
-  ParticipantSummary,
-  RoomStatePayload,
+    ChatMessage,
+    ConnectionStatus,
+    ParticipantRole,
+    ParticipantSummary,
+    RoomStatePayload,
 } from "./types";
 import type { FileTransferViewState } from "./types/fileTransfer";
 
@@ -52,6 +53,7 @@ interface PendingAction {
   bootstrapUrl: string;
   displayName: string;
   roomPassword: string;
+  hostCandidateBootstrapUrl?: string;
 }
 
 interface RemoteEditorCursor {
@@ -115,14 +117,16 @@ function htmlToPlainText(html: string): string {
 function buildActiveRoom(
   roomState: RoomStatePayload,
   myPeerId: string,
-  myRole: ParticipantRole,
+  fallbackRole: ParticipantRole,
   myDisplayName: string,
 ): ActiveRoom {
+  const resolvedRole = roomState.participants.find((participant) => participant.peerId === myPeerId)?.role ?? fallbackRole;
+
   return {
     roomId: roomState.roomId,
     myPeerId,
     myDisplayName,
-    myRole,
+    myRole: resolvedRole,
     roomStatus: roomState.status,
     hostDisplayName: roomState.hostDisplayName,
     participants: roomState.participants,
@@ -155,8 +159,12 @@ export default function App(): JSX.Element {
   const [debugRouteBadges, setDebugRouteBadges] = useState<DebugRouteBadge[]>([]);
   const [roomClosedReason, setRoomClosedReason] = useState<"host-ended" | "host-disconnected" | null>(null);
   const [wasUserKicked, setWasUserKicked] = useState(false);
+  const [isTransferBeforeExitModalOpen, setIsTransferBeforeExitModalOpen] = useState(false);
 
   const activeRoomRef = useRef<ActiveRoom | null>(null);
+  const handoverReconnectInProgressRef = useRef(false);
+  const roomPasswordRef = useRef("");
+  const leaveAfterOwnershipTransferRef = useRef(false);
   const currentUserIdRef = useRef("");
   const pendingActionRef = useRef<PendingAction | null>(null);
   const bootstrapUrlRef = useRef(defaultBootstrapUrl);
@@ -573,6 +581,8 @@ export default function App(): JSX.Element {
   };
 
   const clearRoomState = (nextStatus: ConnectionStatus): void => {
+    handoverReconnectInProgressRef.current = false;
+    roomPasswordRef.current = "";
     cleanupPeerConnection();
     localSeedSharesRef.current.clear();
     setDebugRouteBadges([]);
@@ -584,6 +594,7 @@ export default function App(): JSX.Element {
     setEditorText("");
     setSessionState(nextStatus);
     setSetupStep(currentUserIdRef.current ? "mode" : "user-id");
+    void refreshLocalBootstrapUrl(parsePortFromWsUrl(bootstrapUrlRef.current));
   };
 
   const stopLocalHostService = async (): Promise<void> => {
@@ -723,6 +734,75 @@ export default function App(): JSX.Element {
     bootstrapUrlRef.current = bootstrapUrl;
   }, [bootstrapUrl]);
 
+  const refreshLocalBootstrapUrl = async (port = defaultHostPort): Promise<void> => {
+    try {
+      const networkInfo = await window.electronApi.getLocalNetworkInfo();
+      const preferredAddress = networkInfo.preferredAddress;
+      if (preferredAddress && !isLoopbackHost(preferredAddress)) {
+        setBootstrapUrl(`ws://${preferredAddress}:${port}`);
+      }
+    } catch {
+      // Keep current bootstrap URL when local discovery is unavailable.
+    }
+  };
+
+  const resolveHostCandidateBootstrapUrl = async (port: number): Promise<string | undefined> => {
+    try {
+      const networkInfo = await window.electronApi.getLocalNetworkInfo();
+      const preferredAddress = networkInfo.preferredAddress;
+      if (!preferredAddress || isLoopbackHost(preferredAddress)) {
+        return undefined;
+      }
+
+      return `ws://${preferredAddress}:${port}`;
+    } catch {
+      return undefined;
+    }
+  };
+
+  const reconnectToTransferredHost = (nextBootstrapUrl: string): void => {
+    const room = activeRoomRef.current;
+    if (!room || !nextBootstrapUrl) {
+      return;
+    }
+
+    const roomPassword = roomPasswordRef.current;
+    if (!roomPassword) {
+      addEvent("error: missing room password for seamless transfer reconnect");
+      return;
+    }
+
+    handoverReconnectInProgressRef.current = true;
+    setBootstrapUrl(nextBootstrapUrl);
+    pendingActionRef.current = {
+      intent: "join",
+      roomId: room.roomId,
+      bootstrapUrl: nextBootstrapUrl,
+      displayName: room.myDisplayName,
+      roomPassword,
+    };
+    setSignalingState("connecting");
+    setSessionState("connecting to bootstrap server");
+    addEvent(`switching signaling endpoint to ${nextBootstrapUrl}`);
+    signalingRef.current?.connect(nextBootstrapUrl);
+  };
+
+  const becomeTransferredHostAndReconnect = async (nextBootstrapUrl: string): Promise<void> => {
+    const requestedPort = parsePortFromWsUrl(nextBootstrapUrl);
+
+    try {
+      await window.electronApi.startHostService(requestedPort);
+      addEvent(`local host signaling service moved to ${nextBootstrapUrl}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "failed to start new host signaling service";
+      addEvent(`error: ${message}`);
+      handoverReconnectInProgressRef.current = false;
+      return;
+    }
+
+    reconnectToTransferredHost(nextBootstrapUrl);
+  };
+
   useEffect(() => {
     if (!activeRoom) {
       setActiveWorkspace("chatroom");
@@ -810,7 +890,7 @@ export default function App(): JSX.Element {
             roomId: pending.roomId,
             displayName: pending.displayName,
             roomPassword: pending.roomPassword,
-          }, userHash);
+          }, userHash, pending.hostCandidateBootstrapUrl);
           return;
         }
 
@@ -819,9 +899,14 @@ export default function App(): JSX.Element {
           roomId: pending.roomId,
           displayName: pending.displayName,
           roomPassword: pending.roomPassword,
-        }, userHash);
+        }, userHash, pending.hostCandidateBootstrapUrl);
       },
       onClose: () => {
+        if (handoverReconnectInProgressRef.current) {
+          addEvent("signaling reconnecting for host handover");
+          return;
+        }
+
         setSignalingState("disconnected");
         addEvent("signaling disconnected");
 
@@ -851,6 +936,8 @@ export default function App(): JSX.Element {
           return;
         }
 
+        roomPasswordRef.current = pending.roomPassword;
+
         applyRoomState(message.room, message.senderPeerId, message.role, pending.displayName);
         setSessionState("room created");
         addEvent(`room created: ${message.roomId}`);
@@ -867,7 +954,13 @@ export default function App(): JSX.Element {
           return;
         }
 
+        roomPasswordRef.current = pending.roomPassword;
+
         applyRoomState(message.room, message.senderPeerId, message.role, pending.displayName);
+        if (handoverReconnectInProgressRef.current) {
+          handoverReconnectInProgressRef.current = false;
+          addEvent("reconnected to new host signaling endpoint");
+        }
         setSessionState("room joined");
         addEvent(`room joined: ${message.roomId}`);
         await tryStartNegotiation();
@@ -977,11 +1070,54 @@ export default function App(): JSX.Element {
           clearRoomState(message.reason === "host-disconnected" ? "host disconnected" : "room closed by host");
         }
       },
+      onRoomHostTransferred: (message) => {
+        const room = activeRoomRef.current;
+        if (!room || room.roomId !== message.roomId) {
+          return;
+        }
+
+        applyRoomState(message.room, room.myPeerId, room.myRole, room.myDisplayName);
+        if (message.newHostBootstrapUrl) {
+          setBootstrapUrl(message.newHostBootstrapUrl);
+        }
+
+        if (message.previousHostPeerId === room.myPeerId) {
+          if (leaveAfterOwnershipTransferRef.current) {
+            leaveAfterOwnershipTransferRef.current = false;
+            signalingRef.current?.leaveRoom(message.roomId);
+            clearRoomState("connected to bootstrap server");
+            addEvent(`ownership transferred to ${message.newHostDisplayName}; you left the room`);
+            return;
+          }
+
+          addEvent(`ownership transferred to ${message.newHostDisplayName}; you are now a guest`);
+          if (message.newHostBootstrapUrl && message.newHostBootstrapUrl !== bootstrapUrlRef.current) {
+            reconnectToTransferredHost(message.newHostBootstrapUrl);
+          }
+          return;
+        }
+
+        if (message.newHostPeerId === room.myPeerId) {
+          addEvent("you are now the host");
+          if (message.newHostBootstrapUrl && message.newHostBootstrapUrl !== bootstrapUrlRef.current) {
+            void becomeTransferredHostAndReconnect(message.newHostBootstrapUrl);
+          }
+        } else {
+          addEvent(`host transferred to ${message.newHostDisplayName}`);
+          if (message.newHostBootstrapUrl && message.newHostBootstrapUrl !== bootstrapUrlRef.current) {
+            window.setTimeout(() => {
+              reconnectToTransferredHost(message.newHostBootstrapUrl ?? "");
+            }, 350);
+          }
+        }
+      },
       onUserKicked: (message) => {
         addEvent(`you have been kicked from the room: ${message.message}`);
         setWasUserKicked(true);
       },
       onServerError: (message) => {
+        handoverReconnectInProgressRef.current = false;
+        leaveAfterOwnershipTransferRef.current = false;
         addEvent(`error: ${message.message}`);
 
         if (message.code === "ROOM_FULL") {
@@ -1038,7 +1174,7 @@ export default function App(): JSX.Element {
         return;
       }
 
-      if (isLoopbackHost(parsed.hostname) && intent === "create") {
+      if (intent === "create") {
         try {
           const networkInfo = await window.electronApi.getLocalNetworkInfo();
           const preferredAddress = networkInfo.preferredAddress;
@@ -1077,16 +1213,26 @@ export default function App(): JSX.Element {
     }
 
     setBootstrapUrl(resolvedBootstrapUrl);
+    roomPasswordRef.current = roomPassword;
     setMessages([]);
     cleanupPeerConnection();
     updateActiveRoom(null);
-    pendingActionRef.current = { intent, roomId, bootstrapUrl: resolvedBootstrapUrl, displayName, roomPassword };
+
+    const requestedPort = parsePortFromWsUrl(resolvedBootstrapUrl);
+    const hostCandidateBootstrapUrl = await resolveHostCandidateBootstrapUrl(requestedPort);
+
+    pendingActionRef.current = {
+      intent,
+      roomId,
+      bootstrapUrl: resolvedBootstrapUrl,
+      displayName,
+      roomPassword,
+      hostCandidateBootstrapUrl,
+    };
     setSignalingState("connecting");
     setSessionState("connecting to bootstrap server");
 
     if (intent === "create") {
-      const requestedPort = parsePortFromWsUrl(resolvedBootstrapUrl);
-
       try {
         await window.electronApi.startHostService(requestedPort);
         addEvent(`local host signaling service listening on port ${requestedPort}`);
@@ -1139,7 +1285,7 @@ export default function App(): JSX.Element {
     addEvent("left room");
   };
 
-  const endRoom = (): void => {
+  const performEndRoom = (): void => {
     const room = activeRoomRef.current;
     if (!room || room.myRole !== "host") {
       return;
@@ -1157,6 +1303,48 @@ export default function App(): JSX.Element {
     }
 
     addEvent("host requested room shutdown");
+  };
+
+  const endRoom = (): void => {
+    const room = activeRoomRef.current;
+    if (!room || room.myRole !== "host") {
+      return;
+    }
+
+    setIsTransferBeforeExitModalOpen(true);
+  };
+
+  const transferRoomOwnership = (leaveAfterTransfer = false): void => {
+    const room = activeRoomRef.current;
+    if (!room || room.myRole !== "host") {
+      leaveAfterOwnershipTransferRef.current = false;
+      return;
+    }
+
+    const hasEligibleSuccessor = room.participants.some((participant) => participant.peerId !== room.myPeerId);
+    if (!hasEligibleSuccessor) {
+      leaveAfterOwnershipTransferRef.current = false;
+      addEvent("error: no eligible participant available for ownership transfer");
+      return;
+    }
+
+    leaveAfterOwnershipTransferRef.current = leaveAfterTransfer;
+    signalingRef.current?.transferRoomOwnership(room.roomId);
+    addEvent(leaveAfterTransfer ? "host requested ownership transfer and exit" : "host requested ownership transfer by seniority");
+  };
+
+  const transferOwnershipBeforeExit = (): void => {
+    transferRoomOwnership(true);
+    setIsTransferBeforeExitModalOpen(false);
+  };
+
+  const endRoomFromTransferModal = (): void => {
+    setIsTransferBeforeExitModalOpen(false);
+    performEndRoom();
+  };
+
+  const closeTransferBeforeExitModal = (): void => {
+    setIsTransferBeforeExitModalOpen(false);
   };
 
   const handleRoomEndedModalClose = (): void => {
@@ -1468,9 +1656,19 @@ export default function App(): JSX.Element {
                 <section className="menu-section room-control-section">
                   <h3 className="menu-section-title">Room Controls</h3>
                   {activeRoom?.myRole === "host" ? (
-                    <button type="button" className="danger" onClick={endRoom}>
-                      End Room
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={() => transferRoomOwnership()}
+                        disabled={!activeRoom.participants.some((participant) => participant.peerId !== activeRoom.myPeerId)}
+                      >
+                        Transfer Ownership
+                      </button>
+                      <button type="button" className="danger" onClick={endRoom}>
+                        End Room
+                      </button>
+                    </>
                   ) : (
                     <button type="button" onClick={leaveRoom}>
                       Leave Room
@@ -1484,6 +1682,14 @@ export default function App(): JSX.Element {
       )}
 
       <DebugWindow events={events} routeBadges={debugRouteBadges} />
+      {isTransferBeforeExitModalOpen && (
+        <TransferBeforeExitModal
+          canTransfer={Boolean(activeRoom?.participants.some((participant) => participant.peerId !== activeRoom.myPeerId))}
+          onTransfer={transferOwnershipBeforeExit}
+          onEndRoom={endRoomFromTransferModal}
+          onCancel={closeTransferBeforeExitModal}
+        />
+      )}
       {roomClosedReason && <RoomEndedModal reason={roomClosedReason} onClose={handleRoomEndedModalClose} />}
       {wasUserKicked && <UserKickedModal onClose={handleUserKickedModalClose} />}
 

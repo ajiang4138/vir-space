@@ -10,6 +10,7 @@ type AnswerMessage = Extract<ServerSignalMessage, { type: "answer" }>;
 type IceCandidateMessage = Extract<ServerSignalMessage, { type: "ice-candidate" }>;
 type PeerLeftMessage = Extract<ServerSignalMessage, { type: "peer-left" }>;
 type RoomClosedMessage = Extract<ServerSignalMessage, { type: "room-closed" }>;
+type RoomHostTransferredMessage = Extract<ServerSignalMessage, { type: "room-host-transferred" }>;
 type UserKickedMessage = Extract<ServerSignalMessage, { type: "user-kicked" }>;
 type ErrorMessage = Extract<ServerSignalMessage, { type: "error" }>;
 
@@ -30,6 +31,7 @@ interface SignalingHandlers {
   onIceCandidate?: MaybeAsyncHandler<IceCandidateMessage>;
   onPeerLeft?: MaybeAsyncHandler<PeerLeftMessage>;
   onRoomClosed?: MaybeAsyncHandler<RoomClosedMessage>;
+  onRoomHostTransferred?: MaybeAsyncHandler<RoomHostTransferredMessage>;
   onUserKicked?: MaybeAsyncHandler<UserKickedMessage>;
   onServerError?: MaybeAsyncHandler<ErrorMessage>;
 }
@@ -69,23 +71,25 @@ export class SignalingClient {
     this.socket = null;
   }
 
-  createRoom(payload: RoomActionPayload, userHash: string): void {
+  createRoom(payload: RoomActionPayload, userHash: string, hostCandidateBootstrapUrl?: string): void {
     this.send({
       type: "create-room",
       roomId: payload.roomId,
       displayName: payload.displayName,
       roomPassword: payload.roomPassword,
       userHash,
+      hostCandidateBootstrapUrl,
     });
   }
 
-  joinRoom(payload: RoomActionPayload, userHash: string): void {
+  joinRoom(payload: RoomActionPayload, userHash: string, hostCandidateBootstrapUrl?: string): void {
     this.send({
       type: "join-room",
       roomId: payload.roomId,
       displayName: payload.displayName,
       roomPassword: payload.roomPassword,
       userHash,
+      hostCandidateBootstrapUrl,
     });
   }
 
@@ -99,6 +103,13 @@ export class SignalingClient {
   endRoom(roomId: string): void {
     this.send({
       type: "end-room",
+      roomId,
+    });
+  }
+
+  transferRoomOwnership(roomId: string): void {
+    this.send({
+      type: "transfer-room-ownership",
       roomId,
     });
   }
@@ -195,6 +206,12 @@ export class SignalingClient {
       case "room-closed":
         if (this.handlers.onRoomClosed) {
           void this.handlers.onRoomClosed(message);
+        }
+        return;
+
+      case "room-host-transferred":
+        if (this.handlers.onRoomHostTransferred) {
+          void this.handlers.onRoomHostTransferred(message);
         }
         return;
 
