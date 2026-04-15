@@ -333,6 +333,29 @@ async function waitForLocalRelay(host, port, totalWaitMs = 8000) {
   return false;
 }
 
+async function waitForRelayOnAnyHost(hosts, port, totalWaitMs = 8000) {
+  const uniqueHosts = Array.from(new Set(hosts.filter((host) => isIPv4(host))));
+  if (!uniqueHosts.length) {
+    return null;
+  }
+
+  const deadline = Date.now() + totalWaitMs;
+  while (Date.now() < deadline) {
+    for (const host of uniqueHosts) {
+      // eslint-disable-next-line no-await-in-loop
+      const reachable = await canReachTcp(host, port, 220);
+      if (reachable) {
+        return host;
+      }
+    }
+
+    // eslint-disable-next-line no-await-in-loop
+    await delay(220);
+  }
+
+  return null;
+}
+
 function buildNpmCommand(args) {
   if (process.platform === "win32") {
     return {
@@ -487,15 +510,21 @@ async function main() {
     localRelayCandidate = spawnDetachedRelayServer();
     startedLocalRelay = true;
 
-    const localReady = await waitForLocalRelay(preferredLocalIp, relayPort);
-    if (!localReady) {
-      console.error(`[dev-all] Local relay failed to become reachable on ${preferredLocalIp}:${relayPort}`);
+    const reachableLocalRelayHost = await waitForRelayOnAnyHost(localIps, relayPort);
+    if (!reachableLocalRelayHost) {
+      const localhostReachable = await waitForLocalRelay("127.0.0.1", relayPort, 1200);
+      if (localhostReachable) {
+        console.error(`[dev-all] Relay started but is not reachable on any network IPv4 interface (${localIps.join(", ")}).`);
+        console.error("[dev-all] This is usually a firewall or VPN adapter policy issue. Ensure inbound TCP 8787 is allowed on the active VPN/LAN adapter.");
+      } else {
+        console.error(`[dev-all] Local relay failed to become reachable on network interfaces (${localIps.join(", ")}).`);
+      }
       stopChildren();
       process.exit(1);
       return;
     }
 
-    relayHostForBootstrap = preferredLocalIp;
+    relayHostForBootstrap = reachableLocalRelayHost;
     bootstrapUrl = `ws://${relayHostForBootstrap}:${relayPort}`;
     console.log(`[dev-all] Local relay ready in background. Bootstrap URL: ${bootstrapUrl}`);
     writeRelayHostCache(relayHostForBootstrap);
