@@ -235,6 +235,11 @@ export class HostRoomService {
             return;
           }
 
+          if (raw.type === "kick-user") {
+            this.handleKickUser(client, raw);
+            return;
+          }
+
           if (raw.type === "offer" || raw.type === "answer" || raw.type === "ice-candidate") {
             this.handleRelay(client, raw);
             return;
@@ -509,6 +514,43 @@ export class HostRoomService {
       senderPeerId: client.id,
       candidate: message.candidate,
     });
+  }
+
+  private handleKickUser(
+    client: ClientContext,
+    message: Extract<ClientSignalMessage, { type: "kick-user" }>,
+  ): void {
+    const room = this.activeRoom;
+    const roomId = message.roomId;
+
+    if (!room || room.roomId !== roomId || room.status !== "open") {
+      this.sendError(client, "Room is not active", roomId, "ROOM_CLOSED");
+      return;
+    }
+
+    if (client.roomId !== roomId || room.hostPeerId !== client.id) {
+      this.sendError(client, "Only host can kick users", roomId, "ONLY_HOST_CAN_KICK");
+      return;
+    }
+
+    const targetClient = room.participants.get(message.targetPeerId);
+    if (!targetClient) {
+      this.sendError(client, "Target user not found", roomId, "USER_NOT_FOUND");
+      return;
+    }
+
+    if (targetClient.id === room.hostPeerId) {
+      this.sendError(client, "Cannot kick the host", roomId, "CANNOT_KICK_HOST");
+      return;
+    }
+
+    this.sendTo(targetClient, {
+      type: "user-kicked",
+      roomId,
+      message: "You have been kicked from the room",
+    });
+
+    this.leaveGuest(targetClient);
   }
 
   private handleClientDisconnect(client: ClientContext): void {

@@ -13,22 +13,22 @@ import { WhiteboardPanel } from "./components/WhiteboardPanel";
 import { EditorCrdtManager } from "./lib/editorCrdt";
 import { SignalingClient } from "./lib/signalingClient";
 import {
-    FileTransferManager,
-    type FileTransferTransport,
-    type PreparedLocalShare
+  FileTransferManager,
+  type FileTransferTransport,
+  type PreparedLocalShare
 } from "./lib/swarm/swarmManager";
 import { getUserHash } from "./lib/userHash";
 import {
-    WebRtcPeerManager,
-    type WebRtcConnectionRoute,
-    type WebRtcStatus,
+  WebRtcPeerManager,
+  type WebRtcConnectionRoute,
+  type WebRtcStatus,
 } from "./lib/webrtc";
 import type {
-    ChatMessage,
-    ConnectionStatus,
-    ParticipantRole,
-    ParticipantSummary,
-    RoomStatePayload,
+  ChatMessage,
+  ConnectionStatus,
+  ParticipantRole,
+  ParticipantSummary,
+  RoomStatePayload,
 } from "./types";
 import type { FileTransferViewState } from "./types/fileTransfer";
 
@@ -73,6 +73,14 @@ const defaultBootstrapUrl = import.meta.env.VITE_BOOTSTRAP_SIGNALING_URL ?? "ws:
 const defaultHostPort = 8787;
 const minimumRoomPasswordLength = 4;
 const editorCursorStaleMs = 15000;
+const maxChatHistoryEntries = 300;
+
+interface SyncedChatMessage {
+  id: string;
+  author: string;
+  text: string;
+  sentAt: string;
+}
 
 function nowLabel(): string {
   return new Date().toLocaleTimeString();
@@ -175,6 +183,7 @@ export default function App(): JSX.Element {
   const peerWebRtcManagersRef = useRef<Map<string, WebRtcPeerManager>>(new Map());
   const peerFileManagersRef = useRef<Map<string, FileTransferManager>>(new Map());
   const localSeedSharesRef = useRef<Map<string, PreparedLocalShare>>(new Map());
+  const chatHistoryRef = useRef<SyncedChatMessage[]>([]);
   const whiteboardHistoryRef = useRef<Array<{ action: string; data: string; senderPeerId: string; senderDisplayName: string }>>([]);
   const editorCrdtRef = useRef<EditorCrdtManager>(new EditorCrdtManager());
   const remoteEditorCursorsRef = useRef<Map<string, RemoteEditorCursor>>(new Map());
@@ -187,7 +196,31 @@ export default function App(): JSX.Element {
   } as React.CSSProperties;
 
   const addEvent = (text: string): void => {
-    setEvents((prev) => [`[${nowLabel()}] ${text}`, ...prev].slice(0, 150));
+    setEvents((prev) => [...prev, `[${nowLabel()}] ${text}`].slice(-150));
+  };
+
+  const appendChatHistory = (entry: SyncedChatMessage): void => {
+    chatHistoryRef.current = [...chatHistoryRef.current, entry].slice(-maxChatHistoryEntries);
+  };
+
+  const mergeChatHistory = (incomingEntries: SyncedChatMessage[]): SyncedChatMessage[] => {
+    if (incomingEntries.length === 0) {
+      return chatHistoryRef.current;
+    }
+
+    const knownIds = new Set(chatHistoryRef.current.map((entry) => entry.id));
+    const merged = [...chatHistoryRef.current];
+    for (const entry of incomingEntries) {
+      if (knownIds.has(entry.id)) {
+        continue;
+      }
+
+      knownIds.add(entry.id);
+      merged.push(entry);
+    }
+
+    chatHistoryRef.current = merged.slice(-maxChatHistoryEntries);
+    return chatHistoryRef.current;
   };
 
   const updateActiveRoom = (nextRoom: ActiveRoom | null): void => {
@@ -417,6 +450,22 @@ export default function App(): JSX.Element {
               }
             }
 
+            // Host synchronizes prior chatroom history for late joiners.
+            if (activeRoom?.myRole === "host" && chatHistoryRef.current.length > 0) {
+              const manager = peerWebRtcManagersRef.current.get(remotePeer.peerId);
+              if (manager) {
+                manager.sendAppDataMessage(
+                  JSON.stringify({
+                    type: "chat-history",
+                    roomId: activeRoom.roomId,
+                    senderPeerId: activeRoom.myPeerId,
+                    senderDisplayName: activeRoom.myDisplayName,
+                    messages: chatHistoryRef.current,
+                  }),
+                );
+              }
+            }
+
             const activeRoomForEditor = activeRoomRef.current;
             if (activeRoomForEditor) {
               ensureEditorCrdtInitialized(activeRoomForEditor.roomId);
@@ -433,16 +482,72 @@ export default function App(): JSX.Element {
             try {
               const message = JSON.parse(text);
               if (message.type === "chat-message") {
+                const chatEntry: SyncedChatMessage = {
+                  id: typeof message.messageId === "string" && message.messageId.trim().length > 0
+                    ? message.messageId
+                    : crypto.randomUUID(),
+                  author: typeof message.senderDisplayName === "string" && message.senderDisplayName.trim().length > 0
+                    ? message.senderDisplayName
+                    : "Peer",
+                  text: typeof message.text === "string" ? message.text : "",
+                  sentAt: typeof message.sentAt === "string" && message.sentAt.trim().length > 0
+                    ? message.sentAt
+                    : nowLabel(),
+                };
+
+                appendChatHistory(chatEntry);
                 setMessages((prev) => [
                   ...prev,
                   {
-                    id: crypto.randomUUID(),
-                    author: message.senderDisplayName || "Peer",
-                    text: message.text,
-                    sentAt: nowLabel(),
+                    id: chatEntry.id,
+                    author: chatEntry.author,
+                    text: chatEntry.text,
+                    sentAt: chatEntry.sentAt,
                     own: false,
                   },
                 ]);
+              } else if (message.type === "chat-history") {
+                if (!Array.isArray(message.messages)) {
+                  return;
+                }
+
+                const historyPayload = message.messages as unknown[];
+                const normalizedIncoming = historyPayload
+                  .map((entry: unknown) => {
+                    if (!entry || typeof entry !== "object") {
+                      return null;
+                    }
+
+                    const candidate = entry as Partial<SyncedChatMessage>;
+                    if (
+                      typeof candidate.id !== "string" ||
+                      typeof candidate.author !== "string" ||
+                      typeof candidate.text !== "string" ||
+                      typeof candidate.sentAt !== "string"
+                    ) {
+                      return null;
+                    }
+
+                    return {
+                      id: candidate.id,
+                      author: candidate.author,
+                      text: candidate.text,
+                      sentAt: candidate.sentAt,
+                    } satisfies SyncedChatMessage;
+                  })
+                  .filter((entry: SyncedChatMessage | null): entry is SyncedChatMessage => entry !== null);
+
+                const merged = mergeChatHistory(normalizedIncoming);
+                const localDisplayName = activeRoomRef.current?.myDisplayName ?? "";
+                setMessages(
+                  merged.map((entry) => ({
+                    id: entry.id,
+                    author: entry.author,
+                    text: entry.text,
+                    sentAt: entry.sentAt,
+                    own: entry.author === localDisplayName,
+                  })),
+                );
               } else if (message.type === "whiteboard-update") {
                 // Save the update to history
                 try {
@@ -585,6 +690,7 @@ export default function App(): JSX.Element {
     handoverReconnectInProgressRef.current = false;
     handoverReconnectAttemptsRef.current = 0;
     roomPasswordRef.current = "";
+    chatHistoryRef.current = [];
     cleanupPeerConnection();
     localSeedSharesRef.current.clear();
     setDebugRouteBadges([]);
@@ -1126,6 +1232,7 @@ export default function App(): JSX.Element {
       },
       onUserKicked: (message) => {
         addEvent(`you have been kicked from the room: ${message.message}`);
+        clearRoomState("kicked from room");
         setWasUserKicked(true);
       },
       onServerError: (message) => {
@@ -1250,6 +1357,7 @@ export default function App(): JSX.Element {
 
     setBootstrapUrl(resolvedBootstrapUrl);
     roomPasswordRef.current = roomPassword;
+    chatHistoryRef.current = [];
     setMessages([]);
     cleanupPeerConnection();
     updateActiveRoom(null);
@@ -1391,7 +1499,6 @@ export default function App(): JSX.Element {
 
   const handleUserKickedModalClose = (): void => {
     setWasUserKicked(false);
-    clearRoomState("kicked from room");
   };
 
   const kickUser = (peerId: string): void => {
@@ -1412,7 +1519,26 @@ export default function App(): JSX.Element {
       return;
     }
 
-    const msg = { type: "chat-message", roomId: room.roomId, senderPeerId: room.myPeerId, senderDisplayName: room.myDisplayName, text };
+    const messageId = crypto.randomUUID();
+    const sentAt = nowLabel();
+    const chatEntry: SyncedChatMessage = {
+      id: messageId,
+      author: room.myDisplayName,
+      text,
+      sentAt,
+    };
+
+    appendChatHistory(chatEntry);
+
+    const msg = {
+      type: "chat-message",
+      roomId: room.roomId,
+      senderPeerId: room.myPeerId,
+      senderDisplayName: room.myDisplayName,
+      messageId,
+      sentAt,
+      text,
+    };
     for (const manager of peerWebRtcManagersRef.current.values()) {
       manager.sendAppDataMessage(JSON.stringify(msg));
     }
@@ -1420,10 +1546,10 @@ export default function App(): JSX.Element {
     setMessages((prev) => [
       ...prev,
       {
-        id: crypto.randomUUID(),
-        author: activeRoomRef.current?.myDisplayName || "Me",
-        text,
-        sentAt: nowLabel(),
+        id: chatEntry.id,
+        author: chatEntry.author,
+        text: chatEntry.text,
+        sentAt: chatEntry.sentAt,
         own: true,
       },
     ]);
