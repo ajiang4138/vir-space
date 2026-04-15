@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Server as HttpServer } from "node:http";
 import { createServer } from "node:http";
 import os from "node:os";
 import { WebSocket, WebSocketServer } from "ws";
@@ -96,6 +97,7 @@ function buildWsUrls(networkInfo: LocalNetworkInfo | null, port: number | null):
 
 export class HostRoomService {
   private server: WebSocketServer | null = null;
+  private httpServer: HttpServer | null = null;
   private activeRoom: ActiveRoom | null = null;
   private status: HostServiceStatus = "stopped";
   private port: number | null = null;
@@ -126,6 +128,7 @@ export class HostRoomService {
     });
 
     this.server = server;
+    this.httpServer = httpServer;
     this.status = "running";
 
     const address = httpServer.address();
@@ -191,6 +194,7 @@ export class HostRoomService {
       await this.closeServer();
     } finally {
       this.server = null;
+      this.httpServer = null;
       this.activeRoom = null;
       this.status = "stopped";
       this.port = null;
@@ -641,15 +645,22 @@ export class HostRoomService {
   }
 
   private async closeServer(): Promise<void> {
-    if (!this.server) {
-      return;
+    const wsServer = this.server;
+    const httpServer = this.httpServer;
+
+    this.server = null;
+    this.httpServer = null;
+
+    if (wsServer) {
+      await new Promise<void>((resolve) => {
+        wsServer.close(() => resolve());
+      });
     }
 
-    const server = this.server;
-    this.server = null;
-
-    await new Promise<void>((resolve) => {
-      server.close(() => resolve());
-    });
+    if (httpServer) {
+      await new Promise<void>((resolve) => {
+        httpServer.close(() => resolve());
+      });
+    }
   }
 }

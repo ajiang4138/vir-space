@@ -163,6 +163,7 @@ export default function App(): JSX.Element {
 
   const activeRoomRef = useRef<ActiveRoom | null>(null);
   const handoverReconnectInProgressRef = useRef(false);
+  const handoverReconnectAttemptsRef = useRef(0);
   const roomPasswordRef = useRef("");
   const leaveAfterOwnershipTransferRef = useRef(false);
   const currentUserIdRef = useRef("");
@@ -582,6 +583,7 @@ export default function App(): JSX.Element {
 
   const clearRoomState = (nextStatus: ConnectionStatus): void => {
     handoverReconnectInProgressRef.current = false;
+    handoverReconnectAttemptsRef.current = 0;
     roomPasswordRef.current = "";
     cleanupPeerConnection();
     localSeedSharesRef.current.clear();
@@ -760,7 +762,7 @@ export default function App(): JSX.Element {
     }
   };
 
-  const reconnectToTransferredHost = (nextBootstrapUrl: string): void => {
+  const reconnectToTransferredHost = (nextBootstrapUrl: string, intent: RoomIntent = "join"): void => {
     const room = activeRoomRef.current;
     if (!room || !nextBootstrapUrl) {
       return;
@@ -773,13 +775,15 @@ export default function App(): JSX.Element {
     }
 
     handoverReconnectInProgressRef.current = true;
+    handoverReconnectAttemptsRef.current = 0;
     setBootstrapUrl(nextBootstrapUrl);
     pendingActionRef.current = {
-      intent: "join",
+      intent,
       roomId: room.roomId,
       bootstrapUrl: nextBootstrapUrl,
       displayName: room.myDisplayName,
       roomPassword,
+      hostCandidateBootstrapUrl: intent === "create" ? nextBootstrapUrl : undefined,
     };
     setSignalingState("connecting");
     setSessionState("connecting to bootstrap server");
@@ -800,7 +804,7 @@ export default function App(): JSX.Element {
       return;
     }
 
-    reconnectToTransferredHost(nextBootstrapUrl);
+    reconnectToTransferredHost(nextBootstrapUrl, "create");
   };
 
   useEffect(() => {
@@ -937,6 +941,11 @@ export default function App(): JSX.Element {
         }
 
         roomPasswordRef.current = pending.roomPassword;
+        if (handoverReconnectInProgressRef.current) {
+          handoverReconnectInProgressRef.current = false;
+          handoverReconnectAttemptsRef.current = 0;
+          addEvent("room migrated to new host signaling endpoint");
+        }
 
         applyRoomState(message.room, message.senderPeerId, message.role, pending.displayName);
         setSessionState("room created");
@@ -959,6 +968,7 @@ export default function App(): JSX.Element {
         applyRoomState(message.room, message.senderPeerId, message.role, pending.displayName);
         if (handoverReconnectInProgressRef.current) {
           handoverReconnectInProgressRef.current = false;
+          handoverReconnectAttemptsRef.current = 0;
           addEvent("reconnected to new host signaling endpoint");
         }
         setSessionState("room joined");
@@ -1092,7 +1102,10 @@ export default function App(): JSX.Element {
 
           addEvent(`ownership transferred to ${message.newHostDisplayName}; you are now a guest`);
           if (message.newHostBootstrapUrl && message.newHostBootstrapUrl !== bootstrapUrlRef.current) {
-            reconnectToTransferredHost(message.newHostBootstrapUrl);
+            const nextBootstrapUrl = message.newHostBootstrapUrl;
+            window.setTimeout(() => {
+              reconnectToTransferredHost(nextBootstrapUrl);
+            }, 600);
           }
           return;
         }
@@ -1107,7 +1120,7 @@ export default function App(): JSX.Element {
           if (message.newHostBootstrapUrl && message.newHostBootstrapUrl !== bootstrapUrlRef.current) {
             window.setTimeout(() => {
               reconnectToTransferredHost(message.newHostBootstrapUrl ?? "");
-            }, 350);
+            }, 700);
           }
         }
       },
@@ -1116,7 +1129,30 @@ export default function App(): JSX.Element {
         setWasUserKicked(true);
       },
       onServerError: (message) => {
+        const pending = pendingActionRef.current;
+        if (
+          handoverReconnectInProgressRef.current &&
+          message.code === "ROOM_NOT_FOUND" &&
+          pending?.intent === "join" &&
+          handoverReconnectAttemptsRef.current < 8
+        ) {
+          handoverReconnectAttemptsRef.current += 1;
+          const attempt = handoverReconnectAttemptsRef.current;
+          const retryDelayMs = Math.min(1500, 200 * attempt);
+          addEvent(`handover join retry ${attempt}/8 in ${retryDelayMs}ms`);
+          setSessionState("connecting to bootstrap server");
+          window.setTimeout(() => {
+            if (!handoverReconnectInProgressRef.current) {
+              return;
+            }
+
+            signalingRef.current?.connect(pending.bootstrapUrl);
+          }, retryDelayMs);
+          return;
+        }
+
         handoverReconnectInProgressRef.current = false;
+        handoverReconnectAttemptsRef.current = 0;
         leaveAfterOwnershipTransferRef.current = false;
         addEvent(`error: ${message.message}`);
 
