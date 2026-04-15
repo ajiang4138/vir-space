@@ -36,6 +36,7 @@ type RoomIntent = "create" | "join";
 type SetupStep = "user-id" | "mode" | "create" | "join";
 type SignalingConnectionState = "disconnected" | "connecting" | "connected";
 type CenterWorkspace = "chatroom" | "whiteboard" | "editor" | "files";
+type OwnershipTransferMode = "stay-in-room" | "leave-room";
 
 interface ActiveRoom {
   roomId: string;
@@ -689,6 +690,7 @@ export default function App(): JSX.Element {
   const clearRoomState = (nextStatus: ConnectionStatus): void => {
     handoverReconnectInProgressRef.current = false;
     handoverReconnectAttemptsRef.current = 0;
+    leaveAfterOwnershipTransferRef.current = false;
     roomPasswordRef.current = "";
     chatHistoryRef.current = [];
     cleanupPeerConnection();
@@ -1458,7 +1460,7 @@ export default function App(): JSX.Element {
     setIsTransferBeforeExitModalOpen(true);
   };
 
-  const transferRoomOwnership = (leaveAfterTransfer = false): void => {
+  const transferRoomOwnership = (mode: OwnershipTransferMode = "stay-in-room"): void => {
     const room = activeRoomRef.current;
     if (!room || room.myRole !== "host") {
       leaveAfterOwnershipTransferRef.current = false;
@@ -1472,13 +1474,14 @@ export default function App(): JSX.Element {
       return;
     }
 
+    const leaveAfterTransfer = mode === "leave-room";
     leaveAfterOwnershipTransferRef.current = leaveAfterTransfer;
     signalingRef.current?.transferRoomOwnership(room.roomId);
     addEvent(leaveAfterTransfer ? "host requested ownership transfer and exit" : "host requested ownership transfer by seniority");
   };
 
   const transferOwnershipBeforeExit = (): void => {
-    transferRoomOwnership(true);
+    transferRoomOwnership("leave-room");
     setIsTransferBeforeExitModalOpen(false);
   };
 

@@ -21,7 +21,7 @@ export function UserKickedModal({ onClose }: UserKickedModalProps): JSX.Element 
         </div>
         <div className="user-kicked-modal-footer">
           <button type="button" className="user-kicked-modal-button" onClick={onClose}>
-            Return to Home
+            Confirm
           </button>
         </div>
       </div>
