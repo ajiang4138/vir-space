@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain } from "electron";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { HostServiceInfo, LocalNetworkInfo } from "../src/shared/signaling.js";
@@ -15,6 +16,49 @@ import { HostRoomService } from "./hostServer.js";
 
 const hostService = new HostRoomService();
 let isQuitting = false;
+
+function isIPv4(value: string): boolean {
+  const parts = value.split(".");
+  if (parts.length !== 4) {
+    return false;
+  }
+
+  return parts.every((part) => {
+    if (!/^\d+$/.test(part)) {
+      return false;
+    }
+
+    const num = Number.parseInt(part, 10);
+    return num >= 0 && num <= 255;
+  });
+}
+
+function readCachedRelayBootstrapHost(): string | null {
+  const candidates = [
+    path.resolve(process.cwd(), ".relay-bootstrap-cache.json"),
+    path.resolve(process.cwd(), "..", ".relay-bootstrap-cache.json"),
+    path.resolve(__dirname, "..", "..", "..", ".relay-bootstrap-cache.json"),
+  ];
+
+  for (const candidatePath of candidates) {
+    try {
+      if (!fs.existsSync(candidatePath)) {
+        continue;
+      }
+
+      const raw = fs.readFileSync(candidatePath, "utf8");
+      const parsed = JSON.parse(raw) as { host?: string };
+      const host = typeof parsed.host === "string" ? parsed.host.trim() : "";
+      if (host && isIPv4(host)) {
+        return host;
+      }
+    } catch {
+      // Try the next candidate path.
+    }
+  }
+
+  return null;
+}
 
 function getLocalNetworkInfo(): LocalNetworkInfo {
   const addresses = new Set<string>();
@@ -74,6 +118,8 @@ ipcMain.handle("host-service:stop", async () => {
 ipcMain.handle("host-service:status", async () => hostService.getStatus());
 
 ipcMain.handle("host-service:network-info", async () => getLocalNetworkInfo());
+
+ipcMain.handle("relay-bootstrap-cache:host", async () => readCachedRelayBootstrapHost());
 
 ipcMain.handle("file-transfer:select-file", async () => selectFileForSharing());
 

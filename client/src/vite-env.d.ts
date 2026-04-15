@@ -24,6 +24,7 @@ declare global {
       stopHostService: () => Promise<HostServiceInfo>;
       getHostServiceStatus: () => Promise<HostServiceInfo>;
       getLocalNetworkInfo: () => Promise<LocalNetworkInfo>;
+      getCachedRelayBootstrapHost: () => Promise<string | null>;
       selectFileForSharing: () => Promise<PickedFileInfo | null>;
       buildFileManifest: (filePath: string, roomId: string, senderPeerId: string, pieceSize: number) => Promise<FileManifest>;
       readFilePiece: (filePath: string, pieceIndex: number, pieceSize: number) => Promise<Uint8Array>;

@@ -212,6 +212,7 @@ export default function App(): JSX.Element {
   const discoveredRoomsByKeyRef = useRef<Map<string, DiscoveredRoomSummary>>(new Map());
   const relayReconnectTimerRef = useRef<number | null>(null);
   const relayReconnectAttemptsRef = useRef(0);
+  const lastSelectedRelayLogRef = useRef<string | null>(null);
 
   const addEvent = (text: string): void => {
     setEvents((prev) => [`[${nowLabel()}] ${text}`, ...prev].slice(0, 150));
@@ -530,6 +531,16 @@ export default function App(): JSX.Element {
   }, []);
 
   useEffect(() => {
+    const selected = bootstrapUrl.trim();
+    if (!selected || selected === lastSelectedRelayLogRef.current) {
+      return;
+    }
+
+    lastSelectedRelayLogRef.current = selected;
+    addEvent(`relay bootstrap selected: ${selected}`);
+  }, [bootstrapUrl]);
+
+  useEffect(() => {
     if (hasConfiguredBootstrapUrl) {
       return;
     }
@@ -540,6 +551,16 @@ export default function App(): JSX.Element {
       const currentHost = parseHostnameFromWsUrl(bootstrapUrlRef.current);
       if (currentHost && !isLoopbackHost(currentHost)) {
         return;
+      }
+
+      try {
+        const cachedRelayHost = await window.electronApi.getCachedRelayBootstrapHost();
+        if (!cancelled && cachedRelayHost && !isLoopbackHost(cachedRelayHost)) {
+          setBootstrapUrl(`ws://${cachedRelayHost}:${defaultHostPort}`);
+          return;
+        }
+      } catch {
+        // Continue with local network probe fallback.
       }
 
       try {
@@ -773,7 +794,7 @@ export default function App(): JSX.Element {
       onOpen: () => {
         setSignalingState("connected");
         setSessionState("connected to bootstrap server");
-        addEvent("connected to bootstrap signaling server");
+        addEvent(`connected to bootstrap signaling server: ${bootstrapUrlRef.current}`);
         relayReconnectAttemptsRef.current = 0;
         if (relayReconnectTimerRef.current !== null) {
           window.clearTimeout(relayReconnectTimerRef.current);
@@ -807,7 +828,7 @@ export default function App(): JSX.Element {
       },
       onClose: () => {
         setSignalingState("disconnected");
-        addEvent("signaling disconnected");
+        addEvent(`signaling disconnected: ${bootstrapUrlRef.current}`);
         relayListedRoomIdRef.current = null;
         relayListingSignatureRef.current = null;
 
@@ -1070,6 +1091,7 @@ export default function App(): JSX.Element {
       relayReconnectAttemptsRef.current += 1;
       setSignalingState("connecting");
       setSessionState("connecting to bootstrap server");
+      addEvent(`reconnecting to bootstrap signaling server: ${url}`);
       signalingRef.current?.connect(url);
     }, delayMs);
 
@@ -1182,6 +1204,7 @@ export default function App(): JSX.Element {
     pendingActionRef.current = { intent, roomId, bootstrapUrl: resolvedBootstrapUrl, displayName, roomPassword };
     setSignalingState("connecting");
     setSessionState("connecting to bootstrap server");
+    addEvent(`connecting to bootstrap signaling server: ${resolvedBootstrapUrl}`);
 
     if (intent === "create") {
       const requestedPort = parsePortFromWsUrl(resolvedBootstrapUrl);
@@ -1281,6 +1304,7 @@ export default function App(): JSX.Element {
 
       setSignalingState("connecting");
       setSessionState("connecting to bootstrap server");
+      addEvent(`connecting to bootstrap signaling server: ${url}`);
       signalingRef.current?.connect(url);
     } catch {
       addEvent("error: invalid bootstrap URL format for room discovery");

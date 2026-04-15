@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld("electronApi", {
   stopHostService: () => ipcRenderer.invoke("host-service:stop"),
   getHostServiceStatus: () => ipcRenderer.invoke("host-service:status"),
   getLocalNetworkInfo: () => ipcRenderer.invoke("host-service:network-info"),
+  getCachedRelayBootstrapHost: () => ipcRenderer.invoke("relay-bootstrap-cache:host"),
   selectFileForSharing: () => ipcRenderer.invoke("file-transfer:select-file"),
   buildFileManifest: (filePath: string, roomId: string, senderPeerId: string, pieceSize: number) =>
     ipcRenderer.invoke("file-transfer:build-manifest", filePath, roomId, senderPeerId, pieceSize),

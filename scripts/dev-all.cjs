@@ -356,6 +356,7 @@ function spawnNpmCommand(args) {
 }
 
 function spawnDetachedRelayServer() {
+  const isWindows = process.platform === "win32";
   const relayEnv = {
     ...process.env,
     RELAY_IDLE_SHUTDOWN_MS: process.env.RELAY_IDLE_SHUTDOWN_MS || "60000",
@@ -364,7 +365,7 @@ function spawnDetachedRelayServer() {
   const detachedOptions = {
     cwd: rootDir,
     env: relayEnv,
-    detached: true,
+    detached: !isWindows,
     stdio: "ignore",
     windowsHide: true,
   };
