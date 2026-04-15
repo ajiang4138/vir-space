@@ -25,6 +25,22 @@ function generateRoomId(): string {
 
 const minimumRoomPasswordLength = 4;
 
+function extractHostIp(defaultBootstrapUrl: string): string {
+  if (!defaultBootstrapUrl) {
+    return "";
+  }
+
+  try {
+    return new URL(defaultBootstrapUrl).hostname;
+  } catch {
+    return defaultBootstrapUrl.replace(/^ws:\/\//, "").replace(/:\d+$/, "").trim();
+  }
+}
+
+function buildBootstrapUrl(hostIp: string): string {
+  return `ws://${hostIp.trim()}:8787`;
+}
+
 export function JoinForm({
   step,
   userIdDraft,
@@ -40,19 +56,18 @@ export function JoinForm({
   onCreateRoom,
   onJoinRoom,
 }: JoinFormProps): JSX.Element {
+  const defaultHostIp = extractHostIp(defaultBootstrapUrl);
   const [createRoomId, setCreateRoomId] = useState(generateRoomId());
-  const [createBootstrapUrl, setCreateBootstrapUrl] = useState(defaultBootstrapUrl);
+  const [createHostIp, setCreateHostIp] = useState(defaultHostIp);
   const [createRoomPassword, setCreateRoomPassword] = useState("");
   const [joinRoomId, setJoinRoomId] = useState("");
-  const [joinBootstrapUrl, setJoinBootstrapUrl] = useState(defaultBootstrapUrl);
+  const [joinHostIp, setJoinHostIp] = useState(defaultHostIp);
   const [joinRoomPassword, setJoinRoomPassword] = useState("");
 
   useEffect(() => {
-    if (defaultBootstrapUrl) {
-      setCreateBootstrapUrl(defaultBootstrapUrl);
-      setJoinBootstrapUrl(defaultBootstrapUrl);
-    }
-  }, [defaultBootstrapUrl]);
+    setCreateHostIp(defaultHostIp);
+    setJoinHostIp(defaultHostIp);
+  }, [defaultHostIp]);
 
   const submitUserId = (event: FormEvent): void => {
     event.preventDefault();
@@ -63,7 +78,7 @@ export function JoinForm({
     event.preventDefault();
     onCreateRoom({
       roomId: createRoomId.trim(),
-      bootstrapUrl: createBootstrapUrl.trim(),
+      bootstrapUrl: buildBootstrapUrl(createHostIp),
       roomPassword: createRoomPassword.trim(),
     });
   };
@@ -72,7 +87,7 @@ export function JoinForm({
     event.preventDefault();
     onJoinRoom({
       roomId: joinRoomId.trim(),
-      bootstrapUrl: joinBootstrapUrl.trim(),
+      bootstrapUrl: buildBootstrapUrl(joinHostIp),
       roomPassword: joinRoomPassword.trim(),
     });
   };
@@ -80,8 +95,8 @@ export function JoinForm({
   if (step === "user-id") {
     return (
       <section className="card form room-launcher setup-screen">
-        <h2>Welcome to Vir Space</h2>
-        <p className="setup-copy">Enter your user ID to continue.</p>
+        <h2>Welcome to VIR!</h2>
+        <p className="setup-copy">Please enter a User ID.</p>
         <form className="subform" onSubmit={submitUserId}>
           <label>
             User ID
@@ -116,7 +131,13 @@ export function JoinForm({
             Join Room
           </button>
         </div>
-        <button type="button" className="ghost" disabled={roomActionDisabled} onClick={onSwitchUser}>
+        <button
+          type="button"
+          className="ghost"
+          style={{ color: "var(--ui-text-primary)" }}
+          disabled={roomActionDisabled}
+          onClick={onSwitchUser}
+        >
           Change User ID
         </button>
       </section>
@@ -130,13 +151,21 @@ export function JoinForm({
         <p className="setup-copy">
           Host user: <strong>{currentUserId}</strong>
         </p>
+        <div className="setup-copy">
+          <p>Before creating a room, provide:</p>
+          <ul>
+            <li>Host IPv4 Address: host device LAN IP only (for example, 192.168.1.42).</li>
+            <li>Room ID: a unique room name to share with participants.</li>
+            <li>Room Password: at least 4 characters.</li>
+          </ul>
+        </div>
         <form className="subform" onSubmit={submitCreate}>
           <label>
-            Bootstrap Signaling URL
+            Host IPv4 Address
             <input
-              value={createBootstrapUrl}
-              onChange={(event) => setCreateBootstrapUrl(event.target.value)}
-              placeholder="ws://192.168.1.42:8787"
+              value={createHostIp}
+              onChange={(event) => setCreateHostIp(event.target.value)}
+              placeholder="192.168.1.42"
               required
               disabled={roomActionDisabled}
             />
@@ -195,13 +224,21 @@ export function JoinForm({
       <p className="setup-copy">
         Guest user: <strong>{currentUserId}</strong>
       </p>
+      <div className="setup-copy">
+        <p>Before joining a room, provide:</p>
+        <ul>
+          <li>Host IPv4 Address: the host device LAN IP (for example, 192.168.1.42).</li>
+          <li>Room ID: the exact room ID shared by the host.</li>
+          <li>Room Password: the same password set by the host.</li>
+        </ul>
+      </div>
       <form className="subform" onSubmit={submitJoin}>
         <label>
-          Bootstrap Signaling URL
+          Host IPv4 Address
           <input
-            value={joinBootstrapUrl}
-            onChange={(event) => setJoinBootstrapUrl(event.target.value)}
-            placeholder="ws://192.168.1.42:8787"
+            value={joinHostIp}
+            onChange={(event) => setJoinHostIp(event.target.value)}
+            placeholder="192.168.1.42"
             required
             disabled={roomActionDisabled}
           />

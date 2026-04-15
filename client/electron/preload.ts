@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { FileManifest } from "../src/shared/fileTransfer.js";
+import type { TorrentManifest } from "../src/shared/fileTransfer.js";
 
 interface MetricsSessionInfo {
   runId: string;
@@ -20,7 +20,7 @@ contextBridge.exposeInMainWorld("electronApi", {
     ipcRenderer.invoke("file-transfer:build-manifest", filePath, roomId, senderPeerId, pieceSize),
   readFilePiece: (filePath: string, pieceIndex: number, pieceSize: number) =>
     ipcRenderer.invoke("file-transfer:read-piece", filePath, pieceIndex, pieceSize),
-  createReceiverTransfer: (manifest: FileManifest) => ipcRenderer.invoke("file-transfer:create-receiver", manifest),
+  createReceiverTransfer: (manifest: TorrentManifest) => ipcRenderer.invoke("file-transfer:create-receiver", manifest),
   writeReceiverPiece: (transferId: string, pieceIndex: number, data: Uint8Array) =>
     ipcRenderer.invoke("file-transfer:write-receiver-piece", transferId, pieceIndex, data),
   finalizeReceiverTransfer: (transferId: string) => ipcRenderer.invoke("file-transfer:finalize-receiver", transferId),

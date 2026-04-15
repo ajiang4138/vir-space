@@ -1,0 +1,76 @@
+.user-kicked-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--ui-overlay-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.user-kicked-modal {
+  background: var(--ui-surface-strong);
+  border-radius: 8px;
+  border: 1px solid var(--ui-border-panel-strong);
+  box-shadow: var(--ui-shadow-panel-strong);
+  max-width: 400px;
+  width: 90%;
+  overflow: hidden;
+}
+
+.user-kicked-modal-content {
+  padding: 32px 24px;
+  text-align: center;
+}
+
+.user-kicked-modal-icon {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 16px;
+  color: var(--ui-danger-solid-hover);
+}
+
+.user-kicked-modal-title {
+  margin: 0 0 12px 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--ui-text-primary);
+}
+
+.user-kicked-modal-message {
+  margin: 0;
+  font-size: 14px;
+  color: var(--ui-text-secondary);
+  line-height: 1.5;
+}
+
+.user-kicked-modal-footer {
+  padding: 16px 24px;
+  background: var(--ui-surface-soft);
+  border-top: 1px solid var(--ui-border-soft);
+  display: flex;
+  justify-content: flex-end;
+}
+
+.user-kicked-modal-button {
+  padding: 8px 16px;
+  background: var(--ui-primary-gradient);
+  color: var(--ui-text-inverse);
+  border: none;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.user-kicked-modal-button:hover {
+  background: var(--ui-primary-gradient-hover);
+}
+
+.user-kicked-modal-button:active {
+  background: var(--ui-primary-gradient-active);
+}

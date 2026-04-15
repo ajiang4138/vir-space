@@ -1,17 +1,37 @@
-import React, { useRef, useEffect, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 interface TextEditorPanelProps {
-  roomId: string;
-  onSendUpdate: (data: string, displayName: string) => void;
-  displayName: string;
+  editorText: string;
+  onEditorTextChange: (nextText: string) => void;
+  onCursorChange: (offset: number | null) => void;
+  remoteCursors: Array<{
+    peerId: string;
+    displayName: string;
+    cursorOffset: number;
+    updatedAt: number;
+  }>;
 }
 
-export function TextEditorPanel({ roomId, onSendUpdate, displayName }: TextEditorPanelProps) {
+interface SelectionSnapshot {
+  hasFocus: boolean;
+  anchorOffset: number;
+  focusOffset: number;
+}
+
+export function TextEditorPanel({
+  editorText,
+  onEditorTextChange,
+  onCursorChange,
+  remoteCursors,
+}: TextEditorPanelProps) {
   const editorRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isConfirmingClear, setIsConfirmingClear] = useState(false);
   const [formatState, setFormatState] = useState({ bold: false, italic: false, underline: false });
-  const isUpdatingRef = useRef(false);
+  const isApplyingRemoteRef = useRef(false);
+  const inputDebounceRef = useRef<number | null>(null);
+  const cursorDebounceRef = useRef<number | null>(null);
+  const lastSentCursorOffsetRef = useRef<number | null>(null);
 
   const updateFormatState = () => {
     setFormatState({
@@ -21,110 +41,216 @@ export function TextEditorPanel({ roomId, onSendUpdate, displayName }: TextEdito
     });
   };
 
-  const pendingHtmlRef = useRef<string | null>(null);
+  const computeDiffRange = (
+    previousText: string,
+    nextText: string,
+  ): { prefixLength: number; previousReplaceEnd: number; nextReplaceEnd: number } => {
+    let prefixLength = 0;
 
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (pendingHtmlRef.current !== null && !isUpdatingRef.current) {
-        onSendUpdate(JSON.stringify({ action: "update", html: pendingHtmlRef.current }), displayName);
-        pendingHtmlRef.current = null;
-      }
-    }, 2000);
-    return () => clearInterval(interval);
-  }, [roomId, onSendUpdate, displayName]);
-
-  // Send update to peers
-  const handleInput = () => {
-    updateFormatState();
-    if (isUpdatingRef.current) return;
-    if (editorRef.current) {
-      pendingHtmlRef.current = editorRef.current.innerHTML;
+    while (
+      prefixLength < previousText.length &&
+      prefixLength < nextText.length &&
+      previousText.charCodeAt(prefixLength) === nextText.charCodeAt(prefixLength)
+    ) {
+      prefixLength += 1;
     }
+
+    let suffixLength = 0;
+    const maxSuffixLength = Math.min(previousText.length - prefixLength, nextText.length - prefixLength);
+
+    while (
+      suffixLength < maxSuffixLength &&
+      previousText.charCodeAt(previousText.length - 1 - suffixLength) === nextText.charCodeAt(nextText.length - 1 - suffixLength)
+    ) {
+      suffixLength += 1;
+    }
+
+    return {
+      prefixLength,
+      previousReplaceEnd: previousText.length - suffixLength,
+      nextReplaceEnd: nextText.length - suffixLength,
+    };
+  };
+
+  const mapOffsetThroughTextChange = (previousText: string, nextText: string, previousOffset: number): number => {
+    const clampedOffset = Math.max(0, Math.min(previousOffset, previousText.length));
+    const { prefixLength, previousReplaceEnd, nextReplaceEnd } = computeDiffRange(previousText, nextText);
+
+    if (clampedOffset <= prefixLength) {
+      return clampedOffset;
+    }
+
+    if (clampedOffset >= previousReplaceEnd) {
+      const delta = nextReplaceEnd - previousReplaceEnd;
+      return Math.max(0, Math.min(clampedOffset + delta, nextText.length));
+    }
+
+    return nextReplaceEnd;
+  };
+
+  const getNodeOffset = (root: HTMLElement, container: Node, nodeOffset: number): number => {
+    const range = document.createRange();
+    range.selectNodeContents(root);
+    range.setEnd(container, nodeOffset);
+    return range.toString().length;
+  };
+
+  const findNodeAtOffset = (root: HTMLElement, offset: number): { node: Node; offset: number } => {
+    const normalizedOffset = Math.max(0, offset);
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+    let traversed = 0;
+
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      const length = node.nodeValue?.length ?? 0;
+      if (traversed + length >= normalizedOffset) {
+        return {
+          node,
+          offset: normalizedOffset - traversed,
+        };
+      }
+      traversed += length;
+    }
+
+    return {
+      node: root,
+      offset: root.childNodes.length,
+    };
+  };
+
+  const getSelectionSnapshot = (root: HTMLElement): SelectionSnapshot => {
+    const selection = window.getSelection();
+    if (
+      !selection ||
+      selection.rangeCount === 0 ||
+      !selection.anchorNode ||
+      !selection.focusNode ||
+      !root.contains(selection.anchorNode) ||
+      !root.contains(selection.focusNode)
+    ) {
+      return { hasFocus: false, anchorOffset: 0, focusOffset: 0 };
+    }
+
+    return {
+      hasFocus: true,
+      anchorOffset: getNodeOffset(root, selection.anchorNode, selection.anchorOffset),
+      focusOffset: getNodeOffset(root, selection.focusNode, selection.focusOffset),
+    };
+  };
+
+  const restoreSelectionSnapshot = (root: HTMLElement, snapshot: SelectionSnapshot): void => {
+    const selection = window.getSelection();
+    if (!selection || !snapshot.hasFocus) {
+      return;
+    }
+
+    const anchor = findNodeAtOffset(root, snapshot.anchorOffset);
+    const focus = findNodeAtOffset(root, snapshot.focusOffset);
+    selection.removeAllRanges();
+
+    if (typeof selection.setBaseAndExtent === "function") {
+      selection.setBaseAndExtent(anchor.node, anchor.offset, focus.node, focus.offset);
+      return;
+    }
+
+    const range = document.createRange();
+    range.setStart(anchor.node, anchor.offset);
+    range.setEnd(focus.node, focus.offset);
+    selection.addRange(range);
+  };
+
+  const flushEditorText = (): void => {
+    const nextText = editorRef.current?.innerText ?? "";
+    onEditorTextChange(nextText);
+  };
+
+  const scheduleEditorTextFlush = (): void => {
+    if (inputDebounceRef.current !== null) {
+      window.clearTimeout(inputDebounceRef.current);
+    }
+
+    inputDebounceRef.current = window.setTimeout(() => {
+      inputDebounceRef.current = null;
+      flushEditorText();
+    }, 75);
   };
 
   useEffect(() => {
-    const handleEditorUpdateEvent = (event: Event) => {
-      const customEvent = event as CustomEvent;
-      const message = customEvent.detail;
-      if (message && message.type === "editor-update" && editorRef.current) {
-        try {
-          const parsedData = JSON.parse(message.data);
-          if (parsedData.action === "update") {
-            if (editorRef.current.innerHTML !== parsedData.html) {
-              isUpdatingRef.current = true;
-              
-              // Try to save simple selection state
-              const sel = window.getSelection();
-              let savedOffset = 0;
-              let hasFocus = false;
-              try {
-                if (sel && sel.rangeCount > 0 && editorRef.current.contains(sel.anchorNode)) {
-                  hasFocus = true;
-                  // Very basic preservation: length of text before selection
-                  const range = sel.getRangeAt(0);
-                  const preSelectionRange = range.cloneRange();
-                  preSelectionRange.selectNodeContents(editorRef.current);
-                  preSelectionRange.setEnd(range.startContainer, range.startOffset);
-                  savedOffset = preSelectionRange.toString().length;
-                }
-              } catch (e) {
-                console.error("Failed to save selection:", e);
-                hasFocus = false;
-              }
+    return () => {
+      if (inputDebounceRef.current !== null) {
+        window.clearTimeout(inputDebounceRef.current);
+      }
 
-              try {
-                editorRef.current.innerHTML = parsedData.html;
-              } catch (e) {
-                console.error("Failed to update HTML:", e);
-              }
-              
-              // Try to restore selection state
-              if (hasFocus && sel) {
-                try {
-                  // Find node and offset
-                  const walker = document.createTreeWalker(editorRef.current, NodeFilter.SHOW_TEXT, null);
-                  let currentOffset = 0;
-                  let foundNode = null;
-                  let nodeOffset = 0;
-
-                  while (walker.nextNode()) {
-                    const node = walker.currentNode;
-                    const length = node.nodeValue?.length || 0;
-                    if (currentOffset + length >= savedOffset) {
-                      foundNode = node;
-                      nodeOffset = savedOffset - currentOffset;
-                      break;
-                    }
-                    currentOffset += length;
-                  }
-
-                  if (foundNode) {
-                    const newRange = document.createRange();
-                    newRange.setStart(foundNode, nodeOffset);
-                    newRange.setEnd(foundNode, nodeOffset);
-                    sel.removeAllRanges();
-                    sel.addRange(newRange);
-                  }
-                } catch (e) {
-                  console.error("Failed to restore selection:", e);
-                }
-              }
-
-              isUpdatingRef.current = false;
-            }
-          }
-        } catch (error) {
-          console.error("Failed to parse editor update:", error);
-          isUpdatingRef.current = false;
-        }
+      if (cursorDebounceRef.current !== null) {
+        window.clearTimeout(cursorDebounceRef.current);
       }
     };
-
-    document.addEventListener("editor-update", handleEditorUpdateEvent);
-    return () => {
-      document.removeEventListener("editor-update", handleEditorUpdateEvent);
-    };
   }, []);
+
+  const getCaretOffset = (root: HTMLElement): number | null => {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || !selection.focusNode || !root.contains(selection.focusNode)) {
+      return null;
+    }
+
+    return getNodeOffset(root, selection.focusNode, selection.focusOffset);
+  };
+
+  const sendCursorChange = (offset: number | null): void => {
+    if (lastSentCursorOffsetRef.current === offset) {
+      return;
+    }
+
+    lastSentCursorOffsetRef.current = offset;
+    onCursorChange(offset);
+  };
+
+  const scheduleCursorUpdate = (): void => {
+    if (cursorDebounceRef.current !== null) {
+      window.clearTimeout(cursorDebounceRef.current);
+    }
+
+    cursorDebounceRef.current = window.setTimeout(() => {
+      cursorDebounceRef.current = null;
+      sendCursorChange(editorRef.current ? getCaretOffset(editorRef.current) : null);
+    }, 60);
+  };
+
+  const handleInput = () => {
+    updateFormatState();
+    if (isApplyingRemoteRef.current) {
+      return;
+    }
+    scheduleEditorTextFlush();
+    scheduleCursorUpdate();
+  };
+
+  useEffect(() => {
+    if (!editorRef.current) {
+      return;
+    }
+
+    const nextText = editorText ?? "";
+    const previousText = editorRef.current.innerText;
+    if (previousText === nextText) {
+      return;
+    }
+
+    const previousSelection = getSelectionSnapshot(editorRef.current);
+    isApplyingRemoteRef.current = true;
+    editorRef.current.textContent = nextText;
+    isApplyingRemoteRef.current = false;
+
+    if (previousSelection.hasFocus) {
+      restoreSelectionSnapshot(editorRef.current, {
+        hasFocus: true,
+        anchorOffset: mapOffsetThroughTextChange(previousText, nextText, previousSelection.anchorOffset),
+        focusOffset: mapOffsetThroughTextChange(previousText, nextText, previousSelection.focusOffset),
+      });
+
+      scheduleCursorUpdate();
+    }
+  }, [editorText]);
 
   const toggleFullscreen = () => {
     setIsFullscreen((prev) => !prev);
@@ -137,6 +263,29 @@ export function TextEditorPanel({ roomId, onSendUpdate, displayName }: TextEdito
     } else if (e.key === "Enter") {
       // let default take over
     }
+  };
+
+  const handleKeyUp = (): void => {
+    updateFormatState();
+    scheduleCursorUpdate();
+  };
+
+  const handleMouseUp = (): void => {
+    updateFormatState();
+    scheduleCursorUpdate();
+  };
+
+  const handleEditorFocus = (): void => {
+    scheduleCursorUpdate();
+  };
+
+  const handleEditorBlur = (): void => {
+    if (cursorDebounceRef.current !== null) {
+      window.clearTimeout(cursorDebounceRef.current);
+      cursorDebounceRef.current = null;
+    }
+
+    sendCursorChange(null);
   };
 
   const applyFormat = (command: string) => {
@@ -152,8 +301,12 @@ export function TextEditorPanel({ roomId, onSendUpdate, displayName }: TextEdito
 
   const confirmClear = () => {
     if (editorRef.current) {
-      editorRef.current.innerHTML = "";
-      handleInput(); // Re-use handleInput to send update
+      editorRef.current.textContent = "";
+      if (inputDebounceRef.current !== null) {
+        window.clearTimeout(inputDebounceRef.current);
+        inputDebounceRef.current = null;
+      }
+      onEditorTextChange("");
     }
     setIsConfirmingClear(false);
   };
@@ -175,6 +328,35 @@ export function TextEditorPanel({ roomId, onSendUpdate, displayName }: TextEdito
     }
   };
 
+  const remoteCursorSummary = useMemo(() => {
+    const text = editorText ?? "";
+
+    const offsetToLineColumn = (offset: number): { line: number; column: number } => {
+      const clampedOffset = Math.max(0, Math.min(offset, text.length));
+      let line = 1;
+      let column = 1;
+
+      for (let index = 0; index < clampedOffset; index += 1) {
+        if (text.charCodeAt(index) === 10) {
+          line += 1;
+          column = 1;
+        } else {
+          column += 1;
+        }
+      }
+
+      return { line, column };
+    };
+
+    return remoteCursors
+      .slice()
+      .sort((left, right) => left.displayName.localeCompare(right.displayName))
+      .map((cursor) => ({
+        ...cursor,
+        ...offsetToLineColumn(cursor.cursorOffset),
+      }));
+  }, [editorText, remoteCursors]);
+
   return (
     <div 
       className="card" 
@@ -189,35 +371,61 @@ export function TextEditorPanel({ roomId, onSendUpdate, displayName }: TextEdito
         top: isFullscreen ? 0 : "auto",
         left: isFullscreen ? 0 : "auto",
         zIndex: isFullscreen ? 9999 : "auto",
-        backgroundColor: "#fff",
+        backgroundColor: "var(--ui-surface-strong)",
         boxSizing: "border-box",
         borderRadius: isFullscreen ? 0 : undefined,
         margin: 0
       }}
     >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "16px", borderBottom: "1px solid #eee", paddingBottom: "12px" }}>
-        <h2 style={{ margin: 0, fontSize: "1.1rem", whiteSpace: "nowrap" }}>Shared Text Editor</h2>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "16px", borderBottom: "1px solid var(--ui-border-soft)", paddingBottom: "12px" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+          <h2 style={{ margin: 0, fontSize: "1.1rem", whiteSpace: "nowrap" }}>Shared Text Editor</h2>
+          {remoteCursorSummary.length > 0 ? (
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+              {remoteCursorSummary.map((cursor) => (
+                <span
+                  key={cursor.peerId}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    fontSize: "0.78rem",
+                    padding: "4px 8px",
+                    borderRadius: "999px",
+                    background: "var(--ui-info-bg)",
+                    color: "var(--scheme-brand-1100)",
+                    border: "1px solid var(--ui-border-strong)",
+                  }}
+                  title={`Cursor at line ${cursor.line}, column ${cursor.column}`}
+                >
+                  <span style={{ width: "7px", height: "7px", borderRadius: "999px", background: "var(--scheme-brand-700)" }} />
+                  {cursor.displayName}: L{cursor.line}, C{cursor.column}
+                </span>
+              ))}
+            </div>
+          ) : null}
+        </div>
         
         <div style={{ display: "flex", gap: "24px", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
           {/* Tools Group */}
-          <div style={{ display: "flex", gap: "4px", background: "#f1f5f9", padding: "4px", borderRadius: "8px" }}>
+          <div style={{ display: "flex", gap: "4px", background: "var(--ui-bg-muted)", padding: "4px", borderRadius: "8px" }}>
             <button 
               onClick={() => applyFormat("bold")} 
-              style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 12px", borderRadius: "6px", border: "none", background: formatState.bold ? "#fff" : "transparent", boxShadow: formatState.bold ? "0 1px 3px rgba(0,0,0,0.1)" : "none", color: "#000", cursor: "pointer", fontWeight: "bold", fontSize: "0.9rem" }}
+              style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 12px", borderRadius: "6px", border: "none", background: formatState.bold ? "var(--ui-info-bg-strong)" : "transparent", boxShadow: formatState.bold ? "var(--ui-shadow-pressable)" : "none", color: "var(--ui-text-primary)", cursor: "pointer", fontWeight: "bold", fontSize: "0.9rem" }}
               title="Bold"
             >
               B
             </button>
             <button 
               onClick={() => applyFormat("italic")} 
-              style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 12px", borderRadius: "6px", border: "none", background: formatState.italic ? "#fff" : "transparent", boxShadow: formatState.italic ? "0 1px 3px rgba(0,0,0,0.1)" : "none", color: "#000", cursor: "pointer", fontStyle: "italic", fontSize: "0.9rem" }}
+              style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 12px", borderRadius: "6px", border: "none", background: formatState.italic ? "var(--ui-info-bg-strong)" : "transparent", boxShadow: formatState.italic ? "var(--ui-shadow-pressable)" : "none", color: "var(--ui-text-primary)", cursor: "pointer", fontStyle: "italic", fontSize: "0.9rem" }}
               title="Italic"
             >
               I
             </button>
             <button 
               onClick={() => applyFormat("underline")} 
-              style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 12px", borderRadius: "6px", border: "none", background: formatState.underline ? "#fff" : "transparent", boxShadow: formatState.underline ? "0 1px 3px rgba(0,0,0,0.1)" : "none", color: "#000", cursor: "pointer", textDecoration: "underline", fontSize: "0.9rem" }}
+              style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 12px", borderRadius: "6px", border: "none", background: formatState.underline ? "var(--ui-info-bg-strong)" : "transparent", boxShadow: formatState.underline ? "var(--ui-shadow-pressable)" : "none", color: "var(--ui-text-primary)", cursor: "pointer", textDecoration: "underline", fontSize: "0.9rem" }}
               title="Underline"
             >
               U
@@ -238,11 +446,11 @@ export function TextEditorPanel({ roomId, onSendUpdate, displayName }: TextEdito
           </div>
         </div>
       </div>
-      <div style={{ flex: 1, border: "1px solid #ccc", borderRadius: "8px", overflow: "hidden", background: "#f5f5f5", position: "relative", display: "flex", flexDirection: "column" }}>
+      <div style={{ flex: 1, border: "1px solid var(--ui-border-soft)", borderRadius: "8px", overflow: "hidden", background: "var(--ui-surface-panel)", position: "relative", display: "flex", flexDirection: "column" }}>
         {isConfirmingClear && (
-          <div style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(255,255,255,0.85)", zIndex: 10, display: "flex", justifyContent: "center", alignItems: "center" }}>
-            <div style={{ background: "#fff", padding: "24px 32px", borderRadius: "12px", boxShadow: "0 8px 24px rgba(0,0,0,0.15)", border: "1px solid #eee", textAlign: "center" }}>
-              <h3 style={{ margin: "0 0 16px 0", color: "#333" }}>This will delete all text. Are you sure?</h3>
+          <div style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, background: "var(--ui-overlay-soft)", zIndex: 10, display: "flex", justifyContent: "center", alignItems: "center" }}>
+            <div style={{ background: "var(--ui-surface-strong)", padding: "24px 32px", borderRadius: "12px", boxShadow: "var(--ui-shadow-panel)", border: "1px solid var(--ui-border-panel)", textAlign: "center" }}>
+              <h3 style={{ margin: "0 0 16px 0", color: "var(--ui-text-primary)" }}>This will delete all text. Are you sure?</h3>
               <div style={{ display: "flex", gap: "12px", justifyContent: "center" }}>
                 <button 
                   onClick={cancelClear} 
@@ -253,7 +461,7 @@ export function TextEditorPanel({ roomId, onSendUpdate, displayName }: TextEdito
                 </button>
                 <button 
                   onClick={confirmClear} 
-                  style={{ background: "#ef4444", color: "#fff", border: "none", padding: "8px 24px", borderRadius: "6px", cursor: "pointer", fontWeight: "500" }}
+                  style={{ background: "var(--ui-danger-gradient)", color: "var(--ui-text-inverse)", border: "none", padding: "8px 24px", borderRadius: "6px", cursor: "pointer", fontWeight: "500" }}
                 >
                   Trash Anyway
                 </button>
@@ -266,13 +474,16 @@ export function TextEditorPanel({ roomId, onSendUpdate, displayName }: TextEdito
           contentEditable
           onInput={handleInput}
           onKeyDown={handleKeyDown}
-          onKeyUp={updateFormatState}
-          onMouseUp={updateFormatState}
+          onKeyUp={handleKeyUp}
+          onMouseUp={handleMouseUp}
+          onFocus={handleEditorFocus}
+          onBlur={handleEditorBlur}
           style={{
             flex: 1,
             padding: "16px",
             outline: "none",
-            backgroundColor: "#fff",
+            backgroundColor: "var(--ui-surface-strong)",
+            color: "var(--ui-text-primary)",
             overflowY: "auto",
             whiteSpace: "pre-wrap",
             wordBreak: "break-word"

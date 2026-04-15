@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
 import os from "node:os";
 import { WebSocket, WebSocketServer } from "ws";
 import type {
@@ -108,26 +109,25 @@ export class HostRoomService {
     this.status = "starting";
     this.localNetworkInfo = resolveLocalNetworkInfo();
 
-    const server = new WebSocketServer({
-      host: "0.0.0.0",
-      port: requestedPort,
-    });
+    const httpServer = createServer();
 
-    await new Promise<void>((resolve, reject) => {
-      server.once("listening", resolve);
-      server.once("error", reject);
-    }).catch((error) => {
-      server.close();
+    // Attempt to bind with retry logic for port TIME_WAIT state
+    await this.waitForPort(httpServer, requestedPort).catch((error) => {
+      httpServer.close();
       this.status = "stopped";
       this.port = null;
       this.localNetworkInfo = null;
       throw error;
     });
 
+    const server = new WebSocketServer({
+      server: httpServer,
+    });
+
     this.server = server;
     this.status = "running";
 
-    const address = server.address();
+    const address = httpServer.address();
     if (typeof address === "object" && address !== null) {
       this.port = address.port;
     } else {
@@ -136,6 +136,39 @@ export class HostRoomService {
 
     this.bindServerEvents(server);
     return this.getStatus();
+  }
+
+  private async waitForPort(httpServer: ReturnType<typeof createServer>, port: number): Promise<void> {
+    const maxRetries = 5;
+    const retryDelay = 200; // ms
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const onListening = () => {
+            httpServer.removeListener("error", onError);
+            resolve();
+          };
+          const onError = (error: Error) => {
+            httpServer.removeListener("listening", onListening);
+            reject(error);
+          };
+
+          httpServer.once("listening", onListening);
+          httpServer.once("error", onError);
+
+          httpServer.listen(port, "0.0.0.0");
+        });
+        return; // Success
+      } catch (error) {
+        if (attempt < maxRetries - 1) {
+          // Wait before retrying
+          await new Promise((resolve) => setTimeout(resolve, retryDelay));
+        } else {
+          throw error; // Final attempt failed
+        }
+      }
+    }
   }
 
   async stop(reason: "host-ended" | "host-disconnected" = "host-disconnected"): Promise<void> {

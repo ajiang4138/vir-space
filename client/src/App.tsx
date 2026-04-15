@@ -1,20 +1,27 @@
 import { useEffect, useRef, useState } from "react";
 import { ChatPanel } from "./components/ChatPanel";
-import { DebugLog } from "./components/DebugLog";
+import { DebugWindow } from "./components/DebugWindow";
 import { FileSharePanel } from "./components/FileSharePanel";
 import { JoinForm } from "./components/JoinForm";
 import { ParticipantList } from "./components/ParticipantList";
+import { RoomEndedModal } from "./components/RoomEndedModal";
 import { RoomInfo } from "./components/RoomInfo";
-import { TransferList } from "./components/TransferList";
-import { WhiteboardPanel } from "./components/WhiteboardPanel";
 import { TextEditorPanel } from "./components/TextEditorPanel";
+import { UserKickedModal } from "./components/UserKickedModal";
+import { WhiteboardPanel } from "./components/WhiteboardPanel";
+import { EditorCrdtManager } from "./lib/editorCrdt";
+import { SignalingClient } from "./lib/signalingClient";
 import {
   FileTransferManager,
-  type FileTransferTransport
-} from "./lib/fileTransfer/transferManager";
-import { metricsLogger } from "./lib/metrics";
-import { SignalingClient } from "./lib/signalingClient";
-import { WebRtcPeerManager, type WebRtcStatus } from "./lib/webrtc";
+  type FileTransferTransport,
+  type PreparedLocalShare
+} from "./lib/swarm/swarmManager";
+import { getUserHash } from "./lib/userHash";
+import {
+  WebRtcPeerManager,
+  type WebRtcConnectionRoute,
+  type WebRtcStatus,
+} from "./lib/webrtc";
 import type {
   ChatMessage,
   ConnectionStatus,
@@ -27,6 +34,7 @@ import type { FileTransferViewState } from "./types/fileTransfer";
 type RoomIntent = "create" | "join";
 type SetupStep = "user-id" | "mode" | "create" | "join";
 type SignalingConnectionState = "disconnected" | "connecting" | "connected";
+type CenterWorkspace = "chatroom" | "whiteboard" | "editor" | "files";
 
 interface ActiveRoom {
   roomId: string;
@@ -46,13 +54,23 @@ interface PendingAction {
   roomPassword: string;
 }
 
+interface RemoteEditorCursor {
+  peerId: string;
+  displayName: string;
+  cursorOffset: number;
+  updatedAt: number;
+}
+
+interface DebugRouteBadge {
+  peerId: string;
+  displayName: string;
+  route: WebRtcConnectionRoute;
+}
+
 const defaultBootstrapUrl = import.meta.env.VITE_BOOTSTRAP_SIGNALING_URL ?? "ws://localhost:8787";
 const defaultHostPort = 8787;
 const minimumRoomPasswordLength = 4;
-
-function buildMetricsRunId(roomId: string): string {
-  return `room-${roomId.trim().toLowerCase()}`;
-}
+const editorCursorStaleMs = 15000;
 
 function nowLabel(): string {
   return new Date().toLocaleTimeString();
@@ -88,6 +106,12 @@ function isWsProtocol(protocol: string): boolean {
   return protocol === "ws:" || protocol === "wss:";
 }
 
+function htmlToPlainText(html: string): string {
+  const parserNode = document.createElement("div");
+  parserNode.innerHTML = html;
+  return parserNode.innerText ?? "";
+}
+
 function buildActiveRoom(
   roomState: RoomStatePayload,
   myPeerId: string,
@@ -111,47 +135,50 @@ export default function App(): JSX.Element {
   const [events, setEvents] = useState<string[]>([]);
   const [activeRoom, setActiveRoom] = useState<ActiveRoom | null>(null);
   const [fileTransfers, setFileTransfers] = useState<FileTransferViewState>({
-    incomingOffers: [],
-    activeTransfers: [],
-    sharedFilesBySender: [],
+    incomingAnnouncements: [],
+    rejectedAnnouncements: [],
+    activeSwarms: [],
+    acceptedSwarmsBySender: [],
   });
+  const [whiteboardHistory, setWhiteboardHistory] = useState<Array<{ action: string; data: string; senderPeerId: string; senderDisplayName: string }>>([]);
+  const [editorText, setEditorText] = useState("");
   const [setupStep, setSetupStep] = useState<SetupStep>("user-id");
   const [userIdDraft, setUserIdDraft] = useState("");
   const [currentUserId, setCurrentUserId] = useState("");
   const [bootstrapUrl, setBootstrapUrl] = useState(defaultBootstrapUrl);
   const [signalingState, setSignalingState] = useState<SignalingConnectionState>("disconnected");
   const [webRtcStatus, setWebRtcStatus] = useState<WebRtcStatus>("idle");
+  const [activeWorkspace, setActiveWorkspace] = useState<CenterWorkspace>("chatroom");
+  const [isLeftLaneCollapsed, setIsLeftLaneCollapsed] = useState(false);
+  const [isRightLaneCollapsed, setIsRightLaneCollapsed] = useState(false);
+  const [remoteEditorCursors, setRemoteEditorCursors] = useState<RemoteEditorCursor[]>([]);
+  const [debugRouteBadges, setDebugRouteBadges] = useState<DebugRouteBadge[]>([]);
+  const [roomClosedReason, setRoomClosedReason] = useState<"host-ended" | "host-disconnected" | null>(null);
+  const [wasUserKicked, setWasUserKicked] = useState(false);
 
   const activeRoomRef = useRef<ActiveRoom | null>(null);
   const currentUserIdRef = useRef("");
   const pendingActionRef = useRef<PendingAction | null>(null);
   const bootstrapUrlRef = useRef(defaultBootstrapUrl);
   const negotiatedPeersRef = useRef<Set<string>>(new Set());
-  const pendingWorkspaceAcksRef = useRef<Map<string, { sentAtMs: number; sourceType: "whiteboard-update" | "editor-update" }>>(
-    new Map(),
-  );
-  const localMetricsPeerFileIdRef = useRef(`local-${crypto.randomUUID().slice(0, 8)}`);
-  const transferStatusByIdRef = useRef<Map<string, string>>(new Map());
 
   const signalingRef = useRef<SignalingClient | null>(null);
   const peerWebRtcManagersRef = useRef<Map<string, WebRtcPeerManager>>(new Map());
   const peerFileManagersRef = useRef<Map<string, FileTransferManager>>(new Map());
-  const peerFileStatesRef = useRef<Map<string, FileTransferViewState>>(new Map());
+  const localSeedSharesRef = useRef<Map<string, PreparedLocalShare>>(new Map());
+  const whiteboardHistoryRef = useRef<Array<{ action: string; data: string; senderPeerId: string; senderDisplayName: string }>>([]);
+  const editorCrdtRef = useRef<EditorCrdtManager>(new EditorCrdtManager());
+  const remoteEditorCursorsRef = useRef<Map<string, RemoteEditorCursor>>(new Map());
 
-  const logMetric = (eventType: string, payload: Record<string, unknown> = {}): void => {
-    const room = activeRoomRef.current;
-    const displayName = room?.myDisplayName ?? currentUserIdRef.current ?? null;
-    void metricsLogger.log(eventType, {
-      roomId: room?.roomId ?? null,
-      myPeerId: room?.myPeerId ?? null,
-      myDisplayName: displayName,
-      ...payload,
-    });
-  };
+  const collapsedLaneWidth = "44px";
+
+  const chatroomLaneStyle = {
+    ["--left-lane-width" as string]: isLeftLaneCollapsed ? collapsedLaneWidth : "clamp(180px, 14vw, 220px)",
+    ["--right-lane-width" as string]: isRightLaneCollapsed ? collapsedLaneWidth : "clamp(180px, 14vw, 220px)",
+  } as React.CSSProperties;
 
   const addEvent = (text: string): void => {
     setEvents((prev) => [`[${nowLabel()}] ${text}`, ...prev].slice(0, 150));
-    logMetric("debug_event", { message: text });
   };
 
   const updateActiveRoom = (nextRoom: ActiveRoom | null): void => {
@@ -163,48 +190,114 @@ export default function App(): JSX.Element {
     setStatus(nextStatus);
   };
 
-  const aggregateFileTransferState = (): void => {
-    const aggregate: FileTransferViewState = {
-      incomingOffers: [],
-      activeTransfers: [],
-      sharedFilesBySender: [],
+  const ensureEditorCrdtInitialized = (roomId: string): void => {
+    editorCrdtRef.current.init(roomId);
+  };
+
+  const syncRemoteEditorCursorState = (): void => {
+    const now = Date.now();
+    const next = Array.from(remoteEditorCursorsRef.current.values())
+      .filter((cursor) => now - cursor.updatedAt <= editorCursorStaleMs)
+      .sort((left, right) => left.displayName.localeCompare(right.displayName));
+
+    setRemoteEditorCursors(next);
+  };
+
+  const updateRemoteEditorCursor = (
+    peerId: string,
+    displayName: string,
+    cursorOffset: number | null,
+  ): void => {
+    if (cursorOffset === null) {
+      remoteEditorCursorsRef.current.delete(peerId);
+      syncRemoteEditorCursorState();
+      return;
+    }
+
+    remoteEditorCursorsRef.current.set(peerId, {
+      peerId,
+      displayName,
+      cursorOffset: Math.max(0, Math.floor(cursorOffset)),
+      updatedAt: Date.now(),
+    });
+
+    syncRemoteEditorCursorState();
+  };
+
+  const sendEditorCursorUpdate = (cursorOffset: number | null): void => {
+    const room = activeRoomRef.current;
+    if (!room) {
+      return;
+    }
+
+    const message = {
+      type: "editor-crdt-cursor",
+      roomId: room.roomId,
+      senderPeerId: room.myPeerId,
+      senderDisplayName: room.myDisplayName,
+      cursorOffset,
     };
 
-    const sharedByKey = new Map<string, FileTransferViewState["sharedFilesBySender"][number]>();
+    for (const manager of peerWebRtcManagersRef.current.values()) {
+      manager.sendAppDataMessage(JSON.stringify(message));
+    }
+  };
 
-    for (const state of peerFileStatesRef.current.values()) {
-      aggregate.incomingOffers.push(...state.incomingOffers);
-      aggregate.activeTransfers.push(...state.activeTransfers);
+  const sendEditorSyncRequestToPeer = (peerId: string): void => {
+    const room = activeRoomRef.current;
+    const manager = peerWebRtcManagersRef.current.get(peerId);
+    if (!room || !manager) {
+      return;
+    }
 
-      for (const senderGroup of state.sharedFilesBySender) {
-        const existingGroup = sharedByKey.get(senderGroup.senderPeerId);
-        if (!existingGroup) {
-          sharedByKey.set(senderGroup.senderPeerId, {
-            senderPeerId: senderGroup.senderPeerId,
-            senderDisplayName: senderGroup.senderDisplayName,
-            files: [...senderGroup.files],
-          });
-          continue;
+    manager.sendAppDataMessage(
+      JSON.stringify({
+        type: "editor-crdt-sync-request",
+        roomId: room.roomId,
+        senderPeerId: room.myPeerId,
+        senderDisplayName: room.myDisplayName,
+      }),
+    );
+  };
+
+  const applyLegacyEditorSnapshot = (message: unknown): void => {
+    const activeRoom = activeRoomRef.current;
+    if (!activeRoom) {
+      return;
+    }
+
+    ensureEditorCrdtInitialized(activeRoom.roomId);
+
+    const incoming = message as { data?: string; text?: string; html?: string };
+    const parsedData: { text?: string; html?: string } = {};
+
+    if (typeof incoming.data === "string") {
+      try {
+        const decoded = JSON.parse(incoming.data) as { text?: string; html?: string };
+        if (typeof decoded.text === "string") {
+          parsedData.text = decoded.text;
         }
-
-        const byFileId = new Map(existingGroup.files.map((file) => [file.fileId, file]));
-        for (const file of senderGroup.files) {
-          byFileId.set(file.fileId, file);
+        if (typeof decoded.html === "string") {
+          parsedData.html = decoded.html;
         }
-
-        existingGroup.files = Array.from(byFileId.values());
+      } catch {
+        parsedData.text = incoming.data;
       }
     }
 
-    aggregate.sharedFilesBySender = Array.from(sharedByKey.values()).map((group) => ({
-      ...group,
-      files: group.files.sort((left, right) => right.createdAt - left.createdAt),
-    }));
-    aggregate.sharedFilesBySender.sort((left, right) => left.senderDisplayName.localeCompare(right.senderDisplayName));
-    aggregate.incomingOffers.sort((left, right) => right.createdAt - left.createdAt);
-    aggregate.activeTransfers.sort((left, right) => right.updatedAt - left.updatedAt);
+    if (!parsedData.text && typeof incoming.text === "string") {
+      parsedData.text = incoming.text;
+    }
+    if (!parsedData.html && typeof incoming.html === "string") {
+      parsedData.html = incoming.html;
+    }
 
-    setFileTransfers(aggregate);
+    const nextText = parsedData.text || (parsedData.html ? htmlToPlainText(parsedData.html) : "");
+    editorCrdtRef.current.applyLocalText(nextText);
+  };
+
+  const aggregateFileTransferState = (): void => {
+    return;
   };
 
   const updateOverallWebRtcStatus = (): void => {
@@ -222,12 +315,33 @@ export default function App(): JSX.Element {
     setWebRtcStatus("connecting");
   };
 
+  const announceLocalSeedSharesToPeer = (peerId: string): void => {
+    const targetManager = peerFileManagersRef.current.get(peerId);
+    if (!targetManager) {
+      return;
+    }
+
+    const excludedPeerIds = Array.from(peerFileManagersRef.current.keys()).filter((id) => id !== peerId);
+    for (const preparedShare of localSeedSharesRef.current.values()) {
+      targetManager.sharePreparedFile(preparedShare, { excludePeerIds: excludedPeerIds });
+    }
+  };
+
+  const registerLocalSeedShare = (preparedShare: PreparedLocalShare, sourcePeerId?: string): void => {
+    localSeedSharesRef.current.set(preparedShare.manifest.torrentId, preparedShare);
+    const excluded = sourcePeerId ? [sourcePeerId] : [];
+    for (const manager of peerFileManagersRef.current.values()) {
+      manager.sharePreparedFile(preparedShare, { excludePeerIds: excluded });
+    }
+  };
+
   const removePeerControllers = (peerId: string): void => {
     peerWebRtcManagersRef.current.get(peerId)?.close();
     peerWebRtcManagersRef.current.delete(peerId);
-    peerFileManagersRef.current.get(peerId)?.resetRoom("peer left");
+    peerFileManagersRef.current.get(peerId)?.detachFromPeer(peerId);
     peerFileManagersRef.current.delete(peerId);
-    peerFileStatesRef.current.delete(peerId);
+    remoteEditorCursorsRef.current.delete(peerId);
+    syncRemoteEditorCursorState();
     negotiatedPeersRef.current.delete(peerId);
     aggregateFileTransferState();
     updateOverallWebRtcStatus();
@@ -243,7 +357,8 @@ export default function App(): JSX.Element {
 
     peerFileManagersRef.current.clear();
     peerWebRtcManagersRef.current.clear();
-    peerFileStatesRef.current.clear();
+    remoteEditorCursorsRef.current.clear();
+    syncRemoteEditorCursorState();
     negotiatedPeersRef.current.clear();
     aggregateFileTransferState();
     updateOverallWebRtcStatus();
@@ -276,6 +391,30 @@ export default function App(): JSX.Element {
             setSessionState("peer connected");
             addEvent(`peer connected via WebRTC data channel: ${remotePeer.displayName}`);
             updateOverallWebRtcStatus();
+
+            // Send current whiteboard history to the newly connected peer
+            const activeRoom = activeRoomRef.current;
+            if (whiteboardHistoryRef.current.length > 0 && activeRoom) {
+              const historyMessage = {
+                type: "whiteboard-history",
+                roomId: activeRoom.roomId,
+                senderPeerId: activeRoom.myPeerId,
+                senderDisplayName: activeRoom.myDisplayName,
+                updates: whiteboardHistoryRef.current,
+              };
+              const manager = peerWebRtcManagersRef.current.get(remotePeer.peerId);
+              if (manager) {
+                manager.sendAppDataMessage(JSON.stringify(historyMessage));
+              }
+            }
+
+            const activeRoomForEditor = activeRoomRef.current;
+            if (activeRoomForEditor) {
+              ensureEditorCrdtInitialized(activeRoomForEditor.roomId);
+              sendEditorSyncRequestToPeer(remotePeer.peerId);
+            }
+
+            announceLocalSeedSharesToPeer(remotePeer.peerId);
           },
           onDataChannelClose: () => {
             addEvent(`peer data channel closed: ${remotePeer.displayName}`);
@@ -284,25 +423,7 @@ export default function App(): JSX.Element {
           onDataMessage: (text) => {
             try {
               const message = JSON.parse(text);
-              if (message.type === "metrics-ack") {
-                const metricMessageId = typeof message.metricMessageId === "string" ? message.metricMessageId : "";
-                const pending = pendingWorkspaceAcksRef.current.get(metricMessageId);
-                if (pending) {
-                  const rttMs = Math.max(0, Date.now() - pending.sentAtMs);
-                  pendingWorkspaceAcksRef.current.delete(metricMessageId);
-                  logMetric("workspace_update_rtt", {
-                    metricMessageId,
-                    sourceType: pending.sourceType,
-                    ackSourceType: typeof message.sourceType === "string" ? message.sourceType : pending.sourceType,
-                    rttMs,
-                    remotePeerId: remotePeer.peerId,
-                  });
-                }
-              } else if (message.type === "chat-message") {
-                logMetric("chat_message_received", {
-                  senderPeerId: message.senderPeerId ?? remotePeer.peerId,
-                  textLength: typeof message.text === "string" ? message.text.length : 0,
-                });
+              if (message.type === "chat-message") {
                 setMessages((prev) => [
                   ...prev,
                   {
@@ -314,39 +435,88 @@ export default function App(): JSX.Element {
                   },
                 ]);
               } else if (message.type === "whiteboard-update") {
-                const metricMessageId = typeof message.metricMessageId === "string" ? message.metricMessageId : null;
-                logMetric("whiteboard_update_received", {
-                  senderPeerId: message.senderPeerId ?? remotePeer.peerId,
-                  payloadLength: typeof message.data === "string" ? message.data.length : 0,
-                  metricMessageId,
-                });
+                // Save the update to history
+                try {
+                  const data = JSON.parse(message.data);
+                  if (data.action === "clear") {
+                    whiteboardHistoryRef.current = [];
+                  } else if (data.action === "stroke" || data.action === "paths") {
+                    whiteboardHistoryRef.current.push({
+                      action: data.action,
+                      data: message.data,
+                      senderPeerId: message.senderPeerId,
+                      senderDisplayName: message.senderDisplayName,
+                    });
+                  }
+                  setWhiteboardHistory([...whiteboardHistoryRef.current]);
+                } catch {
+                  // If parsing fails, just keep the raw data
+                  whiteboardHistoryRef.current.push({
+                    action: "unknown",
+                    data: message.data,
+                    senderPeerId: message.senderPeerId,
+                    senderDisplayName: message.senderDisplayName,
+                  });
+                }
                 document.dispatchEvent(new CustomEvent("whiteboard-update", { detail: message }));
-                if (metricMessageId) {
-                  webRtcManager.sendAppDataMessage(
-                    JSON.stringify({
-                      type: "metrics-ack",
-                      metricMessageId,
-                      sourceType: "whiteboard-update",
-                    }),
-                  );
+              } else if (message.type === "whiteboard-history") {
+                // Receive the whiteboard history from a peer
+                whiteboardHistoryRef.current = message.updates;
+                setWhiteboardHistory([...message.updates]);
+                // Replay the history on the canvas
+                for (const update of message.updates) {
+                  const historyMessage = {
+                    type: "whiteboard-update",
+                    data: update.data,
+                    senderPeerId: update.senderPeerId,
+                    senderDisplayName: update.senderDisplayName,
+                  };
+                  document.dispatchEvent(new CustomEvent("whiteboard-update", { detail: historyMessage }));
                 }
+              } else if (message.type === "editor-crdt-sync-request") {
+                const activeRoomForEditor = activeRoomRef.current;
+                const manager = peerWebRtcManagersRef.current.get(remotePeer.peerId);
+                if (!activeRoomForEditor || !manager) {
+                  return;
+                }
+
+                ensureEditorCrdtInitialized(activeRoomForEditor.roomId);
+                manager.sendAppDataMessage(
+                  JSON.stringify({
+                    type: "editor-crdt-sync-state",
+                    roomId: activeRoomForEditor.roomId,
+                    senderPeerId: activeRoomForEditor.myPeerId,
+                    senderDisplayName: activeRoomForEditor.myDisplayName,
+                    updateBase64: editorCrdtRef.current.encodeStateAsUpdateBase64(),
+                  }),
+                );
+              } else if (message.type === "editor-crdt-sync-state") {
+                if (typeof message.updateBase64 === "string" && message.updateBase64.length > 0) {
+                  editorCrdtRef.current.applyRemoteUpdate(message.updateBase64);
+                }
+              } else if (message.type === "editor-crdt-update") {
+                if (typeof message.updateBase64 === "string" && message.updateBase64.length > 0) {
+                  editorCrdtRef.current.applyRemoteUpdate(message.updateBase64);
+                }
+              } else if (message.type === "editor-crdt-cursor") {
+                const senderPeerId = typeof message.senderPeerId === "string" ? message.senderPeerId : remotePeer.peerId;
+                if (senderPeerId === activeRoomRef.current?.myPeerId) {
+                  return;
+                }
+
+                const senderDisplayName = typeof message.senderDisplayName === "string"
+                  ? message.senderDisplayName
+                  : remotePeer.displayName;
+
+                const cursorOffset = typeof message.cursorOffset === "number" && Number.isFinite(message.cursorOffset)
+                  ? message.cursorOffset
+                  : null;
+
+                updateRemoteEditorCursor(senderPeerId, senderDisplayName, cursorOffset);
               } else if (message.type === "editor-update") {
-                const metricMessageId = typeof message.metricMessageId === "string" ? message.metricMessageId : null;
-                logMetric("editor_update_received", {
-                  senderPeerId: message.senderPeerId ?? remotePeer.peerId,
-                  payloadLength: typeof message.data === "string" ? message.data.length : 0,
-                  metricMessageId,
-                });
-                document.dispatchEvent(new CustomEvent("editor-update", { detail: message }));
-                if (metricMessageId) {
-                  webRtcManager.sendAppDataMessage(
-                    JSON.stringify({
-                      type: "metrics-ack",
-                      metricMessageId,
-                      sourceType: "editor-update",
-                    }),
-                  );
-                }
+                applyLegacyEditorSnapshot(message);
+              } else if (message.type === "editor-state") {
+                applyLegacyEditorSnapshot(message);
               }
             } catch {
               addEvent(`received direct data-channel message from ${remotePeer.displayName}: ${text.length > 100 ? text.substring(0, 100) + "..." : text}`);
@@ -372,10 +542,13 @@ export default function App(): JSX.Element {
 
         const fileManager = new FileTransferManager(window.electronApi, {
           onUpdate: (state) => {
-            peerFileStatesRef.current.set(remotePeer.peerId, state);
-            aggregateFileTransferState();
+            setFileTransfers(state);
           },
           onEvent: addEvent,
+          onSeedableDownloadReady: (preparedShare) => {
+            registerLocalSeedShare(preparedShare, remotePeer.peerId);
+            addEvent(`seeding ready: ${preparedShare.manifest.fileName}`);
+          },
         });
 
         fileManager.setTransport(webRtcManager as FileTransferTransport);
@@ -401,8 +574,14 @@ export default function App(): JSX.Element {
 
   const clearRoomState = (nextStatus: ConnectionStatus): void => {
     cleanupPeerConnection();
+    localSeedSharesRef.current.clear();
+    setDebugRouteBadges([]);
     updateActiveRoom(null);
     setMessages([]);
+    whiteboardHistoryRef.current = [];
+    setWhiteboardHistory([]);
+    editorCrdtRef.current.dispose();
+    setEditorText("");
     setSessionState(nextStatus);
     setSetupStep(currentUserIdRef.current ? "mode" : "user-id");
   };
@@ -418,6 +597,101 @@ export default function App(): JSX.Element {
   useEffect(() => {
     currentUserIdRef.current = currentUserId;
   }, [currentUserId]);
+
+  useEffect(() => {
+    const intervalHandle = window.setInterval(() => {
+      syncRemoteEditorCursorState();
+    }, 4000);
+
+    return () => {
+      window.clearInterval(intervalHandle);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const collectRoutes = async (): Promise<void> => {
+      const room = activeRoomRef.current;
+      if (!room) {
+        if (!cancelled) {
+          setDebugRouteBadges([]);
+        }
+        return;
+      }
+
+      const remotePeers = room.participants.filter((participant) => participant.peerId !== room.myPeerId);
+      const nextBadges = await Promise.all(
+        remotePeers.map(async (peer) => {
+          const manager = peerWebRtcManagersRef.current.get(peer.peerId);
+          const route = manager
+            ? await manager.getConnectionRoute()
+            : {
+                kind: "unknown" as const,
+                localCandidateType: null,
+                remoteCandidateType: null,
+                protocol: null,
+              };
+
+          return {
+            peerId: peer.peerId,
+            displayName: peer.displayName,
+            route,
+          };
+        }),
+      );
+
+      if (!cancelled) {
+        setDebugRouteBadges(nextBadges);
+      }
+    };
+
+    void collectRoutes();
+    const intervalHandle = window.setInterval(() => {
+      void collectRoutes();
+    }, 2000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalHandle);
+    };
+  }, [activeRoom]);
+
+  useEffect(() => {
+    if (!activeRoom) {
+      return;
+    }
+
+    ensureEditorCrdtInitialized(activeRoom.roomId);
+    setEditorText(editorCrdtRef.current.getText());
+
+    const unsubscribeText = editorCrdtRef.current.onTextChanged((nextText) => {
+      setEditorText(nextText);
+    });
+    const unsubscribeLocal = editorCrdtRef.current.onLocalUpdate((updateBase64) => {
+      const room = activeRoomRef.current;
+      if (!room) {
+        return;
+      }
+
+      const message = {
+        type: "editor-crdt-update",
+        roomId: room.roomId,
+        senderPeerId: room.myPeerId,
+        senderDisplayName: room.myDisplayName,
+        updateBase64,
+      };
+
+      for (const manager of peerWebRtcManagersRef.current.values()) {
+        manager.sendAppDataMessage(JSON.stringify(message));
+      }
+    });
+
+    return () => {
+      unsubscribeText();
+      unsubscribeLocal();
+    };
+  }, [activeRoom?.roomId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -451,43 +725,9 @@ export default function App(): JSX.Element {
 
   useEffect(() => {
     if (!activeRoom) {
-      return;
+      setActiveWorkspace("chatroom");
     }
-
-    logMetric("room_state_snapshot", {
-      roomId: activeRoom.roomId,
-      roomStatus: activeRoom.roomStatus,
-      participantCount: activeRoom.participants.length,
-      myRole: activeRoom.myRole,
-    });
-  }, [activeRoom?.roomId, activeRoom?.roomStatus, activeRoom?.participants.length, activeRoom?.myRole]);
-
-  useEffect(() => {
-    const nextStatuses = new Map<string, string>();
-
-    for (const transfer of fileTransfers.activeTransfers) {
-      nextStatuses.set(transfer.transferId, transfer.status);
-      const previousStatus = transferStatusByIdRef.current.get(transfer.transferId);
-      if (previousStatus === transfer.status) {
-        continue;
-      }
-
-      logMetric("transfer_status", {
-        transferId: transfer.transferId,
-        status: transfer.status,
-        direction: transfer.direction,
-        fileId: transfer.manifest.fileId,
-        fileName: transfer.manifest.fileName,
-        fileSize: transfer.manifest.fileSize,
-        progress: transfer.progress,
-        transferredBytes: transfer.transferredBytes,
-        integrityStatus: transfer.integrityStatus,
-        speedBytesPerSecond: transfer.speedBytesPerSecond,
-      });
-    }
-
-    transferStatusByIdRef.current = nextStatuses;
-  }, [fileTransfers.activeTransfers]);
+  }, [activeRoom]);
 
   const applyRoomState = (
     roomState: RoomStatePayload,
@@ -557,21 +797,20 @@ export default function App(): JSX.Element {
         setSignalingState("connected");
         setSessionState("connected to bootstrap server");
         addEvent("connected to bootstrap signaling server");
-        logMetric("signaling_connected", {
-          bootstrapUrl: bootstrapUrlRef.current,
-        });
 
         const pending = pendingActionRef.current;
         if (!pending) {
           return;
         }
 
+        const userHash = getUserHash();
+
         if (pending.intent === "create") {
           signalingRef.current?.createRoom({
             roomId: pending.roomId,
             displayName: pending.displayName,
             roomPassword: pending.roomPassword,
-          });
+          }, userHash);
           return;
         }
 
@@ -580,12 +819,11 @@ export default function App(): JSX.Element {
           roomId: pending.roomId,
           displayName: pending.displayName,
           roomPassword: pending.roomPassword,
-        });
+        }, userHash);
       },
       onClose: () => {
         setSignalingState("disconnected");
         addEvent("signaling disconnected");
-        logMetric("signaling_disconnected");
 
         const room = activeRoomRef.current;
         pendingActionRef.current = null;
@@ -616,12 +854,6 @@ export default function App(): JSX.Element {
         applyRoomState(message.room, message.senderPeerId, message.role, pending.displayName);
         setSessionState("room created");
         addEvent(`room created: ${message.roomId}`);
-        logMetric("room_created", {
-          roomId: message.roomId,
-          senderPeerId: message.senderPeerId,
-          role: message.role,
-          participantCount: message.room.participants.length,
-        });
         setTimeout(() => {
           if (activeRoomRef.current?.myRole === "host") {
             setSessionState("waiting for guest");
@@ -638,12 +870,6 @@ export default function App(): JSX.Element {
         applyRoomState(message.room, message.senderPeerId, message.role, pending.displayName);
         setSessionState("room joined");
         addEvent(`room joined: ${message.roomId}`);
-        logMetric("room_joined", {
-          roomId: message.roomId,
-          senderPeerId: message.senderPeerId,
-          role: message.role,
-          participantCount: message.room.participants.length,
-        });
         await tryStartNegotiation();
       },
       onRoomState: async (message) => {
@@ -674,12 +900,6 @@ export default function App(): JSX.Element {
           setSessionState("peer connecting");
         }
         addEvent(`participant joined: ${message.participant.displayName}`);
-        logMetric("participant_joined", {
-          roomId: message.roomId,
-          participantPeerId: message.participant.peerId,
-          participantDisplayName: message.participant.displayName,
-          participantCount: message.room.participants.length,
-        });
         await tryStartNegotiation();
       },
       onParticipantLeft: (message) => {
@@ -690,11 +910,6 @@ export default function App(): JSX.Element {
 
         removePeerControllers(message.peerId);
         applyRoomState(message.room, room.myPeerId, room.myRole, room.myDisplayName);
-        logMetric("participant_left", {
-          roomId: message.roomId,
-          participantPeerId: message.peerId,
-          participantCount: message.room.participants.length,
-        });
 
         if (room.myRole === "host") {
           setSessionState("guest left");
@@ -746,29 +961,28 @@ export default function App(): JSX.Element {
       },
       onPeerLeft: (message) => {
         removePeerControllers(message.peerId);
-        logMetric("peer_left", {
-          roomId: message.roomId,
-          peerId: message.peerId,
-        });
       },
       onRoomClosed: (message) => {
         addEvent(`room closed: ${message.reason}`);
-        logMetric("room_closed", {
-          roomId: message.roomId,
-          reason: message.reason,
-        });
         if (message.reason === "host-ended") {
           void stopLocalHostService();
         }
-        clearRoomState(message.reason === "host-disconnected" ? "host disconnected" : "room closed by host");
+
+        // Only show modal to guests, not the host
+        const room = activeRoomRef.current;
+        if (room?.myRole === "guest") {
+          setRoomClosedReason(message.reason);
+        } else {
+          // Host just closes cleanly
+          clearRoomState(message.reason === "host-disconnected" ? "host disconnected" : "room closed by host");
+        }
+      },
+      onUserKicked: (message) => {
+        addEvent(`you have been kicked from the room: ${message.message}`);
+        setWasUserKicked(true);
       },
       onServerError: (message) => {
         addEvent(`error: ${message.message}`);
-        logMetric("room_action_error", {
-          roomId: message.roomId ?? null,
-          errorCode: message.code ?? "UNKNOWN",
-          errorMessage: message.message,
-        });
 
         if (message.code === "ROOM_FULL") {
           setSessionState("room full");
@@ -789,6 +1003,7 @@ export default function App(): JSX.Element {
     return () => {
       pendingActionRef.current = null;
       cleanupPeerConnection("application shutdown");
+      editorCrdtRef.current.dispose();
       signalingRef.current?.disconnect();
       void stopLocalHostService();
     };
@@ -806,20 +1021,6 @@ export default function App(): JSX.Element {
     if (!roomId || !displayName || !requestedBootstrapUrl || !roomPassword) {
       addEvent("error: bootstrap URL, room ID, display name, and room password are required");
       return;
-    }
-
-    const metricsRunId = buildMetricsRunId(roomId);
-    try {
-      const metricsSession = await metricsLogger.initSession(metricsRunId, localMetricsPeerFileIdRef.current);
-      await metricsLogger.log("room_flow_submit", {
-        intent,
-        roomId,
-        bootstrapUrl: requestedBootstrapUrl,
-        actorUserId: displayName,
-      });
-      addEvent(`metrics log file: ${metricsSession.logFilePath}`);
-    } catch {
-      addEvent("warning: failed to initialize metrics logging");
     }
 
     if (roomPassword.length < minimumRoomPasswordLength) {
@@ -877,7 +1078,6 @@ export default function App(): JSX.Element {
 
     setBootstrapUrl(resolvedBootstrapUrl);
     setMessages([]);
-    pendingWorkspaceAcksRef.current.clear();
     cleanupPeerConnection();
     updateActiveRoom(null);
     pendingActionRef.current = { intent, roomId, bootstrapUrl: resolvedBootstrapUrl, displayName, roomPassword };
@@ -890,11 +1090,6 @@ export default function App(): JSX.Element {
       try {
         await window.electronApi.startHostService(requestedPort);
         addEvent(`local host signaling service listening on port ${requestedPort}`);
-        logMetric("host_service_started", {
-          roomId,
-          requestedPort,
-          bootstrapUrl: resolvedBootstrapUrl,
-        });
       } catch (error) {
         pendingActionRef.current = null;
         const message = error instanceof Error ? error.message : "failed to start local host signaling service";
@@ -904,11 +1099,6 @@ export default function App(): JSX.Element {
       }
     }
 
-    logMetric("signaling_connect_requested", {
-      intent,
-      roomId,
-      bootstrapUrl: resolvedBootstrapUrl,
-    });
     signalingRef.current?.connect(resolvedBootstrapUrl);
   };
 
@@ -944,10 +1134,6 @@ export default function App(): JSX.Element {
       return;
     }
 
-    logMetric("leave_room_requested", {
-      roomId: room.roomId,
-      myRole: room.myRole,
-    });
     signalingRef.current?.leaveRoom(room.roomId);
     clearRoomState("connected to bootstrap server");
     addEvent("left room");
@@ -959,12 +1145,40 @@ export default function App(): JSX.Element {
       return;
     }
 
-    logMetric("end_room_requested", {
-      roomId: room.roomId,
-      myRole: room.myRole,
-    });
+    const hostIsAlone = room.participants.length <= 1;
     signalingRef.current?.endRoom(room.roomId);
+
+    if (hostIsAlone) {
+      signalingRef.current?.disconnect();
+      void stopLocalHostService();
+      clearRoomState("room closed by host");
+      addEvent("host ended room (solo host)");
+      return;
+    }
+
     addEvent("host requested room shutdown");
+  };
+
+  const handleRoomEndedModalClose = (): void => {
+    const reason = roomClosedReason;
+    setRoomClosedReason(null);
+    clearRoomState(reason === "host-disconnected" ? "host disconnected" : "room closed by host");
+  };
+
+  const handleUserKickedModalClose = (): void => {
+    setWasUserKicked(false);
+    clearRoomState("kicked from room");
+  };
+
+  const kickUser = (peerId: string): void => {
+    const room = activeRoomRef.current;
+    if (!room || room.myRole !== "host") {
+      addEvent("error: only host can kick users");
+      return;
+    }
+
+    signalingRef.current?.kickUser(room.roomId, peerId);
+    addEvent(`kicked user from room: ${peerId}`);
   };
 
   const sendMessage = (text: string): void => {
@@ -975,11 +1189,6 @@ export default function App(): JSX.Element {
     }
 
     const msg = { type: "chat-message", roomId: room.roomId, senderPeerId: room.myPeerId, senderDisplayName: room.myDisplayName, text };
-    logMetric("chat_message_sent", {
-      roomId: room.roomId,
-      textLength: text.length,
-      recipientPeerCount: peerWebRtcManagersRef.current.size,
-    });
     for (const manager of peerWebRtcManagersRef.current.values()) {
       manager.sendAppDataMessage(JSON.stringify(msg));
     }
@@ -996,76 +1205,52 @@ export default function App(): JSX.Element {
     ]);
   };
 
-  const findManagerByTransferId = (transferId: string): FileTransferManager | null => {
-    for (const [peerId, state] of peerFileStatesRef.current.entries()) {
-      if (state.incomingOffers.some((offer) => offer.transferId === transferId)) {
-        return peerFileManagersRef.current.get(peerId) ?? null;
-      }
-
-      if (state.activeTransfers.some((transfer) => transfer.transferId === transferId)) {
-        return peerFileManagersRef.current.get(peerId) ?? null;
-      }
-    }
-
-    return null;
-  };
+  const getFileManagers = (): FileTransferManager[] => Array.from(peerFileManagersRef.current.values());
 
   const shareFile = (): void => {
+    const managers = getFileManagers();
+    const primaryManager = managers[0];
+    if (!primaryManager) {
+      addEvent("warning: no peer file channels available yet");
+      return;
+    }
+
     void (async () => {
-      const managers = Array.from(peerFileManagersRef.current.values());
-      logMetric("file_share_requested", {
-        peerChannelCount: managers.length,
-      });
-      if (managers.length === 0) {
-        addEvent("warning: no peer file channels available yet");
-        return;
-      }
-
-      const preparedShare = await managers[0].prepareShareFile();
+      const preparedShare = await primaryManager.prepareShareFile();
       if (!preparedShare) {
-        logMetric("file_share_cancelled");
         return;
       }
 
-      logMetric("file_share_prepared", {
-        fileId: preparedShare.manifest.fileId,
-        fileName: preparedShare.manifest.fileName,
-        fileSize: preparedShare.manifest.fileSize,
-        pieceCount: preparedShare.manifest.pieceCount,
-      });
-
-      for (const manager of managers) {
-        manager.sharePreparedFile(preparedShare);
-      }
+      registerLocalSeedShare(preparedShare);
     })();
   };
 
-  const acceptOffer = (transferId: string): void => {
-    logMetric("file_offer_accept_clicked", { transferId });
-    findManagerByTransferId(transferId)?.acceptIncomingOffer(transferId);
+  const requestDownload = (torrentId: string, senderPeerId: string): void => {
+    const room = activeRoomRef.current;
+    if (!room) {
+      return;
+    }
+
+    const managers = getFileManagers();
+    if (managers.length === 0) {
+      addEvent("warning: no peer file channels available yet");
+      return;
+    }
+
+    for (const manager of managers) {
+      manager.requestDownload(torrentId, senderPeerId, { swarmTransferId: torrentId });
+    }
+
+    addEvent(`swarm download requested for ${torrentId.slice(0, 12)}...`);
   };
 
-  const declineOffer = (transferId: string): void => {
-    logMetric("file_offer_decline_clicked", { transferId });
-    findManagerByTransferId(transferId)?.declineIncomingOffer(transferId);
-  };
+  const rejectAnnouncement = (torrentId: string, senderPeerId: string): void => {
+    const managers = getFileManagers();
+    for (const manager of managers) {
+      manager.rejectAnnouncement(torrentId, senderPeerId, "Declined by receiver");
+    }
 
-  const cancelTransfer = (transferId: string): void => {
-    logMetric("transfer_cancel_clicked", { transferId });
-    findManagerByTransferId(transferId)?.cancelTransfer(transferId);
-  };
-
-  const requestDownload = (fileId: string, senderPeerId: string): void => {
-    logMetric("download_requested", {
-      fileId,
-      senderPeerId,
-    });
-    peerFileManagersRef.current.get(senderPeerId)?.requestDownload(fileId, senderPeerId);
-  };
-
-  const downloadAcceptedOffer = (transferId: string): void => {
-    logMetric("download_accepted_offer_clicked", { transferId });
-    findManagerByTransferId(transferId)?.downloadAcceptedOffer(transferId);
+    addEvent(`rejected incoming announcement for ${torrentId.slice(0, 12)}...`);
   };
 
   const inRoom = Boolean(activeRoom);
@@ -1075,8 +1260,7 @@ export default function App(): JSX.Element {
       {!inRoom ? (
         <section className="setup-page">
           <header className="app-header card">
-            <h1>Vir Space - Host-Owned Signaling</h1>
-            <p>The room creator listens on a local signaling port; chat messages stay peer-to-peer over WebRTC.</p>
+            <h1>VIR</h1>
           </header>
 
           <div className="setup-page-content">
@@ -1097,122 +1281,213 @@ export default function App(): JSX.Element {
                 onJoinRoom={joinRoom}
               />
             </div>
-            <div className="setup-debug">
-              <DebugLog events={events} />
-            </div>
           </div>
         </section>
       ) : (
-        <section className="chatroom-page">
-          <header className="app-header card">
-            <h1>Vir Space - Chatroom</h1>
-            <p>Signaling uses the host client listener. Chat stays on the existing path and file transfers run peer-to-peer over dedicated RTC channels.</p>
-          </header>
+        <section className="chatroom-page" style={chatroomLaneStyle}>
+          <aside className="left-lane" aria-label="Workspace navigation">
+            <div className={`left-lane-card${isLeftLaneCollapsed ? " collapsed" : ""}`}>
+              <div className="lane-header">
+                <h2 className="lane-title">Menu</h2>
+                <button
+                  type="button"
+                  className="lane-collapse-button"
+                  onClick={() => setIsLeftLaneCollapsed((value) => !value)}
+                  aria-label={isLeftLaneCollapsed ? "Expand Menu lane" : "Collapse Menu lane"}
+                  title={isLeftLaneCollapsed ? "Expand" : "Collapse"}
+                >
+                  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+                    <rect x="4" y="6" width="16" height="2.2" rx="1.1" fill="currentColor" />
+                    <rect x="4" y="11" width="16" height="2.2" rx="1.1" fill="currentColor" />
+                    <rect x="4" y="16" width="16" height="2.2" rx="1.1" fill="currentColor" />
+                  </svg>
+                </button>
+              </div>
+              {!isLeftLaneCollapsed ? (
+                <nav className="left-lane-tabs" aria-label="Workspace tabs">
+                  <button
+                    type="button"
+                    className={`lane-tab${activeWorkspace === "chatroom" ? " active" : ""}`}
+                    onClick={() => setActiveWorkspace("chatroom")}
+                  >
+                    Chatroom
+                  </button>
+                  <button
+                    type="button"
+                    className={`lane-tab${activeWorkspace === "whiteboard" ? " active" : ""}`}
+                    onClick={() => setActiveWorkspace("whiteboard")}
+                  >
+                    Whiteboard
+                  </button>
+                  <button
+                    type="button"
+                    className={`lane-tab${activeWorkspace === "editor" ? " active" : ""}`}
+                    onClick={() => setActiveWorkspace("editor")}
+                  >
+                    Shared Editor
+                  </button>
+                  <button
+                    type="button"
+                    className={`lane-tab${activeWorkspace === "files" ? " active" : ""}`}
+                    onClick={() => setActiveWorkspace("files")}
+                  >
+                    File Sharing
+                  </button>
+                </nav>
+              ) : null}
+            </div>
+          </aside>
 
-          <section className="chatroom-layout">
-            <section className="top-panels">
-              <RoomInfo
-                roomId={activeRoom?.roomId ?? "-"}
-                yourName={activeRoom?.myDisplayName ?? "-"}
-                yourRole={activeRoom?.myRole ?? "guest"}
-                hostDisplayName={activeRoom?.hostDisplayName ?? "-"}
-                bootstrapUrl={bootstrapUrl}
-                signalingStatus={signalingState}
-                webRtcStatus={webRtcStatus}
-                roomStatus={activeRoom?.roomStatus ?? "closed"}
-                inRoom={Boolean(activeRoom)}
-                onLeaveRoom={leaveRoom}
-                onEndRoom={endRoom}
-              />
-              <ParticipantList participants={activeRoom?.participants ?? []} currentPeerId={activeRoom?.myPeerId ?? ""} />
-            </section>
+          <div className="chatroom-main">
+            <section className="chatroom-layout">
+              {activeWorkspace === "chatroom" ? (
+                <ChatPanel
+                  messages={messages}
+                  onSend={sendMessage}
+                />
+              ) : null}
 
-            {activeRoom && signalingRef.current && (
-              <>
-                <section className="whiteboard-row" style={{ height: "500px", width: "100%" }}>
-                  <WhiteboardPanel
-                    roomId={activeRoom.roomId}
-                    displayName={activeRoom.myDisplayName}
-                    onSendUpdate={(data, displayName) => {
-                      const metricMessageId = crypto.randomUUID();
-                      pendingWorkspaceAcksRef.current.set(metricMessageId, {
-                        sentAtMs: Date.now(),
-                        sourceType: "whiteboard-update",
-                      });
-                      logMetric("whiteboard_update_sent", {
-                        roomId: activeRoom.roomId,
-                        payloadLength: data.length,
-                        metricMessageId,
-                      });
-                      const msg = {
-                        type: "whiteboard-update",
-                        roomId: activeRoom.roomId,
-                        senderPeerId: activeRoom.myPeerId,
-                        senderDisplayName: displayName,
-                        data,
-                        metricMessageId,
-                      };
-                      for (const manager of peerWebRtcManagersRef.current.values()) {
-                        manager.sendAppDataMessage(JSON.stringify(msg));
-                      }
-                    }}
+              {activeWorkspace === "whiteboard" ? (
+                activeRoom && signalingRef.current ? (
+                  <section className="workspace-panel whiteboard-row">
+                    <WhiteboardPanel
+                      roomId={activeRoom.roomId}
+                      displayName={activeRoom.myDisplayName}
+                      whiteboardHistory={whiteboardHistory}
+                      onSendUpdate={(data, displayName) => {
+                        const msg = { type: "whiteboard-update", roomId: activeRoom.roomId, senderPeerId: activeRoom.myPeerId, senderDisplayName: displayName, data };
+                        
+                        // Save the local update to history
+                        try {
+                          const parsedData = JSON.parse(data);
+                          if (parsedData.action === "clear") {
+                            whiteboardHistoryRef.current = [];
+                          } else if (parsedData.action === "stroke" || parsedData.action === "paths") {
+                            whiteboardHistoryRef.current.push({
+                              action: parsedData.action,
+                              data: data,
+                              senderPeerId: activeRoom.myPeerId,
+                              senderDisplayName: displayName,
+                            });
+                          }
+                          setWhiteboardHistory([...whiteboardHistoryRef.current]);
+                        } catch {
+                          // If parsing fails, ignore
+                        }
+                        
+                        for (const manager of peerWebRtcManagersRef.current.values()) {
+                          manager.sendAppDataMessage(JSON.stringify(msg));
+                        }
+                      }}
+                    />
+                  </section>
+                ) : (
+                  <section className="card"><p className="empty">Whiteboard is unavailable until the room connection is ready.</p></section>
+                )
+              ) : null}
+
+              {activeWorkspace === "editor" ? (
+                activeRoom && signalingRef.current ? (
+                  <section className="workspace-panel editor-row">
+                    <TextEditorPanel
+                      editorText={editorText}
+                      onEditorTextChange={(nextText) => {
+                        editorCrdtRef.current.applyLocalText(nextText);
+                      }}
+                      onCursorChange={sendEditorCursorUpdate}
+                      remoteCursors={remoteEditorCursors}
+                    />
+                  </section>
+                ) : (
+                  <section className="card"><p className="empty">Shared editor is unavailable until the room connection is ready.</p></section>
+                )
+              ) : null}
+
+              {activeWorkspace === "files" ? (
+                <section className="workspace-panel">
+                  <FileSharePanel
+                    viewState={fileTransfers}
+                    onShareFile={shareFile}
+                    onRequestDownload={requestDownload}
+                    onRejectAnnouncement={rejectAnnouncement}
+                    shareDisabled={webRtcStatus !== "connected"}
+                    currentPeerId={activeRoom?.myPeerId}
                   />
                 </section>
-
-                <section className="editor-row" style={{ height: "500px", width: "100%", marginTop: "16px" }}>
-                  <TextEditorPanel
-                    roomId={activeRoom.roomId}
-                    displayName={activeRoom.myDisplayName}
-                    onSendUpdate={(data, displayName) => {
-                      const metricMessageId = crypto.randomUUID();
-                      pendingWorkspaceAcksRef.current.set(metricMessageId, {
-                        sentAtMs: Date.now(),
-                        sourceType: "editor-update",
-                      });
-                      logMetric("editor_update_sent", {
-                        roomId: activeRoom.roomId,
-                        payloadLength: data.length,
-                        metricMessageId,
-                      });
-                      const msg = {
-                        type: "editor-update",
-                        roomId: activeRoom.roomId,
-                        senderPeerId: activeRoom.myPeerId,
-                        senderDisplayName: displayName,
-                        data,
-                        metricMessageId,
-                      };
-                      for (const manager of peerWebRtcManagersRef.current.values()) {
-                        manager.sendAppDataMessage(JSON.stringify(msg));
-                      }
-                    }}
-                  />
-                </section>
-              </>
-            )}
-
-            <section className="file-panels">
-              <FileSharePanel
-                viewState={fileTransfers}
-                onShareFile={shareFile}
-                onAcceptOffer={acceptOffer}
-                onDeclineOffer={declineOffer}
-                onRequestDownload={requestDownload}
-                onDownloadAcceptedOffer={downloadAcceptedOffer}
-                shareDisabled={webRtcStatus !== "connected"}
-                currentPeerId={activeRoom?.myPeerId}
-              />
-              <TransferList transfers={fileTransfers.activeTransfers} onCancelTransfer={cancelTransfer} />
+              ) : null}
             </section>
+          </div>
 
-            <ChatPanel
-              messages={messages}
-              onSend={sendMessage}
-            />
-            <DebugLog events={events} />
-          </section>
+          <aside className={`right-lane${isRightLaneCollapsed ? " collapsed" : ""}`} aria-label="Room menu">
+            <div className="lane-header">
+              <button
+                type="button"
+                className="lane-collapse-button"
+                onClick={() => setIsRightLaneCollapsed((value) => !value)}
+                aria-label={isRightLaneCollapsed ? "Expand Info lane" : "Collapse Info lane"}
+                title={isRightLaneCollapsed ? "Expand" : "Collapse"}
+              >
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+                  <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="2" />
+                  <rect x="11" y="10" width="2" height="8" rx="1" fill="currentColor" />
+                  <rect x="11" y="6" width="2" height="2" rx="1" fill="currentColor" />
+                </svg>
+              </button>
+              <h2 className="lane-title">Info</h2>
+            </div>
+            {!isRightLaneCollapsed ? (
+              <div className="right-lane-content">
+                <details className="menu-section menu-section-collapsible" open>
+                  <summary className="menu-section-title">Room Info</summary>
+                  <RoomInfo
+                    roomId={activeRoom?.roomId ?? "-"}
+                    yourRole={activeRoom?.myRole ?? "guest"}
+                    hostDisplayName={activeRoom?.hostDisplayName ?? "-"}
+                    bootstrapUrl={bootstrapUrl}
+                    inRoom={Boolean(activeRoom)}
+                    compact
+                    showTitle={false}
+                    showActions={false}
+                    onLeaveRoom={leaveRoom}
+                    onEndRoom={endRoom}
+                  />
+                </details>
+
+                <details className="menu-section menu-section-collapsible" open>
+                  <summary className="menu-section-title">Members</summary>
+                  <ParticipantList
+                    participants={activeRoom?.participants ?? []}
+                    currentPeerId={activeRoom?.myPeerId ?? ""}
+                    currentRole={activeRoom?.myRole}
+                    compact
+                    showTitle={false}
+                    onKickUser={kickUser}
+                  />
+                </details>
+
+                <section className="menu-section room-control-section">
+                  <h3 className="menu-section-title">Room Controls</h3>
+                  {activeRoom?.myRole === "host" ? (
+                    <button type="button" className="danger" onClick={endRoom}>
+                      End Room
+                    </button>
+                  ) : (
+                    <button type="button" onClick={leaveRoom}>
+                      Leave Room
+                    </button>
+                  )}
+                </section>
+              </div>
+            ) : null}
+          </aside>
         </section>
       )}
+
+      <DebugWindow events={events} routeBadges={debugRouteBadges} />
+      {roomClosedReason && <RoomEndedModal reason={roomClosedReason} onClose={handleRoomEndedModalClose} />}
+      {wasUserKicked && <UserKickedModal onClose={handleUserKickedModalClose} />}
+
+  <DebugWindow events={events} routeBadges={debugRouteBadges} />
     </main>
   );
 }

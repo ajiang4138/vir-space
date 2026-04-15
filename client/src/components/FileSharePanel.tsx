@@ -3,10 +3,8 @@ import type { FileTransferViewState } from "../types/fileTransfer";
 interface FileSharePanelProps {
   viewState: FileTransferViewState;
   onShareFile: () => void;
-  onAcceptOffer: (transferId: string) => void;
-  onDeclineOffer: (transferId: string) => void;
-  onRequestDownload: (fileId: string, senderPeerId: string) => void;
-  onDownloadAcceptedOffer: (transferId: string) => void;
+  onRequestDownload: (torrentId: string, senderPeerId: string) => void;
+  onRejectAnnouncement: (torrentId: string, senderPeerId: string) => void;
   shareDisabled?: boolean;
   currentPeerId?: string;
 }
@@ -27,158 +25,207 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
 }
 
-function formatHistoryTime(timestamp: number | null): string {
-  if (!timestamp) {
-    return "Never";
-  }
-
-  return new Date(timestamp).toLocaleString();
-}
-
 export function FileSharePanel({
   viewState,
   onShareFile,
-  onAcceptOffer,
-  onDeclineOffer,
   onRequestDownload,
-  onDownloadAcceptedOffer,
+  onRejectAnnouncement,
   shareDisabled,
   currentPeerId,
 }: FileSharePanelProps): JSX.Element {
-  const incomingBySender = new Map<string, { senderPeerId: string; senderDisplayName: string; offers: typeof viewState.incomingOffers }>();
-  for (const offer of viewState.incomingOffers) {
-    const key = offer.manifest.senderPeerId;
-    const existing = incomingBySender.get(key);
+  const offersBySender = new Map<string, typeof viewState.incomingAnnouncements>();
+  for (const announcement of viewState.incomingAnnouncements) {
+    const existing = offersBySender.get(announcement.senderPeerId);
     if (!existing) {
-      incomingBySender.set(key, {
-        senderPeerId: key,
-        senderDisplayName: offer.senderDisplayName,
-        offers: [offer],
-      });
+      offersBySender.set(announcement.senderPeerId, [announcement]);
       continue;
     }
-
-    existing.offers.push(offer);
+    existing.push(announcement);
   }
 
-  const incomingSenderGroups = Array.from(incomingBySender.values()).sort((left, right) =>
-    left.senderDisplayName.localeCompare(right.senderDisplayName),
-  );
+  const rejectedBySender = new Map<string, typeof viewState.rejectedAnnouncements>();
+  for (const announcement of viewState.rejectedAnnouncements) {
+    const existing = rejectedBySender.get(announcement.senderPeerId);
+    if (!existing) {
+      rejectedBySender.set(announcement.senderPeerId, [announcement]);
+      continue;
+    }
+    existing.push(announcement);
+  }
+
+  const offerGroups = Array.from(offersBySender.entries()).map(([senderPeerId, announcements]) => ({
+    senderPeerId,
+    senderDisplayName: announcements[0]?.senderDisplayName ?? senderPeerId,
+    announcements,
+  }));
+
+  const rejectedGroups = Array.from(rejectedBySender.entries()).map(([senderPeerId, announcements]) => ({
+    senderPeerId,
+    senderDisplayName: announcements[0]?.senderDisplayName ?? senderPeerId,
+    announcements,
+  }));
+
+  const swarmById = new Map(viewState.activeSwarms.map((swarm) => [swarm.torrentId, swarm]));
+
+  const renderSummary = (torrentId: string): JSX.Element | null => {
+    const swarm = swarmById.get(torrentId);
+    if (!swarm) {
+      return null;
+    }
+
+    const percent = Math.round(swarm.progress * 100);
+    return (
+      <div className="transfer-meter">
+        <div className="transfer-meter-track">
+          <div className="transfer-meter-fill" style={{ width: `${percent}%` }} />
+        </div>
+        <div className="transfer-meter-meta">
+          <span>{percent}%</span>
+          <span>{formatBytes(swarm.downloadedBytes)} / {formatBytes(swarm.manifest.fileSize)}</span>
+        </div>
+        <div className="transfer-meter-meta">
+          <span>{swarm.localRole}</span>
+          <span>{swarm.peerCount} peer(s)</span>
+          <span>{swarm.localAvailabilityPercent}% local</span>
+        </div>
+        <div className="transfer-meter-meta">
+          <span>status: {swarm.status}</span>
+          {swarm.integrityStatus === "verified" && swarm.status === "completed" ? <span>download verified</span> : null}
+        </div>
+        {swarm.message ? <p className="meta">{swarm.message}</p> : null}
+      </div>
+    );
+  };
 
   return (
-    <section className="card file-share-panel">
-      <div className="panel-header">
-        <h2>File Sharing</h2>
-        <button type="button" onClick={onShareFile} className="ghost share-button" disabled={shareDisabled}>
-          Share File
-        </button>
-      </div>
-
-      <details className="file-section-collapsible">
-        <summary>Shared Files</summary>
-        {viewState.sharedFilesBySender.length === 0 ? <p className="empty">No shared files yet</p> : null}
-
-        <div className="shared-catalog">
-          {viewState.sharedFilesBySender.map((senderGroup) => (
-            <details key={senderGroup.senderPeerId} className="sender-group">
-              <summary>
-                <span>{senderGroup.senderDisplayName}</span>
-                <span className="meta">{senderGroup.files.length} file(s)</span>
-              </summary>
-
-              <div className="sender-files">
-                {senderGroup.files.filter((file) => file.hasAcceptedOffer).map((file) => (
-                  <article key={`${file.senderPeerId}-${file.fileId}`} className="offer-card compact">
-                    <header>
-                      <strong>{file.fileName}</strong>
-                      <span>{formatBytes(file.fileSize)}</span>
-                    </header>
-                    <p className="meta">
-                      {file.pieceCount} pieces x {formatBytes(file.pieceSize)}
-                    </p>
-                    {file.downloadedCount > 0 ? (
-                      <div className="download-history-row">
-                        <span className="download-history-badge">Already downloaded x{file.downloadedCount}</span>
-                        <span className="meta">Last: {formatHistoryTime(file.lastDownloadedAt)}</span>
-                      </div>
-                    ) : null}
-                    <div className="offer-actions">
-                      <button
-                        type="button"
-                        className="ghost"
-                        onClick={() => onRequestDownload(file.fileId, file.senderPeerId)}
-                        disabled={file.senderPeerId === currentPeerId || shareDisabled}
-                      >
-                        Download
-                      </button>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            </details>
-          ))}
+    <section className="file-sharing-workspace">
+      <section className="card file-share-panel file-share-editor-like">
+        <div className="file-share-toolbar">
+          <h2>File Sharing</h2>
+          <div className="file-share-toolbar-actions">
+            <button type="button" onClick={onShareFile} className="ghost share-button" disabled={shareDisabled}>
+              Share File
+            </button>
+          </div>
         </div>
-      </details>
 
-      <details className="file-section-collapsible">
-        <summary>Incoming Offers By Sender</summary>
-        {incomingSenderGroups.length === 0 ? <p className="empty">No incoming file offers</p> : null}
+        <div className="file-share-body-shell">
+          <details className="file-section-collapsible" open>
+            <summary>Offers</summary>
+            {offerGroups.length === 0 ? <p className="empty">No pending offers.</p> : null}
+            <div className="shared-catalog">
+              {offerGroups.map((group) => (
+                <details key={`offer-${group.senderPeerId}`} className="sender-group" open>
+                  <summary>
+                    <span>{group.senderDisplayName}</span>
+                    <span className="meta">{group.announcements.length} offer(s)</span>
+                  </summary>
+                  <div className="sender-files">
+                    {group.announcements.map((announcement) => (
+                      <article key={`offer-${announcement.torrentId}`} className="offer-card compact">
+                        <header>
+                          <div>
+                            <strong>{announcement.manifest.fileName}</strong>
+                            <p className="meta">{formatBytes(announcement.manifest.fileSize)} • {announcement.manifest.pieceCount} pieces</p>
+                          </div>
+                          <span className="status-badge offered">offer</span>
+                        </header>
+                        <p className="meta">torrent: {announcement.torrentId.slice(0, 12)}...</p>
+                        <div className="offer-actions">
+                          <button type="button" onClick={() => onRequestDownload(announcement.torrentId, announcement.senderPeerId)} disabled={shareDisabled}>
+                            Download
+                          </button>
+                          <button type="button" className="ghost" onClick={() => onRejectAnnouncement(announcement.torrentId, announcement.senderPeerId)}>
+                            Reject offer
+                          </button>
+                        </div>
+                        {renderSummary(announcement.torrentId)}
+                      </article>
+                    ))}
+                  </div>
+                </details>
+              ))}
+            </div>
+          </details>
 
-        <div className="shared-catalog">
-          {incomingSenderGroups.map((group) => (
-            <details key={group.senderPeerId} className="sender-group">
-              <summary>
-                <span>{group.senderDisplayName}</span>
-                <span className="meta">{group.offers.length} offer(s)</span>
-              </summary>
+          <details className="file-section-collapsible" open>
+            <summary>Accepted</summary>
+            {viewState.acceptedSwarmsBySender.length === 0 ? <p className="empty">No accepted files yet.</p> : null}
+            <div className="shared-catalog">
+              {viewState.acceptedSwarmsBySender.map((senderGroup) => (
+                <details key={`accepted-${senderGroup.senderPeerId}`} className="sender-group" open>
+                  <summary>
+                    <span>{senderGroup.senderDisplayName}</span>
+                    <span className="meta">{senderGroup.swarms.length} accepted</span>
+                  </summary>
+                  <div className="sender-files">
+                    {senderGroup.swarms.map((swarm) => (
+                      <article key={`accepted-${swarm.torrentId}`} className="offer-card compact">
+                        <header>
+                          <div>
+                            <strong>{swarm.manifest.fileName}</strong>
+                            <p className="meta">{formatBytes(swarm.manifest.fileSize)} • {swarm.manifest.pieceCount} pieces</p>
+                          </div>
+                          <span className={`status-badge ${swarm.status}`}>{swarm.status}</span>
+                        </header>
+                        <p className="meta">torrent: {swarm.torrentId.slice(0, 12)}...</p>
+                        <div className="offer-actions">
+                          <button
+                            type="button"
+                            onClick={() => onRequestDownload(swarm.torrentId, senderGroup.senderPeerId)}
+                            disabled={swarm.manifest.initialSeederPeerId === currentPeerId || shareDisabled}
+                          >
+                            Re-download
+                          </button>
+                          <button type="button" className="ghost" onClick={() => onRejectAnnouncement(swarm.torrentId, senderGroup.senderPeerId)}>
+                            Exit swarm
+                          </button>
+                        </div>
+                        {renderSummary(swarm.torrentId)}
+                      </article>
+                    ))}
+                  </div>
+                </details>
+              ))}
+            </div>
+          </details>
 
-              <div className="sender-files">
-                {group.offers.map((offer) => (
-                  <article key={offer.transferId} className="offer-card compact">
-                    <header>
-                      <strong>{offer.manifest.fileName}</strong>
-                      <span>{offer.status}</span>
-                    </header>
-                    <p className="meta">
-                      {formatBytes(offer.manifest.fileSize)} • {offer.manifest.pieceCount} pieces
-                    </p>
-                    <div className="offer-actions">
-                      <button type="button" onClick={() => onAcceptOffer(offer.transferId)} disabled={offer.status !== "offered"}>
-                        Accept
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost"
-                        onClick={() => onDeclineOffer(offer.transferId)}
-                        disabled={offer.status !== "offered"}
-                      >
-                        Decline
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost"
-                        onClick={() => onRequestDownload(offer.manifest.fileId, offer.manifest.senderPeerId)}
-                        disabled={offer.manifest.senderPeerId === currentPeerId || shareDisabled || offer.status !== "accepted"}
-                      >
-                        Request Again
-                      </button>
-                      {offer.status === "accepted" ? (
-                        <button
-                          type="button"
-                          onClick={() => onDownloadAcceptedOffer(offer.transferId)}
-                          disabled={shareDisabled}
-                        >
-                          Download
-                        </button>
-                      ) : null}
-                    </div>
-                  </article>
-                ))}
-              </div>
-            </details>
-          ))}
+          <details className="file-section-collapsible" open>
+            <summary>Rejected</summary>
+            {rejectedGroups.length === 0 ? <p className="empty">No rejected offers.</p> : null}
+            <div className="shared-catalog">
+              {rejectedGroups.map((group) => (
+                <details key={`rejected-${group.senderPeerId}`} className="sender-group" open>
+                  <summary>
+                    <span>{group.senderDisplayName}</span>
+                    <span className="meta">{group.announcements.length} rejected</span>
+                  </summary>
+                  <div className="sender-files">
+                    {group.announcements.map((announcement) => (
+                      <article key={`rejected-${announcement.torrentId}`} className="offer-card compact">
+                        <header>
+                          <div>
+                            <strong>{announcement.manifest.fileName}</strong>
+                            <p className="meta">{formatBytes(announcement.manifest.fileSize)} • {announcement.manifest.pieceCount} pieces</p>
+                          </div>
+                          <span className="status-badge rejected">rejected</span>
+                        </header>
+                        <p className="meta">torrent: {announcement.torrentId.slice(0, 12)}...</p>
+                        <div className="offer-actions">
+                          <button type="button" onClick={() => onRequestDownload(announcement.torrentId, announcement.senderPeerId)} disabled={shareDisabled}>
+                            Download
+                          </button>
+                        </div>
+                        {renderSummary(announcement.torrentId)}
+                      </article>
+                    ))}
+                  </div>
+                </details>
+              ))}
+            </div>
+          </details>
         </div>
-      </details>
+      </section>
     </section>
   );
 }
