@@ -300,7 +300,7 @@ async function scanHostList(
 }
 
 function getLocalNonLoopbackIPv4Addresses(): string[] {
-  const addresses = new Set<string>();
+  const entries: Array<{ ip: string; ifaceName: string }> = [];
 
   for (const [name, interfaces] of Object.entries(os.networkInterfaces())) {
     if (!interfaces) {
@@ -327,18 +327,39 @@ function getLocalNonLoopbackIPv4Addresses(): string[] {
         continue;
       }
 
-      addresses.add(detail.address);
+      entries.push({ ip: detail.address, ifaceName: name });
     }
   }
 
-  return Array.from(addresses).sort((left, right) => {
-    const scoreDelta = scorePreferredAddress(left) - scorePreferredAddress(right);
-    if (scoreDelta !== 0) {
-      return scoreDelta;
+  const seen = new Set<string>();
+  const unique = entries.filter((entry) => {
+    if (seen.has(entry.ip)) {
+      return false;
+    }
+    seen.add(entry.ip);
+    return true;
+  });
+
+  return unique.sort((left, right) => {
+    const ipScoreDelta = scorePreferredAddress(left.ip) - scorePreferredAddress(right.ip);
+    if (ipScoreDelta !== 0) {
+      return ipScoreDelta;
     }
 
-    return left.localeCompare(right);
-  });
+    // Ethernet/VPN adapters get priority over Wi-Fi.
+    const ifaceScore = (ifaceName: string): number => {
+      const lower = ifaceName.toLowerCase();
+      if (lower.includes("wi-fi") || lower.includes("wifi") || lower.includes("wireless") || lower.includes("wlan")) return 1;
+      return 0;
+    };
+
+    const ifaceDelta = ifaceScore(left.ifaceName) - ifaceScore(right.ifaceName);
+    if (ifaceDelta !== 0) {
+      return ifaceDelta;
+    }
+
+    return left.ip.localeCompare(right.ip);
+  }).map((entry) => entry.ip);
 }
 
 async function discoverRelayBootstrapHostInBackground(): Promise<string | null> {

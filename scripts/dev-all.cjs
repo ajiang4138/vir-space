@@ -122,7 +122,7 @@ function compareIPv4(left, right) {
 }
 
 function getLocalIPv4Addresses() {
-  const all = [];
+  const entries = [];
   for (const [name, interfaces] of Object.entries(os.networkInterfaces())) {
     if (!interfaces) {
       continue;
@@ -148,13 +148,21 @@ function getLocalIPv4Addresses() {
         continue;
       }
 
-      all.push(detail.address);
+      entries.push({ ip: detail.address, ifaceName: name });
     }
   }
 
-  const unique = Array.from(new Set(all));
+  const seen = new Set();
+  const unique = entries.filter((entry) => {
+    if (seen.has(entry.ip)) {
+      return false;
+    }
+    seen.add(entry.ip);
+    return true;
+  });
+
   unique.sort((left, right) => {
-    const score = (ip) => {
+    const ipScore = (ip) => {
       if (ip.startsWith("100.")) return 0; // Tailscale
       if (ip.startsWith("25.")) return 1; // Hamachi
       if (ip.startsWith("10.")) return 2;
@@ -162,12 +170,29 @@ function getLocalIPv4Addresses() {
       if (ip.startsWith("192.168.")) return 4;
       return 5;
     };
-    return score(left) - score(right) || left.localeCompare(right);
+
+    // Ethernet/VPN adapters get priority over Wi-Fi.
+    const ifaceScore = (ifaceName) => {
+      const lower = ifaceName.toLowerCase();
+      if (lower.includes("wi-fi") || lower.includes("wifi") || lower.includes("wireless") || lower.includes("wlan")) return 1;
+      return 0;
+    };
+
+    const scoreDelta = ipScore(left.ip) - ipScore(right.ip);
+    if (scoreDelta !== 0) {
+      return scoreDelta;
+    }
+
+    const ifaceDelta = ifaceScore(left.ifaceName) - ifaceScore(right.ifaceName);
+    if (ifaceDelta !== 0) {
+      return ifaceDelta;
+    }
+
+    return left.ip.localeCompare(right.ip);
   });
 
-  return unique;
+  return unique.map((entry) => entry.ip);
 }
-
 function readRelayHostCache() {
   try {
     if (!fs.existsSync(relayCacheFilePath)) {
