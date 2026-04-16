@@ -24,8 +24,8 @@ function parseEnvInt(name, fallback, min, max) {
   return parsed;
 }
 
-const classBScanWorkerCount = parseEnvInt("RELAY_CLASSB_SCAN_WORKERS", 1100, 50, 5000);
-const classBScanTimeoutMs = parseEnvInt("RELAY_CLASSB_SCAN_TIMEOUT_MS", 300, 50, 2000);
+const classBScanWorkerCount = parseEnvInt("RELAY_CLASSB_SCAN_WORKERS", 450, 50, 5000);
+const classBScanTimeoutMs = parseEnvInt("RELAY_CLASSB_SCAN_TIMEOUT_MS", 350, 50, 2000);
 const classBScanMaxDurationMs = parseEnvInt("RELAY_CLASSB_SCAN_MAX_DURATION_MS", 0, 0, 120000);
 const localRescanMaxDurationMs = parseEnvInt("RELAY_LOCAL_RESCAN_MAX_DURATION_MS", 5000, 0, 120000);
 const directProbeAttempts = parseEnvInt("RELAY_DIRECT_PROBE_ATTEMPTS", 2, 1, 5);
@@ -353,6 +353,36 @@ function getClassBPrefixFromIp(ip) {
   return `${parts[0]}.${parts[1]}`;
 }
 
+function buildPrioritizedOctetValues(minInclusive, maxInclusive, center) {
+  const values = [];
+
+  if (!Number.isFinite(center) || center < minInclusive || center > maxInclusive) {
+    for (let value = minInclusive; value <= maxInclusive; value += 1) {
+      values.push(value);
+    }
+
+    return values;
+  }
+
+  for (let offset = 0; offset <= (maxInclusive - minInclusive); offset += 1) {
+    const upper = center + offset;
+    if (upper >= minInclusive && upper <= maxInclusive) {
+      values.push(upper);
+    }
+
+    if (offset === 0) {
+      continue;
+    }
+
+    const lower = center - offset;
+    if (lower >= minInclusive && lower <= maxInclusive) {
+      values.push(lower);
+    }
+  }
+
+  return values;
+}
+
 function collectClassBPrefixes(localIps, forcedPrefix, includeAllLocalPrefixes = false) {
   const prefixes = [];
   const seen = new Set();
@@ -377,7 +407,7 @@ function collectClassBPrefixes(localIps, forcedPrefix, includeAllLocalPrefixes =
   return prefixes;
 }
 
-function buildClassBHostsByPrefix(prefix, excludedHosts = []) {
+function buildClassBHostsByPrefix(prefix, excludedHosts = [], seedIp = null) {
   const normalized = parseClassBPrefix(prefix);
   if (!normalized) {
     return [];
@@ -386,9 +416,20 @@ function buildClassBHostsByPrefix(prefix, excludedHosts = []) {
   const [first, second] = normalized.split(".");
   const excluded = new Set(excludedHosts.filter((host) => isIPv4(host)));
 
+  let seedThird = null;
+  let seedFourth = null;
+  if (seedIp && isIPv4(seedIp) && getClassBPrefixFromIp(seedIp) === normalized) {
+    const parts = seedIp.split(".").map((part) => Number.parseInt(part, 10));
+    seedThird = parts[2];
+    seedFourth = parts[3];
+  }
+
+  const thirdValues = buildPrioritizedOctetValues(0, 255, seedThird);
+  const fourthValues = buildPrioritizedOctetValues(1, 254, seedFourth);
+
   const hosts = [];
-  for (let third = 0; third <= 255; third += 1) {
-    for (let fourth = 1; fourth <= 254; fourth += 1) {
+  for (const third of thirdValues) {
+    for (const fourth of fourthValues) {
       const host = `${first}.${second}.${third}.${fourth}`;
       if (excluded.has(host)) {
         continue;
@@ -470,8 +511,9 @@ async function discoverRelayHostLocalOnly(localIps, port) {
   const prefixes = collectClassBPrefixes(localIps, forceScanClassBPrefix, scanAllLocalClassBPrefixes);
   for (const prefix of prefixes) {
     console.log(`[dev-all] Quick relay rescan on ${prefix}.0.0/16 ...`);
+    const seedIp = localIps.find((ip) => getClassBPrefixFromIp(ip) === prefix) || null;
 
-    const hosts = buildClassBHostsByPrefix(prefix, localIps);
+    const hosts = buildClassBHostsByPrefix(prefix, localIps, seedIp);
     // eslint-disable-next-line no-await-in-loop
     const found = await scanHostList(hosts, port, {
       workerCount: classBScanWorkerCount,
@@ -500,8 +542,9 @@ async function discoverRelayHost(localIps, port) {
   const prefixes = collectClassBPrefixes(localIps, forceScanClassBPrefix, scanAllLocalClassBPrefixes);
   for (const prefix of prefixes) {
     console.log(`[dev-all] No relay found yet; scanning full ${prefix}.0.0/16 on port ${port} ...`);
+    const seedIp = localIps.find((ip) => getClassBPrefixFromIp(ip) === prefix) || null;
 
-    const hosts = buildClassBHostsByPrefix(prefix, localIps);
+    const hosts = buildClassBHostsByPrefix(prefix, localIps, seedIp);
     // eslint-disable-next-line no-await-in-loop
     const found = await scanHostList(hosts, port, {
       workerCount: classBScanWorkerCount,
