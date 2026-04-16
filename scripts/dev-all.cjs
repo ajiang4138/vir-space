@@ -772,15 +772,73 @@ async function main() {
   const preferredLocalIp = localIps[0] || "127.0.0.1";
 
   if (deferRelayDiscoveryUntilAfterClientStarts) {
-    // Ensure there is a local relay candidate immediately, without blocking UI startup.
-    try {
-      spawnDetachedRelayServer();
-    } catch (error) {
-      const message = error && typeof error === "object" && "message" in error ? error.message : String(error);
-      console.warn(`[dev-all] Could not launch local relay candidate immediately: ${message}`);
+    // --- Quick pre-launch discovery: check for an existing relay before spawning ---
+    let deferredRelayHost = null;
+    let deferredSpawnedLocalRelay = null;
+
+    // 1. Check the cache for a previously known relay.
+    const deferredCachedHost = readRelayHostCache();
+    if (deferredCachedHost) {
+      const cachedReachable = await canReachTcpWithRetries(deferredCachedHost, relayPort, 250, directProbeAttempts, "deferred-cache-check");
+      if (cachedReachable) {
+        deferredRelayHost = deferredCachedHost;
+        console.log(`[dev-all] Deferred: found cached relay at ${deferredRelayHost}:${relayPort}`);
+      } else {
+        clearRelayHostCache();
+        console.log(`[dev-all] Deferred: cached relay ${deferredCachedHost}:${relayPort} unreachable; cleared.`);
+      }
     }
 
-    const bootstrapUrl = process.env.VITE_BOOTSTRAP_SIGNALING_URL?.trim() || `ws://${preferredLocalIp}:${relayPort}`;
+    // 2. Probe local IPs for an already-running relay (e.g. from a previous run).
+    if (!deferredRelayHost) {
+      for (const localIp of localIps) {
+        // eslint-disable-next-line no-await-in-loop
+        const selfReachable = await canReachTcpWithRetries(localIp, relayPort, 250, directProbeAttempts, "deferred-local-probe");
+        if (selfReachable) {
+          deferredRelayHost = localIp;
+          console.log(`[dev-all] Deferred: found existing local relay at ${deferredRelayHost}:${relayPort}`);
+          break;
+        }
+      }
+    }
+
+    // 3. Probe loopback as a last local check.
+    if (!deferredRelayHost) {
+      const loopbackReachable = await canReachTcpWithRetries("127.0.0.1", relayPort, 200, directProbeAttempts, "deferred-loopback-check");
+      if (loopbackReachable) {
+        deferredRelayHost = preferredLocalIp;
+        console.log(`[dev-all] Deferred: found existing loopback relay, using ${deferredRelayHost}:${relayPort}`);
+      }
+    }
+
+    // 4. Only spawn a local relay if none was found.
+    if (!deferredRelayHost) {
+      try {
+        deferredSpawnedLocalRelay = spawnDetachedRelayServer();
+        console.log(`[dev-all] Deferred: no existing relay found; spawned local relay candidate.`);
+      } catch (error) {
+        const message = error && typeof error === "object" && "message" in error ? error.message : String(error);
+        console.warn(`[dev-all] Could not launch local relay candidate: ${message}`);
+      }
+
+      // Wait briefly for the newly spawned relay to become reachable.
+      if (deferredSpawnedLocalRelay) {
+        const readyHost = await waitForRelayOnAnyHost(localIps, relayPort, 3000);
+        if (readyHost) {
+          deferredRelayHost = readyHost;
+          console.log(`[dev-all] Deferred: local relay ready at ${deferredRelayHost}:${relayPort}`);
+        } else {
+          deferredRelayHost = preferredLocalIp;
+          console.log(`[dev-all] Deferred: local relay not yet confirmed; using ${deferredRelayHost}:${relayPort} optimistically.`);
+        }
+      } else {
+        deferredRelayHost = preferredLocalIp;
+      }
+    }
+
+    writeRelayHostCache(deferredRelayHost);
+
+    const bootstrapUrl = process.env.VITE_BOOTSTRAP_SIGNALING_URL?.trim() || `ws://${deferredRelayHost}:${relayPort}`;
     const clientEnv = {
       ...process.env,
       VITE_BOOTSTRAP_SIGNALING_URL: bootstrapUrl,
@@ -789,6 +847,34 @@ async function main() {
     const client = track(spawnNpmCommandWithEnv(["run", "dev:client"], clientEnv));
     console.log(`[dev-all] Client launched immediately with bootstrap ${bootstrapUrl}`);
     console.log("[dev-all] Relay discovery is running in background (non-blocking startup).\n");
+
+    // --- Background convergence: scan for a remote relay after client is up ---
+    (async () => {
+      try {
+        await delay(2000);
+        if (shuttingDown) {
+          return;
+        }
+
+        const discoveredHost = await discoverRelayHostLocalOnly(localIps, relayPort);
+        if (!discoveredHost || discoveredHost === deferredRelayHost || shuttingDown) {
+          return;
+        }
+
+        // Found a different (remote) relay — update cache so future launches converge.
+        writeRelayHostCache(discoveredHost);
+        console.log(`[dev-all] Background convergence: found remote relay at ${discoveredHost}:${relayPort}, updated cache.`);
+
+        // If we spawned a local relay and a remote one is available, kill ours.
+        if (deferredSpawnedLocalRelay) {
+          terminateChild(deferredSpawnedLocalRelay);
+          deferredSpawnedLocalRelay = null;
+          console.log(`[dev-all] Background convergence: stopped local relay in favor of remote relay.`);
+        }
+      } catch {
+        // Best-effort background convergence.
+      }
+    })();
 
     const shutdown = () => {
       if (shuttingDown) {

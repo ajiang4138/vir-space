@@ -67,8 +67,8 @@ export function DebugLog({ events, relayConnection }: DebugLogProps): JSX.Elemen
       <h2>Debug Events</h2>
       <div className="relay-debug">
         <p><strong>Relay:</strong> {relayConnection.url || "-"}</p>
-        <p><strong>State:</strong> {relayConnection.state}</p>
-        <p><strong>Age:</strong> {relayConnection.state === "connected" ? ageLabel : "not connected"}</p>
+        <p><strong>State:</strong> {relayConnection.state === "connecting" ? "connecting…" : relayConnection.state}</p>
+        <p><strong>Age:</strong> {relayConnection.state === "connected" ? ageLabel : relayConnection.state === "connecting" ? "connecting…" : "not connected"}</p>
         <p><strong>Server Uptime:</strong> {relayServerUptimeLabel}</p>
         <p><strong>Server Last Seen:</strong> {relayServerLastSeenLabel}</p>
         <p><strong>Connected Clients:</strong> {relayConnection.serverConnectedClients ?? "unknown"}</p>

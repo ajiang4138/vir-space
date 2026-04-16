@@ -1207,22 +1207,25 @@ export default function App(): JSX.Element {
       return;
     }
 
-    const delayMs = Math.min(
-      relayReconnectMaxDelayMs,
-      relayReconnectBaseDelayMs * (relayReconnectAttemptsRef.current + 1),
-    );
+    const isFirstAttempt = relayReconnectAttemptsRef.current === 0;
+    const delayMs = isFirstAttempt
+      ? 0
+      : Math.min(
+          relayReconnectMaxDelayMs,
+          relayReconnectBaseDelayMs * relayReconnectAttemptsRef.current,
+        );
 
     relayReconnectTimerRef.current = window.setTimeout(() => {
       relayReconnectTimerRef.current = null;
 
-      if (activeRoomRef.current || pendingActionRef.current || signalingState !== "disconnected") {
+      if (activeRoomRef.current || pendingActionRef.current || (signalingStateRef.current !== "connecting" && signalingStateRef.current !== "disconnected")) {
         return;
       }
 
       relayReconnectAttemptsRef.current += 1;
       setSignalingState("connecting");
       setSessionState("connecting to bootstrap server");
-      addEvent(`reconnecting to bootstrap signaling server: ${url}`);
+      addEvent(isFirstAttempt ? `connecting to bootstrap signaling server: ${url}` : `reconnecting to bootstrap signaling server: ${url}`);
       setConnectedRelayUrl(url);
       signalingRef.current?.connect(url);
     }, delayMs);
