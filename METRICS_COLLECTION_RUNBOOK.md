@@ -117,6 +117,12 @@ npm run analyze:metrics -- .metrics/room-<your-room-id>
 - `workspace_rtt.csv`
 - `resync_metrics.csv`
 - `metrics_summary.json`
+- `room_latency_bar.svg`
+- `workspace_rtt_timeline.svg`
+- `transfer_duration_bar.svg`
+- `transfer_throughput_bar.svg`
+- `resync_bar.svg`
+- `metrics_dashboard.html`
 
 ## 7. Recommended experiment hygiene
 
@@ -125,3 +131,18 @@ npm run analyze:metrics -- .metrics/room-<your-room-id>
 3. **Manual:** Run degraded-network scenarios as separate run IDs.
 4. **Manual:** Do at least 5-10 repetitions per scenario.
 5. **Manual:** Report median, p95, min/max, and success percentages.
+
+## 8. Live dashboard (room-select, real-time refresh, exports)
+
+1. **Manual:** Start live dashboard server from repository root:
+
+```bash
+npm run dashboard:metrics
+```
+
+2. **Manual:** Open printed URL in browser (default: `http://127.0.0.1:43123`).
+3. **Automatic:** Room selector is sorted newest-to-oldest by latest room file update.
+4. **Automatic:** Selected room stats/charts and tables refresh in real time as new metrics arrive.
+5. **Automatic:** Tables are rendered newest-to-oldest.
+6. **Manual:** Use `Export Graph Images` to download current graph SVG files.
+7. **Manual:** Use `Download Excel Sheets` to download a multi-sheet Excel workbook (`.xls`) for the selected room.

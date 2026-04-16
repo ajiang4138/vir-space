@@ -7,6 +7,7 @@
     "dev:client": "npm run dev --prefix client",
     "dev:server": "npm run dev --prefix server",
     "build": "npm run build --prefix client",
-    "analyze:metrics": "node scripts/analyze-metrics.mjs"
+    "analyze:metrics": "node scripts/analyze-metrics.mjs",
+    "dashboard:metrics": "node scripts/metrics-dashboard-server.mjs"
   }
 }

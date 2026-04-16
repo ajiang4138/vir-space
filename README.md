@@ -158,6 +158,34 @@ Generated output:
 - `.metrics/<run_id>/analysis/workspace_rtt.csv`
 - `.metrics/<run_id>/analysis/resync_metrics.csv`
 - `.metrics/<run_id>/analysis/metrics_summary.json`
+- `.metrics/<run_id>/analysis/room_latency_bar.svg`
+- `.metrics/<run_id>/analysis/workspace_rtt_timeline.svg`
+- `.metrics/<run_id>/analysis/transfer_duration_bar.svg`
+- `.metrics/<run_id>/analysis/transfer_throughput_bar.svg`
+- `.metrics/<run_id>/analysis/resync_bar.svg`
+- `.metrics/<run_id>/analysis/metrics_dashboard.html`
+
+Open `metrics_dashboard.html` in a browser to view all generated charts in one page.
+
+### Live Dashboard (Room Select + Real-Time Updates)
+
+You can launch a live dashboard that reads room data directly from `.metrics/`, lets you choose a room, and updates stats/charts automatically as new records are written.
+
+From repository root:
+
+```bash
+npm run dashboard:metrics
+```
+
+Then open the URL printed in terminal (default: `http://127.0.0.1:43123`).
+
+Features:
+
+- Room selector sorted from newest to oldest by latest room file update.
+- Auto-refresh of room list and selected room metrics.
+- Metrics tables rendered newest to oldest.
+- `Export Graph Images` button downloads current chart SVG files.
+- `Download Excel Sheets` button downloads a multi-sheet Excel workbook (`.xls`) for the selected room.
 
 ## File And Folder Map
 

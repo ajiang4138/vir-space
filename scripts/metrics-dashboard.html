@@ -1,0 +1,868 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>VIR Live Metrics Dashboard</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f4f8fc;
+        --surface: #ffffff;
+        --surface-2: #f8fbff;
+        --text: #0f172a;
+        --muted: #586379;
+        --border: #d6e0ec;
+        --accent: #1d4ed8;
+        --accent-soft: #dbeafe;
+        --danger: #b91c1c;
+        --success: #15803d;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background:
+          radial-gradient(circle at 10% -10%, #dbeafe 0%, rgba(219, 234, 254, 0) 45%),
+          radial-gradient(circle at 100% 10%, #fef3c7 0%, rgba(254, 243, 199, 0) 35%),
+          var(--bg);
+        color: var(--text);
+        font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+      }
+
+      .page {
+        max-width: 1400px;
+        margin: 20px auto 28px;
+        padding: 0 16px;
+      }
+
+      .hero {
+        background: linear-gradient(120deg, #0f172a 0%, #1d4ed8 100%);
+        color: #f8fafc;
+        border-radius: 14px;
+        padding: 18px 18px 16px;
+        box-shadow: 0 14px 28px rgba(15, 23, 42, 0.2);
+      }
+
+      .hero h1 {
+        margin: 0;
+        font-size: 27px;
+        letter-spacing: 0.2px;
+      }
+
+      .hero p {
+        margin: 8px 0 0;
+        opacity: 0.9;
+        font-size: 14px;
+      }
+
+      .panel {
+        margin-top: 14px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        box-shadow: 0 5px 16px rgba(15, 23, 42, 0.06);
+      }
+
+      .controls {
+        padding: 14px;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+        align-items: end;
+      }
+
+      .control {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      label {
+        font-size: 13px;
+        font-weight: 700;
+        color: #22314f;
+      }
+
+      select,
+      button {
+        height: 38px;
+        border-radius: 9px;
+        border: 1px solid var(--border);
+        padding: 0 10px;
+        font-size: 14px;
+      }
+
+      select {
+        background: #fff;
+      }
+
+      .buttons {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      button {
+        background: #fff;
+        color: var(--text);
+        cursor: pointer;
+        transition: transform 100ms ease, box-shadow 100ms ease;
+      }
+
+      button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 10px rgba(15, 23, 42, 0.1);
+      }
+
+      button.primary {
+        background: var(--accent);
+        color: #fff;
+        border-color: #1e40af;
+      }
+
+      button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+        transform: none;
+        box-shadow: none;
+      }
+
+      .meta {
+        padding: 0 14px 14px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .status {
+        margin-top: 10px;
+        padding: 9px 11px;
+        border-radius: 8px;
+        font-size: 13px;
+        border: 1px solid var(--border);
+        background: var(--surface-2);
+        color: #1f2d47;
+      }
+
+      .status.ok {
+        border-color: #bbf7d0;
+        background: #f0fdf4;
+        color: var(--success);
+      }
+
+      .status.error {
+        border-color: #fecaca;
+        background: #fef2f2;
+        color: var(--danger);
+      }
+
+      .cards {
+        margin-top: 14px;
+        padding: 14px;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+        gap: 10px;
+      }
+
+      .card {
+        background: var(--surface-2);
+        border: 1px solid #dce8f7;
+        border-radius: 10px;
+        padding: 10px;
+      }
+
+      .card h2 {
+        margin: 0;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.55px;
+        color: #2f4568;
+      }
+
+      .card .value {
+        margin-top: 8px;
+        font-size: 22px;
+        font-weight: 800;
+      }
+
+      .card .detail {
+        margin-top: 5px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .charts {
+        margin-top: 14px;
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 12px;
+      }
+
+      .chart-panel {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        overflow: hidden;
+      }
+
+      .chart-head {
+        display: none;
+        padding: 10px 12px;
+        background: #f8fbff;
+        border-bottom: 1px solid var(--border);
+        font-size: 13px;
+        color: #2b3c5d;
+      }
+
+      .chart-body {
+        padding: 8px;
+      }
+
+      .chart-body svg {
+        width: 100%;
+        height: auto;
+        display: block;
+      }
+
+      .action-charts-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 10px;
+      }
+
+      .action-chart-card {
+        border: 1px solid #d6e0ec;
+        border-radius: 10px;
+        background: #ffffff;
+        overflow: hidden;
+      }
+
+      .action-chart-title {
+        display: none;
+        margin: 0;
+        padding: 8px 10px;
+        font-size: 12px;
+        color: #334155;
+        background: #f8fbff;
+        border-bottom: 1px solid #d6e0ec;
+      }
+
+      .tables {
+        margin-top: 14px;
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 12px;
+      }
+
+      .table-panel {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        overflow: hidden;
+      }
+
+      .table-panel h3 {
+        margin: 0;
+        padding: 10px 12px;
+        font-size: 14px;
+        background: #f8fbff;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .table-wrap {
+        overflow: auto;
+        max-height: 270px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+      }
+
+      thead th {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        background: #f1f5f9;
+        color: #1f2d47;
+      }
+
+      th,
+      td {
+        padding: 7px 8px;
+        border-bottom: 1px solid #e2e8f0;
+        white-space: nowrap;
+        text-align: left;
+      }
+
+      tbody tr:nth-child(odd) {
+        background: #fcfdff;
+      }
+
+      .subtle {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      @media (max-width: 900px) {
+        .hero h1 {
+          font-size: 23px;
+        }
+
+        .cards {
+          grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        }
+
+        .charts,
+        .action-charts-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <header class="hero">
+        <h1>VIR Live Metrics Dashboard</h1>
+        <p>Pick a room and watch stats and graphs refresh in real time.</p>
+      </header>
+
+      <section class="panel">
+        <div class="controls">
+          <div class="control">
+            <label for="roomSelect">Selected Room</label>
+            <select id="roomSelect"></select>
+          </div>
+
+          <div class="control">
+            <label>Actions</label>
+            <div class="buttons">
+              <button id="refreshRoomsBtn">Refresh Rooms</button>
+              <button id="refreshDataBtn">Refresh Data</button>
+            </div>
+          </div>
+
+          <div class="control">
+            <label>Exports</label>
+            <div class="buttons">
+              <button id="exportGraphsBtn" class="primary" disabled>Export Graph Images</button>
+              <button id="downloadExcelBtn" class="primary" disabled>Download Excel Sheets</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="meta">
+          <div id="roomMeta">No room selected</div>
+          <div class="status" id="statusBox">Loading rooms...</div>
+        </div>
+      </section>
+
+      <section class="panel cards" id="summaryCards">
+        <article class="card">
+          <h2>Room Flow Success</h2>
+          <div class="value" id="roomFlowSuccess">n/a</div>
+          <div class="detail" id="roomFlowLatency">p95: n/a</div>
+        </article>
+        <article class="card">
+          <h2>Transfer Completion</h2>
+          <div class="value" id="transferCompletion">n/a</div>
+          <div class="detail" id="transferDuration">p95: n/a</div>
+        </article>
+        <article class="card">
+          <h2>Workspace RTT</h2>
+          <div class="value" id="workspaceRtt">n/a</div>
+          <div class="detail" id="workspaceCount">samples: n/a</div>
+        </article>
+        <article class="card">
+          <h2>Resync Convergence</h2>
+          <div class="value" id="resyncConvergence">n/a</div>
+          <div class="detail" id="resyncP95">p95: n/a</div>
+        </article>
+        <article class="card">
+          <h2>Room Latency Median</h2>
+          <div class="value" id="roomLatencyMedian">n/a</div>
+          <div class="detail" id="roomLatencyMean">mean: n/a</div>
+        </article>
+        <article class="card">
+          <h2>Throughput Median</h2>
+          <div class="value" id="throughputMedian">n/a</div>
+          <div class="detail" id="throughputMean">mean: n/a</div>
+        </article>
+        <article class="card">
+          <h2>Workspace RTT Median</h2>
+          <div class="value" id="workspaceMedian">n/a</div>
+          <div class="detail" id="workspaceMean">mean: n/a</div>
+        </article>
+        <article class="card">
+          <h2>Resync Median</h2>
+          <div class="value" id="resyncMedian">n/a</div>
+          <div class="detail" id="resyncMean">mean: n/a</div>
+        </article>
+      </section>
+
+      <section class="charts">
+        <article class="chart-panel">
+          <div class="chart-head">Room Flow Latency</div>
+          <div class="chart-body" id="chartRoomLatency"></div>
+        </article>
+        <article class="chart-panel">
+          <div class="chart-head">Room Flow Latency By Action</div>
+          <div class="chart-body" id="chartRoomLatencyByAction"></div>
+        </article>
+        <article class="chart-panel">
+          <div class="chart-head">Overall Workspace Latency</div>
+          <div class="chart-body" id="chartWorkspaceRtt"></div>
+        </article>
+        <article class="chart-panel">
+          <div class="chart-head">Chatroom Latency</div>
+          <div class="chart-body" id="chartWorkspaceRttChat"></div>
+        </article>
+        <article class="chart-panel">
+          <div class="chart-head">Whiteboard Latency</div>
+          <div class="chart-body" id="chartWorkspaceRttWhiteboard"></div>
+        </article>
+        <article class="chart-panel">
+          <div class="chart-head">Shared Editor Latency</div>
+          <div class="chart-body" id="chartWorkspaceRttEditor"></div>
+        </article>
+        <article class="chart-panel">
+          <div class="chart-head">Transfer Throughput</div>
+          <div class="chart-body" id="chartTransferThroughput"></div>
+        </article>
+        <article class="chart-panel">
+          <div class="chart-head">Resync Time</div>
+          <div class="chart-body" id="chartResync"></div>
+        </article>
+      </section>
+
+      <section class="tables">
+        <article class="table-panel">
+          <h3>Room Latency Rows <span class="subtle">(newest to oldest)</span></h3>
+          <div class="table-wrap" id="roomRowsTable"></div>
+        </article>
+
+        <article class="table-panel">
+          <h3>Transfer Rows <span class="subtle">(newest to oldest)</span></h3>
+          <div class="table-wrap" id="transferRowsTable"></div>
+        </article>
+
+        <article class="table-panel">
+          <h3>Workspace RTT Rows <span class="subtle">(newest to oldest)</span></h3>
+          <div class="table-wrap" id="workspaceRowsTable"></div>
+        </article>
+
+        <article class="table-panel">
+          <h3>Resync Rows <span class="subtle">(newest to oldest)</span></h3>
+          <div class="table-wrap" id="resyncRowsTable"></div>
+        </article>
+      </section>
+    </div>
+
+    <script>
+      const ROOM_POLL_MS = 6000;
+      const DATA_POLL_MS = 2500;
+      const MAX_TABLE_ROWS = 120;
+
+      const state = {
+        rooms: [],
+        selectedRunId: "",
+        lastRevision: "",
+        charts: {},
+        loadingRooms: false,
+        loadingData: false,
+      };
+
+      function formatNumber(value, digits = 2) {
+        if (typeof value !== "number" || !Number.isFinite(value)) {
+          return "n/a";
+        }
+        return value.toLocaleString(undefined, { maximumFractionDigits: digits });
+      }
+
+      function formatPercent(value, digits = 1) {
+        if (typeof value !== "number" || !Number.isFinite(value)) {
+          return "n/a";
+        }
+        return `${value.toLocaleString(undefined, { maximumFractionDigits: digits })}%`;
+      }
+
+      function formatDate(timestampMs) {
+        if (typeof timestampMs !== "number" || !Number.isFinite(timestampMs)) {
+          return "n/a";
+        }
+
+        return new Date(timestampMs).toLocaleString();
+      }
+
+      function escapeHtml(value) {
+        return String(value ?? "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/\"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      async function fetchJson(url) {
+        const response = await fetch(url, { cache: "no-store" });
+        let payload = null;
+
+        try {
+          payload = await response.json();
+        } catch {
+          // keep null
+        }
+
+        if (!response.ok) {
+          const message = payload && payload.error ? payload.error : `${response.status} ${response.statusText}`;
+          throw new Error(message);
+        }
+
+        return payload;
+      }
+
+      function setStatus(message, kind = "info") {
+        const box = document.getElementById("statusBox");
+        box.textContent = message;
+        box.className = `status ${kind}`;
+      }
+
+      function setExportButtonsEnabled(enabled) {
+        document.getElementById("exportGraphsBtn").disabled = !enabled;
+        document.getElementById("downloadExcelBtn").disabled = !enabled;
+      }
+
+      function renderRooms(rooms) {
+        state.rooms = rooms;
+        const select = document.getElementById("roomSelect");
+        const previous = state.selectedRunId;
+        select.innerHTML = "";
+
+        if (!rooms.length) {
+          const option = document.createElement("option");
+          option.value = "";
+          option.textContent = "No rooms found";
+          select.appendChild(option);
+          state.selectedRunId = "";
+          setExportButtonsEnabled(false);
+          document.getElementById("roomMeta").textContent = "No room data available";
+          return;
+        }
+
+        for (const room of rooms) {
+          const option = document.createElement("option");
+          option.value = room.runId;
+          option.textContent = `${room.runId} | peers: ${room.peerFileCount} | updated: ${new Date(room.newestMtimeMs).toLocaleString()}`;
+          select.appendChild(option);
+        }
+
+        const nextRunId = rooms.some((room) => room.runId === previous) ? previous : rooms[0].runId;
+        select.value = nextRunId;
+
+        if (state.selectedRunId !== nextRunId) {
+          state.selectedRunId = nextRunId;
+          state.lastRevision = "";
+        }
+
+        const selectedRoom = rooms.find((room) => room.runId === state.selectedRunId);
+        if (selectedRoom) {
+          document.getElementById("roomMeta").textContent = `Selected room: ${selectedRoom.runId}. Room list is sorted by latest file update.`;
+        }
+      }
+
+      function renderSummary(summary) {
+        const roomLatencyStats = summary.roomFlows.latencyMs;
+        const throughputStats = summary.transfers.throughputBytesPerSecond;
+        const workspaceRttStats = summary.workspaceRtt.rttMs;
+        const resyncStats = summary.resync.resyncMs;
+
+        const roomLatencyP95 = roomLatencyStats ? `${formatNumber(roomLatencyStats.p95, 2)} ms` : "n/a";
+        const transferDurationP95 = summary.transfers.durationMs ? `${formatNumber(summary.transfers.durationMs.p95, 2)} ms` : "n/a";
+        const workspaceRttP95 = workspaceRttStats ? `${formatNumber(workspaceRttStats.p95, 2)} ms` : "n/a";
+        const resyncP95 = resyncStats ? `${formatNumber(resyncStats.p95, 2)} ms` : "n/a";
+
+        const throughputMedian = throughputStats ? `${formatNumber(throughputStats.p50 / 1048576, 3)} MiB/s` : "n/a";
+        const throughputMean = throughputStats ? `${formatNumber(throughputStats.mean / 1048576, 3)} MiB/s` : "n/a";
+        const roomMedian = roomLatencyStats ? `${formatNumber(roomLatencyStats.p50, 2)} ms` : "n/a";
+        const roomMean = roomLatencyStats ? `${formatNumber(roomLatencyStats.mean, 2)} ms` : "n/a";
+        const workspaceMedian = workspaceRttStats ? `${formatNumber(workspaceRttStats.p50, 2)} ms` : "n/a";
+        const workspaceMean = workspaceRttStats ? `${formatNumber(workspaceRttStats.mean, 2)} ms` : "n/a";
+        const resyncMedian = resyncStats ? `${formatNumber(resyncStats.p50, 2)} ms` : "n/a";
+        const resyncMean = resyncStats ? `${formatNumber(resyncStats.mean, 2)} ms` : "n/a";
+
+        document.getElementById("roomFlowSuccess").textContent = formatPercent(summary.roomFlows.successRatePercent, 1);
+        document.getElementById("roomFlowLatency").textContent = `p95: ${roomLatencyP95}`;
+
+        document.getElementById("transferCompletion").textContent = formatPercent(summary.transfers.completionRatePercent, 1);
+        document.getElementById("transferDuration").textContent = `p95: ${transferDurationP95}`;
+
+        document.getElementById("workspaceRtt").textContent = workspaceRttP95;
+        document.getElementById("workspaceCount").textContent = `samples: ${formatNumber(summary.workspaceRtt.total, 0)}`;
+
+        document.getElementById("resyncConvergence").textContent = formatPercent(summary.resync.convergenceRatePercent, 1);
+        document.getElementById("resyncP95").textContent = `p95: ${resyncP95}`;
+
+        document.getElementById("roomLatencyMedian").textContent = roomMedian;
+        document.getElementById("roomLatencyMean").textContent = `mean: ${roomMean}`;
+
+        document.getElementById("throughputMedian").textContent = throughputMedian;
+        document.getElementById("throughputMean").textContent = `mean: ${throughputMean}`;
+
+        document.getElementById("workspaceMedian").textContent = workspaceMedian;
+        document.getElementById("workspaceMean").textContent = `mean: ${workspaceMean}`;
+
+        document.getElementById("resyncMedian").textContent = resyncMedian;
+        document.getElementById("resyncMean").textContent = `mean: ${resyncMean}`;
+      }
+
+      function renderChart(targetId, svgMarkup) {
+        const container = document.getElementById(targetId);
+        container.innerHTML = svgMarkup || "";
+      }
+
+      function renderCharts(charts) {
+        state.charts = charts || {};
+        renderChart("chartRoomLatency", charts.roomLatencySvg || "");
+        renderRoomLatencyByAction(charts.roomLatencyByAction || []);
+        renderChart("chartWorkspaceRtt", charts.workspaceRttSvg || "");
+        renderChart("chartWorkspaceRttChat", charts.workspaceRttChatSvg || "");
+        renderChart("chartWorkspaceRttWhiteboard", charts.workspaceRttWhiteboardSvg || "");
+        renderChart("chartWorkspaceRttEditor", charts.workspaceRttEditorSvg || "");
+        renderChart("chartTransferThroughput", charts.transferThroughputSvg || "");
+        renderChart("chartResync", charts.resyncSvg || "");
+      }
+
+      function renderRoomLatencyByAction(actionCharts) {
+        const container = document.getElementById("chartRoomLatencyByAction");
+        if (!Array.isArray(actionCharts) || actionCharts.length === 0) {
+          container.innerHTML = "<div class=\"subtle\" style=\"padding:10px\">No action-specific room flow rows yet.</div>";
+          return;
+        }
+
+        const cards = actionCharts.map((chart, index) => {
+          const title = chart && typeof chart.title === "string" && chart.title.length > 0
+            ? chart.title
+            : `Action ${index + 1}`;
+          const svg = chart && typeof chart.svg === "string" ? chart.svg : "";
+          return `<section class=\"action-chart-card\"><h4 class=\"action-chart-title\">${escapeHtml(title)}</h4>${svg}</section>`;
+        }).join("");
+
+        container.innerHTML = `<div class=\"action-charts-grid\">${cards}</div>`;
+      }
+
+      function formatCell(key, value) {
+        if (key.endsWith("AtMs") || key.endsWith("timestampMs") || key === "recordedAtMs") {
+          return formatDate(value);
+        }
+
+        if (typeof value === "number" && Number.isFinite(value)) {
+          return formatNumber(value, key.toLowerCase().includes("percent") ? 2 : 3);
+        }
+
+        if (typeof value === "boolean") {
+          return value ? "true" : "false";
+        }
+
+        return String(value ?? "");
+      }
+
+      function renderRowsTable(containerId, rows) {
+        const container = document.getElementById(containerId);
+        const displayedRows = rows.slice(0, MAX_TABLE_ROWS);
+
+        if (!displayedRows.length) {
+          container.innerHTML = "<div class=\"subtle\" style=\"padding:10px\">No rows</div>";
+          return;
+        }
+
+        const headers = Object.keys(displayedRows[0]);
+        const thead = `<thead><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr></thead>`;
+
+        const bodyRows = displayedRows.map((row) => {
+          const cells = headers
+            .map((header) => `<td>${escapeHtml(formatCell(header, row[header]))}</td>`)
+            .join("");
+          return `<tr>${cells}</tr>`;
+        }).join("");
+
+        container.innerHTML = `<table>${thead}<tbody>${bodyRows}</tbody></table>`;
+      }
+
+      function downloadBlob(filename, blob, mimeType) {
+        const objectUrl = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = objectUrl;
+        anchor.download = filename;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      }
+
+      function exportGraphImages() {
+        if (!state.selectedRunId) {
+          return;
+        }
+
+        const actionCharts = Array.isArray(state.charts.roomLatencyByAction) ? state.charts.roomLatencyByAction : [];
+        const slugify = (value) => String(value ?? "")
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "") || "unknown";
+
+        const actionGraphEntries = actionCharts
+          .map((chart, index) => {
+            if (!chart || typeof chart.svg !== "string" || chart.svg.length === 0) {
+              return null;
+            }
+
+            const actionKey = typeof chart.action === "string" && chart.action.length > 0
+              ? chart.action
+              : `action-${index + 1}`;
+
+            return [`room_latency_${slugify(actionKey)}`, chart.svg];
+          })
+          .filter((entry) => entry !== null);
+
+        const charts = [
+          ["room_latency", state.charts.roomLatencySvg],
+          ...actionGraphEntries,
+          ["workspace_rtt_timeline", state.charts.workspaceRttSvg],
+          ["chatroom_rtt_timeline", state.charts.workspaceRttChatSvg],
+          ["whiteboard_rtt_timeline", state.charts.workspaceRttWhiteboardSvg],
+          ["shared_editor_rtt_timeline", state.charts.workspaceRttEditorSvg],
+          ["transfer_throughput", state.charts.transferThroughputSvg],
+          ["resync", state.charts.resyncSvg],
+        ].filter((entry) => typeof entry[1] === "string" && entry[1].length > 0);
+
+        if (!charts.length) {
+          setStatus("No chart images are available to export yet.", "error");
+          return;
+        }
+
+        charts.forEach(([chartName, svgMarkup], index) => {
+          setTimeout(() => {
+            const filename = `${state.selectedRunId}_${chartName}.svg`;
+            const blob = new Blob([svgMarkup], { type: "image/svg+xml;charset=utf-8" });
+            downloadBlob(filename, blob, "image/svg+xml");
+          }, index * 120);
+        });
+
+        setStatus(`Exported ${charts.length} graph image files.`, "ok");
+      }
+
+      function downloadExcelSheets() {
+        if (!state.selectedRunId) {
+          return;
+        }
+
+        const url = `/api/export/excel?runId=${encodeURIComponent(state.selectedRunId)}`;
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = `${state.selectedRunId}_metrics.xls`;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        setStatus("Excel workbook download started.", "ok");
+      }
+
+      async function refreshRooms() {
+        if (state.loadingRooms) {
+          return;
+        }
+
+        state.loadingRooms = true;
+        try {
+          const payload = await fetchJson("/api/rooms");
+          renderRooms(payload.rooms || []);
+
+          if (state.selectedRunId) {
+            setExportButtonsEnabled(true);
+          }
+        } catch (error) {
+          setStatus(`Failed to refresh rooms: ${error instanceof Error ? error.message : String(error)}`, "error");
+        } finally {
+          state.loadingRooms = false;
+        }
+      }
+
+      async function refreshSelectedRoomData() {
+        if (!state.selectedRunId || state.loadingData) {
+          return;
+        }
+
+        state.loadingData = true;
+        try {
+          const payload = await fetchJson(`/api/room-data?runId=${encodeURIComponent(state.selectedRunId)}`);
+
+          if (payload.revision === state.lastRevision) {
+            setStatus(`No new records for ${payload.runId}. Last checked ${new Date().toLocaleTimeString()}.`, "ok");
+            return;
+          }
+
+          state.lastRevision = payload.revision;
+          renderSummary(payload.summary);
+          renderCharts(payload.charts || {});
+          renderRowsTable("roomRowsTable", payload.roomRows || []);
+          renderRowsTable("transferRowsTable", payload.transferRows || []);
+          renderRowsTable("workspaceRowsTable", payload.workspaceRttRows || []);
+          renderRowsTable("resyncRowsTable", payload.resyncRows || []);
+
+          setExportButtonsEnabled(true);
+          setStatus(
+            `Updated ${payload.runId} at ${new Date().toLocaleTimeString()} (latest record: ${payload.newestRecordTimestampIso || "n/a"}).`,
+            "ok",
+          );
+        } catch (error) {
+          setStatus(`Failed to refresh room data: ${error instanceof Error ? error.message : String(error)}`, "error");
+        } finally {
+          state.loadingData = false;
+        }
+      }
+
+      function bindUi() {
+        document.getElementById("roomSelect").addEventListener("change", (event) => {
+          const selectedRunId = event.target.value;
+          if (selectedRunId === state.selectedRunId) {
+            return;
+          }
+
+          state.selectedRunId = selectedRunId;
+          state.lastRevision = "";
+          refreshSelectedRoomData();
+        });
+
+        document.getElementById("refreshRoomsBtn").addEventListener("click", async () => {
+          await refreshRooms();
+          await refreshSelectedRoomData();
+        });
+
+        document.getElementById("refreshDataBtn").addEventListener("click", refreshSelectedRoomData);
+        document.getElementById("exportGraphsBtn").addEventListener("click", exportGraphImages);
+        document.getElementById("downloadExcelBtn").addEventListener("click", downloadExcelSheets);
+      }
+
+      async function initialize() {
+        bindUi();
+        setStatus("Loading rooms...", "info");
+
+        await refreshRooms();
+        await refreshSelectedRoomData();
+
+        setInterval(async () => {
+          await refreshRooms();
+        }, ROOM_POLL_MS);
+
+        setInterval(async () => {
+          await refreshSelectedRoomData();
+        }, DATA_POLL_MS);
+      }
+
+      initialize();
+    </script>
+  </body>
+</html>
