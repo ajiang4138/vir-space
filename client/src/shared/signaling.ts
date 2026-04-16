@@ -183,3 +183,13 @@ export interface HostServiceInfo {
   localNetworkInfo: LocalNetworkInfo | null;
   wsUrls: string[];
 }
+
+export type RelayDiscoveryPhase = "idle" | "scanning" | "found" | "not-found" | "error";
+
+export interface RelayDiscoveryStatus {
+  phase: RelayDiscoveryPhase;
+  host: string | null;
+  startedAt: number | null;
+  updatedAt: number;
+  lastError: string | null;
+}

@@ -1,4 +1,3 @@
 # Relay scan attempt log
-# startedAt=2026-04-16T18:05:54.096Z
-2026-04-16T18:05:54.194Z [startup] localIps=10.2.192.49,10.90.216.47,192.168.56.1
-2026-04-16T18:05:54.198Z [loopback-check-attempt1] 127.0.0.1:8787 timeoutMs=200 result=open reason=connect
+# startedAt=2026-04-16T19:37:19.335Z
+2026-04-16T19:37:19.387Z [startup] localIps=10.2.192.49,10.20.22.97,192.168.56.1

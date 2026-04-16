@@ -37,6 +37,7 @@ const relayCacheMaxAgeMs = 24 * 60 * 60 * 1000;
 const relayConvergeToLeader = process.env.RELAY_CONVERGE_TO_LEADER === "1";
 const relayScanLogEnabled = process.env.RELAY_SCAN_LOG_ENABLED !== "0";
 const relayScanLogFilePath = path.join(rootDir, process.env.RELAY_SCAN_LOG_FILE || ".relay-scan-attempts.log");
+const deferRelayDiscoveryUntilAfterClientStarts = process.env.RELAY_DEFER_DISCOVERY !== "0";
 let relayScanLogStream = null;
 
 function initializeRelayScanLog() {
@@ -768,8 +769,60 @@ async function main() {
   initializeRelayScanLog();
   const localIps = getLocalIPv4Addresses();
   appendRelayScanLog(`[startup] localIps=${localIps.join(",") || "<none>"}`);
-  const preferredLocalIp = localIps[0] || null;
-  if (!preferredLocalIp) {
+  const preferredLocalIp = localIps[0] || "127.0.0.1";
+
+  if (deferRelayDiscoveryUntilAfterClientStarts) {
+    // Ensure there is a local relay candidate immediately, without blocking UI startup.
+    try {
+      spawnDetachedRelayServer();
+    } catch (error) {
+      const message = error && typeof error === "object" && "message" in error ? error.message : String(error);
+      console.warn(`[dev-all] Could not launch local relay candidate immediately: ${message}`);
+    }
+
+    const bootstrapUrl = process.env.VITE_BOOTSTRAP_SIGNALING_URL?.trim() || `ws://${preferredLocalIp}:${relayPort}`;
+    const clientEnv = {
+      ...process.env,
+      VITE_BOOTSTRAP_SIGNALING_URL: bootstrapUrl,
+    };
+
+    const client = track(spawnNpmCommandWithEnv(["run", "dev:client"], clientEnv));
+    console.log(`[dev-all] Client launched immediately with bootstrap ${bootstrapUrl}`);
+    console.log("[dev-all] Relay discovery is running in background (non-blocking startup).\n");
+
+    const shutdown = () => {
+      if (shuttingDown) {
+        return;
+      }
+
+      shuttingDown = true;
+      stopChildren();
+      closeRelayScanLog();
+      setTimeout(() => {
+        closeRelayScanLog();
+        process.exit(0);
+      }, 250);
+    };
+
+    process.once("SIGINT", shutdown);
+    process.once("SIGTERM", shutdown);
+
+    client.on("exit", (code, signal) => {
+      stopChildren();
+      closeRelayScanLog();
+
+      if (signal) {
+        process.exit(1);
+        return;
+      }
+
+      process.exit(code || 0);
+    });
+
+    return;
+  }
+
+  if (!localIps.length) {
     console.error("[dev-all] No non-loopback IPv4 network interface found. Cannot start network relay.");
     process.exit(1);
     return;

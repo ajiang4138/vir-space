@@ -3,6 +3,8 @@ export type {
     HostServiceInfo,
     HostServiceStatus,
     LocalNetworkInfo,
+  RelayDiscoveryPhase,
+  RelayDiscoveryStatus,
     ParticipantRole,
     ParticipantSummary,
     RelayRoomListing,

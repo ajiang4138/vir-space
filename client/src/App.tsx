@@ -20,6 +20,7 @@ import type {
   DiscoveredRoomSummary,
   ParticipantRole,
   ParticipantSummary,
+  RelayDiscoveryStatus,
   RelayRoomListing,
   RelayRoomListingInput,
   RoomStatePayload,
@@ -60,6 +61,7 @@ const relayHostListingHeartbeatIntervalMs = 8_000;
 const relayReconnectBaseDelayMs = 1_500;
 const relayReconnectMaxDelayMs = 10_000;
 const relayServerStatusPollIntervalMs = 2_000;
+const relayBootstrapDiscoveryPollIntervalMs = 1_000;
 
 function nowLabel(): string {
   return new Date().toLocaleTimeString();
@@ -217,8 +219,11 @@ export default function App(): JSX.Element {
   const [relayServerLastSeenAtMs, setRelayServerLastSeenAtMs] = useState<number | null>(null);
   const [relayServerConnectedClients, setRelayServerConnectedClients] = useState<number | null>(null);
   const [relayServerListings, setRelayServerListings] = useState<number | null>(null);
+  const [relayDiscoveryStatus, setRelayDiscoveryStatus] = useState<RelayDiscoveryStatus | null>(null);
 
   const activeRoomRef = useRef<ActiveRoom | null>(null);
+  const setupStepRef = useRef<SetupStep>("user-id");
+  const signalingStateRef = useRef<SignalingConnectionState>("disconnected");
   const currentUserIdRef = useRef("");
   const pendingActionRef = useRef<PendingAction | null>(null);
   const bootstrapUrlRef = useRef(defaultBootstrapUrl);
@@ -235,6 +240,7 @@ export default function App(): JSX.Element {
   const relayServerStatusPollTimerRef = useRef<number | null>(null);
   const relayReconnectAttemptsRef = useRef(0);
   const lastSelectedRelayLogRef = useRef<string | null>(null);
+  const lastDiscoveredRelayHostRef = useRef<string | null>(null);
 
   const addEvent = (text: string): void => {
     setEvents((prev) => [`[${nowLabel()}] ${text}`, ...prev].slice(0, 150));
@@ -543,6 +549,14 @@ export default function App(): JSX.Element {
   }, [currentUserId]);
 
   useEffect(() => {
+    setupStepRef.current = setupStep;
+  }, [setupStep]);
+
+  useEffect(() => {
+    signalingStateRef.current = signalingState;
+  }, [signalingState]);
+
+  useEffect(() => {
     const cleanupTimer = window.setInterval(() => {
       pruneStaleRelayDiscoveredRooms();
     }, relayDiscoveredRoomsCleanupIntervalMs);
@@ -609,6 +623,71 @@ export default function App(): JSX.Element {
 
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const refreshRelayDiscovery = async (): Promise<void> => {
+      try {
+        const statusSnapshot = await window.electronApi.getRelayDiscoveryStatus();
+        if (cancelled) {
+          return;
+        }
+
+        setRelayDiscoveryStatus(statusSnapshot);
+
+        if (statusSnapshot.phase !== "found" || !statusSnapshot.host || isLoopbackHost(statusSnapshot.host)) {
+          return;
+        }
+
+        if (statusSnapshot.host === lastDiscoveredRelayHostRef.current) {
+          return;
+        }
+
+        lastDiscoveredRelayHostRef.current = statusSnapshot.host;
+        const discoveredUrl = `ws://${statusSnapshot.host}:${defaultHostPort}`;
+        setBootstrapUrl(discoveredUrl);
+        addEvent(`relay discovery found bootstrap server: ${discoveredUrl}`);
+
+        if (setupStepRef.current !== "join") {
+          return;
+        }
+
+        if (activeRoomRef.current || pendingActionRef.current || signalingStateRef.current !== "disconnected") {
+          return;
+        }
+
+        setSignalingState("connecting");
+        setSessionState("connecting to bootstrap server");
+        setConnectedRelayUrl(discoveredUrl);
+        signalingRef.current?.connect(discoveredUrl);
+      } catch {
+        if (cancelled) {
+          return;
+        }
+
+        setRelayDiscoveryStatus((previous) => previous ?? {
+          phase: "error",
+          host: null,
+          startedAt: null,
+          updatedAt: Date.now(),
+          lastError: "Unable to read relay discovery state",
+        });
+      }
+    };
+
+    void window.electronApi.startRelayDiscoveryScan().catch(() => undefined);
+    void refreshRelayDiscovery();
+
+    const timer = window.setInterval(() => {
+      void refreshRelayDiscovery();
+    }, relayBootstrapDiscoveryPollIntervalMs);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
     };
   }, []);
 
@@ -1330,6 +1409,7 @@ export default function App(): JSX.Element {
   const chooseJoinMode = (): void => {
     setSetupStep("join");
     relayReconnectAttemptsRef.current = 0;
+    void window.electronApi.startRelayDiscoveryScan().catch(() => undefined);
 
     if (activeRoomRef.current) {
       return;
@@ -1479,6 +1559,9 @@ export default function App(): JSX.Element {
                 userIdDraft={userIdDraft}
                 currentUserId={currentUserId}
                 discoveredRooms={discoveredRooms}
+                relayConnected={signalingState === "connected"}
+                relayDiscoveryPhase={relayDiscoveryStatus?.phase ?? "idle"}
+                relayDiscoveryHost={relayDiscoveryStatus?.host ?? null}
                 roomActionDisabled={Boolean(activeRoom)}
                 defaultBootstrapUrl={bootstrapUrlRef.current}
                 onUserIdDraftChange={setUserIdDraft}

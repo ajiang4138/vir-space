@@ -3,12 +3,16 @@ import type { DiscoveredRoomSummary } from "../types";
 import { DiscoverRoomsPanel } from "./DiscoverRoomsPanel";
 
 type SetupStep = "user-id" | "mode" | "create" | "join";
+type RelayDiscoveryPhase = "idle" | "scanning" | "found" | "not-found" | "error";
 
 interface JoinFormProps {
   step: SetupStep;
   userIdDraft: string;
   currentUserId: string;
   discoveredRooms: DiscoveredRoomSummary[];
+  relayConnected: boolean;
+  relayDiscoveryPhase: RelayDiscoveryPhase;
+  relayDiscoveryHost: string | null;
   roomActionDisabled: boolean;
   defaultBootstrapUrl: string;
   onUserIdDraftChange: (next: string) => void;
@@ -33,6 +37,9 @@ export function JoinForm({
   userIdDraft,
   currentUserId,
   discoveredRooms,
+  relayConnected,
+  relayDiscoveryPhase,
+  relayDiscoveryHost,
   roomActionDisabled,
   defaultBootstrapUrl,
   onUserIdDraftChange,
@@ -208,6 +215,9 @@ export function JoinForm({
       <section className="join-room-layout">
         <DiscoverRoomsPanel
           rooms={discoveredRooms}
+          relayConnected={relayConnected}
+          relayDiscoveryPhase={relayDiscoveryPhase}
+          relayDiscoveryHost={relayDiscoveryHost}
           disabled={roomActionDisabled}
           onUseRoom={useDiscoveredRoom}
         />

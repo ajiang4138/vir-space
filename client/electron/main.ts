@@ -1,8 +1,9 @@
 import { app, BrowserWindow, ipcMain } from "electron";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import type { HostServiceInfo, LocalNetworkInfo } from "../src/shared/signaling.js";
+import type { HostServiceInfo, LocalNetworkInfo, RelayDiscoveryStatus } from "../src/shared/signaling.js";
 import {
     buildFileManifest,
     createReceiverTransfer,
@@ -16,6 +17,21 @@ import { HostRoomService } from "./hostServer.js";
 
 const hostService = new HostRoomService();
 let isQuitting = false;
+
+const relayPort = 8787;
+const relayConnectTimeoutMs = 350;
+const relayProbeAttempts = 2;
+const relayScanWorkers = 260;
+const relayScanMaxDurationMs = 90_000;
+
+let relayDiscoveryTask: Promise<RelayDiscoveryStatus> | null = null;
+let relayDiscoveryStatus: RelayDiscoveryStatus = {
+  phase: "idle",
+  host: null,
+  startedAt: null,
+  updatedAt: Date.now(),
+  lastError: null,
+};
 
 function isIPv4(value: string): boolean {
   const parts = value.split(".");
@@ -69,14 +85,16 @@ function scorePreferredAddress(address: string): number {
   return 10;
 }
 
-function readCachedRelayBootstrapHost(): string | null {
-  const candidates = [
+function getRelayCacheCandidatePaths(): string[] {
+  return [
     path.resolve(process.cwd(), ".relay-bootstrap-cache.json"),
     path.resolve(process.cwd(), "..", ".relay-bootstrap-cache.json"),
     path.resolve(__dirname, "..", "..", "..", ".relay-bootstrap-cache.json"),
   ];
+}
 
-  for (const candidatePath of candidates) {
+function readCachedRelayBootstrapHost(): string | null {
+  for (const candidatePath of getRelayCacheCandidatePaths()) {
     try {
       if (!fs.existsSync(candidatePath)) {
         continue;
@@ -94,6 +112,302 @@ function readCachedRelayBootstrapHost(): string | null {
   }
 
   return null;
+}
+
+function writeCachedRelayBootstrapHost(host: string): void {
+  if (!isIPv4(host)) {
+    return;
+  }
+
+  const candidates = getRelayCacheCandidatePaths();
+  const existingPath = candidates.find((candidatePath) => fs.existsSync(candidatePath));
+  const targetPath = existingPath ?? candidates[0];
+
+  try {
+    fs.writeFileSync(targetPath, JSON.stringify({ host, savedAt: Date.now() }), "utf8");
+  } catch {
+    // Best-effort cache write.
+  }
+}
+
+function updateRelayDiscoveryStatus(next: Partial<RelayDiscoveryStatus>): RelayDiscoveryStatus {
+  relayDiscoveryStatus = {
+    ...relayDiscoveryStatus,
+    ...next,
+    updatedAt: Date.now(),
+  };
+
+  return relayDiscoveryStatus;
+}
+
+function buildPrioritizedOctetValues(minInclusive: number, maxInclusive: number, center: number | null): number[] {
+  const values: number[] = [];
+
+  if (!Number.isFinite(center) || center === null || center < minInclusive || center > maxInclusive) {
+    for (let value = minInclusive; value <= maxInclusive; value += 1) {
+      values.push(value);
+    }
+
+    return values;
+  }
+
+  for (let offset = 0; offset <= (maxInclusive - minInclusive); offset += 1) {
+    const upper = center + offset;
+    if (upper >= minInclusive && upper <= maxInclusive) {
+      values.push(upper);
+    }
+
+    if (offset === 0) {
+      continue;
+    }
+
+    const lower = center - offset;
+    if (lower >= minInclusive && lower <= maxInclusive) {
+      values.push(lower);
+    }
+  }
+
+  return values;
+}
+
+function getClassBPrefixFromIp(ip: string): string | null {
+  if (!isIPv4(ip)) {
+    return null;
+  }
+
+  const parts = ip.split(".");
+  return `${parts[0]}.${parts[1]}`;
+}
+
+function buildClassBHostsByPrefix(prefix: string, excludedHosts: string[] = [], seedIp: string | null = null): string[] {
+  const parts = prefix.split(".");
+  if (parts.length !== 2) {
+    return [];
+  }
+
+  const first = Number.parseInt(parts[0], 10);
+  const second = Number.parseInt(parts[1], 10);
+  if (!Number.isFinite(first) || !Number.isFinite(second)) {
+    return [];
+  }
+
+  if (first < 0 || first > 255 || second < 0 || second > 255) {
+    return [];
+  }
+
+  let seedThird: number | null = null;
+  let seedFourth: number | null = null;
+  if (seedIp && isIPv4(seedIp) && getClassBPrefixFromIp(seedIp) === prefix) {
+    const seedParts = seedIp.split(".").map((part) => Number.parseInt(part, 10));
+    seedThird = seedParts[2];
+    seedFourth = seedParts[3];
+  }
+
+  const excluded = new Set(excludedHosts.filter((host) => isIPv4(host)));
+  const thirdValues = buildPrioritizedOctetValues(0, 255, seedThird);
+  const fourthValues = buildPrioritizedOctetValues(1, 254, seedFourth);
+
+  const hosts: string[] = [];
+  for (const third of thirdValues) {
+    for (const fourth of fourthValues) {
+      const host = `${first}.${second}.${third}.${fourth}`;
+      if (excluded.has(host)) {
+        continue;
+      }
+
+      hosts.push(host);
+    }
+  }
+
+  return hosts;
+}
+
+function canReachTcp(host: string, port: number, timeoutMs = relayConnectTimeoutMs): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host, port });
+    let settled = false;
+
+    const finalize = (reachable: boolean): void => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      socket.removeAllListeners();
+      socket.destroy();
+      resolve(reachable);
+    };
+
+    socket.setTimeout(timeoutMs);
+    socket.on("connect", () => finalize(true));
+    socket.on("timeout", () => finalize(false));
+    socket.on("error", () => finalize(false));
+  });
+}
+
+async function canReachTcpWithRetries(host: string, port: number, timeoutMs: number, attempts: number): Promise<boolean> {
+  const totalAttempts = Math.max(1, attempts);
+
+  for (let attempt = 0; attempt < totalAttempts; attempt += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    const reachable = await canReachTcp(host, port, timeoutMs);
+    if (reachable) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function scanHostList(
+  hosts: string[],
+  port: number,
+  options: { workerCount?: number; timeoutMs?: number; maxDurationMs?: number; attemptsPerHost?: number } = {},
+): Promise<string | null> {
+  if (!hosts.length) {
+    return null;
+  }
+
+  const workerCount = options.workerCount ?? relayScanWorkers;
+  const timeoutMs = options.timeoutMs ?? relayConnectTimeoutMs;
+  const maxDurationMs = options.maxDurationMs ?? relayScanMaxDurationMs;
+  const attemptsPerHost = Math.max(1, options.attemptsPerHost ?? relayProbeAttempts);
+  const deadline = maxDurationMs > 0 ? Date.now() + maxDurationMs : 0;
+
+  let nextIndex = 0;
+  let foundHost: string | null = null;
+
+  const worker = async (): Promise<void> => {
+    while (!foundHost && nextIndex < hosts.length) {
+      if (deadline && Date.now() >= deadline) {
+        return;
+      }
+
+      const host = hosts[nextIndex];
+      nextIndex += 1;
+
+      // eslint-disable-next-line no-await-in-loop
+      const reachable = await canReachTcpWithRetries(host, port, timeoutMs, attemptsPerHost);
+      if (reachable) {
+        foundHost = host;
+        return;
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: workerCount }, worker));
+  return foundHost;
+}
+
+function getLocalNonLoopbackIPv4Addresses(): string[] {
+  const addresses = new Set<string>();
+
+  for (const interfaces of Object.values(os.networkInterfaces())) {
+    if (!interfaces) {
+      continue;
+    }
+
+    for (const detail of interfaces) {
+      if (detail.family !== "IPv4" || detail.internal || !detail.address || !isIPv4(detail.address)) {
+        continue;
+      }
+
+      addresses.add(detail.address);
+    }
+  }
+
+  return Array.from(addresses).sort((left, right) => {
+    const scoreDelta = scorePreferredAddress(left) - scorePreferredAddress(right);
+    if (scoreDelta !== 0) {
+      return scoreDelta;
+    }
+
+    return left.localeCompare(right);
+  });
+}
+
+async function discoverRelayBootstrapHostInBackground(): Promise<string | null> {
+  const localIps = getLocalNonLoopbackIPv4Addresses();
+  const cachedHost = readCachedRelayBootstrapHost();
+
+  if (cachedHost) {
+    const cachedReachable = await canReachTcpWithRetries(cachedHost, relayPort, 250, relayProbeAttempts);
+    if (cachedReachable) {
+      return cachedHost;
+    }
+  }
+
+  for (const localIp of localIps) {
+    // eslint-disable-next-line no-await-in-loop
+    const selfReachable = await canReachTcpWithRetries(localIp, relayPort, 250, relayProbeAttempts);
+    if (selfReachable) {
+      return localIp;
+    }
+  }
+
+  const primaryPrefix = localIps.length > 0 ? getClassBPrefixFromIp(localIps[0]) : null;
+  if (!primaryPrefix) {
+    return null;
+  }
+
+  const seedIp = localIps.find((ip) => getClassBPrefixFromIp(ip) === primaryPrefix) ?? null;
+  const hosts = buildClassBHostsByPrefix(primaryPrefix, localIps, seedIp);
+  return scanHostList(hosts, relayPort, {
+    workerCount: relayScanWorkers,
+    timeoutMs: relayConnectTimeoutMs,
+    maxDurationMs: relayScanMaxDurationMs,
+    attemptsPerHost: relayProbeAttempts,
+  });
+}
+
+async function runRelayDiscoveryScan(): Promise<RelayDiscoveryStatus> {
+  updateRelayDiscoveryStatus({
+    phase: "scanning",
+    host: relayDiscoveryStatus.host,
+    startedAt: Date.now(),
+    lastError: null,
+  });
+
+  try {
+    const discoveredHost = await discoverRelayBootstrapHostInBackground();
+    if (discoveredHost) {
+      writeCachedRelayBootstrapHost(discoveredHost);
+      return updateRelayDiscoveryStatus({
+        phase: "found",
+        host: discoveredHost,
+        lastError: null,
+      });
+    }
+
+    return updateRelayDiscoveryStatus({
+      phase: "not-found",
+      host: null,
+      lastError: null,
+    });
+  } catch (error) {
+    const lastError = error instanceof Error ? error.message : "relay discovery failed";
+    return updateRelayDiscoveryStatus({
+      phase: "error",
+      host: null,
+      lastError,
+    });
+  }
+}
+
+function startRelayDiscoveryScan(): Promise<RelayDiscoveryStatus> {
+  if (relayDiscoveryTask) {
+    return relayDiscoveryTask;
+  }
+
+  relayDiscoveryTask = runRelayDiscoveryScan().finally(() => {
+    relayDiscoveryTask = null;
+  });
+
+  return relayDiscoveryTask;
+}
+
+function getRelayDiscoveryStatusSnapshot(): RelayDiscoveryStatus {
+  return relayDiscoveryStatus;
 }
 
 function getLocalNetworkInfo(): LocalNetworkInfo {
@@ -154,6 +468,10 @@ ipcMain.handle("host-service:network-info", async () => getLocalNetworkInfo());
 
 ipcMain.handle("relay-bootstrap-cache:host", async () => readCachedRelayBootstrapHost());
 
+ipcMain.handle("relay-discovery:start", async () => startRelayDiscoveryScan());
+
+ipcMain.handle("relay-discovery:status", async () => getRelayDiscoveryStatusSnapshot());
+
 ipcMain.handle("file-transfer:select-file", async () => selectFileForSharing());
 
 ipcMain.handle(
@@ -201,6 +519,7 @@ function createWindow(): void {
 
 app.whenReady().then(() => {
   createWindow();
+  void startRelayDiscoveryScan();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
