@@ -573,7 +573,12 @@ export default function App(): JSX.Element {
     }
 
     lastSelectedRelayLogRef.current = selected;
-    addEvent(`relay bootstrap selected: ${selected}`);
+
+    // Don't log bootstrap URL changes while already connected — the change
+    // is recorded for future reconnects but the current connection is fine.
+    if (signalingStateRef.current !== "connected") {
+      addEvent(`relay bootstrap selected: ${selected}`);
+    }
   }, [bootstrapUrl]);
 
   useEffect(() => {
@@ -648,7 +653,15 @@ export default function App(): JSX.Element {
 
         lastDiscoveredRelayHostRef.current = statusSnapshot.host;
         const discoveredUrl = `ws://${statusSnapshot.host}:${defaultHostPort}`;
+
+        // Always update bootstrap URL so future reconnects use the right host,
+        // but only log and attempt connection when not already connected.
         setBootstrapUrl(discoveredUrl);
+
+        if (signalingStateRef.current === "connected") {
+          return;
+        }
+
         addEvent(`relay discovery found bootstrap server: ${discoveredUrl}`);
 
         if (setupStepRef.current !== "join") {
@@ -1467,7 +1480,9 @@ export default function App(): JSX.Element {
     }
 
     signalingRef.current?.endRoom(room.roomId);
-    addEvent("host requested room shutdown");
+    addEvent("host ended room");
+    void stopLocalHostService();
+    clearRoomState("room closed by host");
   };
 
   const sendMessage = (text: string): void => {

@@ -302,13 +302,28 @@ async function scanHostList(
 function getLocalNonLoopbackIPv4Addresses(): string[] {
   const addresses = new Set<string>();
 
-  for (const interfaces of Object.values(os.networkInterfaces())) {
+  for (const [name, interfaces] of Object.entries(os.networkInterfaces())) {
     if (!interfaces) {
+      continue;
+    }
+
+    const lowerName = name.toLowerCase();
+    if (
+      lowerName.includes("virtual") ||
+      lowerName.includes("vbox") ||
+      lowerName.includes("wsl") ||
+      lowerName.includes("loopback")
+    ) {
       continue;
     }
 
     for (const detail of interfaces) {
       if (detail.family !== "IPv4" || detail.internal || !detail.address || !isIPv4(detail.address)) {
+        continue;
+      }
+
+      // Exclude known virtual/link-local IP ranges
+      if (detail.address.startsWith("169.254.") || detail.address.startsWith("192.168.56.")) {
         continue;
       }
 
@@ -345,19 +360,35 @@ async function discoverRelayBootstrapHostInBackground(): Promise<string | null> 
     }
   }
 
-  const primaryPrefix = localIps.length > 0 ? getClassBPrefixFromIp(localIps[0]) : null;
-  if (!primaryPrefix) {
-    return null;
+  // Scan ALL unique class-B prefixes from local interfaces so peers on
+  // different subnets (e.g. 10.2.x.x VPN and 10.20.x.x Wi-Fi) can find
+  // each other's relays.
+  const seenPrefixes = new Set<string>();
+  const prefixes: string[] = [];
+  for (const ip of localIps) {
+    const prefix = getClassBPrefixFromIp(ip);
+    if (prefix && !seenPrefixes.has(prefix)) {
+      seenPrefixes.add(prefix);
+      prefixes.push(prefix);
+    }
   }
 
-  const seedIp = localIps.find((ip) => getClassBPrefixFromIp(ip) === primaryPrefix) ?? null;
-  const hosts = buildClassBHostsByPrefix(primaryPrefix, localIps, seedIp);
-  return scanHostList(hosts, relayPort, {
-    workerCount: relayScanWorkers,
-    timeoutMs: relayConnectTimeoutMs,
-    maxDurationMs: relayScanMaxDurationMs,
-    attemptsPerHost: relayProbeAttempts,
-  });
+  for (const prefix of prefixes) {
+    const seedIp = localIps.find((ip) => getClassBPrefixFromIp(ip) === prefix) ?? null;
+    const hosts = buildClassBHostsByPrefix(prefix, localIps, seedIp);
+    // eslint-disable-next-line no-await-in-loop
+    const found = await scanHostList(hosts, relayPort, {
+      workerCount: relayScanWorkers,
+      timeoutMs: relayConnectTimeoutMs,
+      maxDurationMs: relayScanMaxDurationMs,
+      attemptsPerHost: relayProbeAttempts,
+    });
+    if (found) {
+      return found;
+    }
+  }
+
+  return null;
 }
 
 async function runRelayDiscoveryScan(): Promise<RelayDiscoveryStatus> {

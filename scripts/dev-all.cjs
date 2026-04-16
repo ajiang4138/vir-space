@@ -31,7 +31,7 @@ const localRescanMaxDurationMs = parseEnvInt("RELAY_LOCAL_RESCAN_MAX_DURATION_MS
 const directProbeAttempts = parseEnvInt("RELAY_DIRECT_PROBE_ATTEMPTS", 2, 1, 5);
 const scanProbeAttempts = parseEnvInt("RELAY_SCAN_PROBE_ATTEMPTS", 2, 1, 4);
 const forceScanClassBPrefix = process.env.RELAY_FORCE_SCAN_CLASSB_PREFIX || "";
-const scanAllLocalClassBPrefixes = process.env.RELAY_SCAN_ALL_LOCAL_CLASSB_PREFIXES === "1";
+const scanAllLocalClassBPrefixes = process.env.RELAY_SCAN_ALL_LOCAL_CLASSB_PREFIXES !== "0";
 const relayCacheFilePath = path.join(rootDir, ".relay-bootstrap-cache.json");
 const relayCacheMaxAgeMs = 24 * 60 * 60 * 1000;
 const relayConvergeToLeader = process.env.RELAY_CONVERGE_TO_LEADER === "1";
@@ -123,13 +123,28 @@ function compareIPv4(left, right) {
 
 function getLocalIPv4Addresses() {
   const all = [];
-  for (const interfaces of Object.values(os.networkInterfaces())) {
+  for (const [name, interfaces] of Object.entries(os.networkInterfaces())) {
     if (!interfaces) {
+      continue;
+    }
+
+    const lowerName = name.toLowerCase();
+    if (
+      lowerName.includes("virtual") ||
+      lowerName.includes("vbox") ||
+      lowerName.includes("wsl") ||
+      lowerName.includes("loopback")
+    ) {
       continue;
     }
 
     for (const detail of interfaces) {
       if (!detail || detail.family !== "IPv4" || !detail.address || detail.internal) {
+        continue;
+      }
+
+      // Exclude known virtual/link-local IP ranges
+      if (detail.address.startsWith("169.254.") || detail.address.startsWith("192.168.56.")) {
         continue;
       }
 
@@ -856,7 +871,31 @@ async function main() {
           return;
         }
 
-        const discoveredHost = await discoverRelayHostLocalOnly(localIps, relayPort);
+        // Scan class-B subnets for remote relays, excluding our own local IPs
+        // so we don't just rediscover the relay we spawned ourselves.
+        const prefixes = collectClassBPrefixes(localIps, forceScanClassBPrefix, scanAllLocalClassBPrefixes);
+        let discoveredHost = null;
+        for (const prefix of prefixes) {
+          if (shuttingDown) {
+            return;
+          }
+
+          const seedIp = localIps.find((ip) => getClassBPrefixFromIp(ip) === prefix) || null;
+          const hosts = buildClassBHostsByPrefix(prefix, localIps, seedIp);
+          // eslint-disable-next-line no-await-in-loop
+          const found = await scanHostList(hosts, relayPort, {
+            workerCount: classBScanWorkerCount,
+            timeoutMs: classBScanTimeoutMs,
+            attemptsPerHost: scanProbeAttempts,
+            maxDurationMs: localRescanMaxDurationMs > 0 ? localRescanMaxDurationMs : 8000,
+            context: `convergence-scan-${prefix}`,
+          });
+          if (found) {
+            discoveredHost = found;
+            break;
+          }
+        }
+
         if (!discoveredHost || discoveredHost === deferredRelayHost || shuttingDown) {
           return;
         }
