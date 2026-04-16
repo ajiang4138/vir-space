@@ -1,0 +1,4 @@
+# Relay scan attempt log
+# startedAt=2026-04-16T16:39:43.074Z
+2026-04-16T16:39:43.094Z [startup] localIps=10.90.216.47,192.168.56.1
+2026-04-16T16:39:43.102Z [cache-check-attempt1] 10.90.216.47:8787 timeoutMs=250 result=open reason=connect

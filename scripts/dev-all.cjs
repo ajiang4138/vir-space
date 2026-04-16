@@ -25,10 +25,13 @@ function parseEnvInt(name, fallback, min, max) {
 }
 
 const classBScanWorkerCount = parseEnvInt("RELAY_CLASSB_SCAN_WORKERS", 1100, 50, 5000);
-const classBScanTimeoutMs = parseEnvInt("RELAY_CLASSB_SCAN_TIMEOUT_MS", 220, 50, 2000);
+const classBScanTimeoutMs = parseEnvInt("RELAY_CLASSB_SCAN_TIMEOUT_MS", 300, 50, 2000);
 const classBScanMaxDurationMs = parseEnvInt("RELAY_CLASSB_SCAN_MAX_DURATION_MS", 0, 0, 120000);
 const localRescanMaxDurationMs = parseEnvInt("RELAY_LOCAL_RESCAN_MAX_DURATION_MS", 5000, 0, 120000);
+const directProbeAttempts = parseEnvInt("RELAY_DIRECT_PROBE_ATTEMPTS", 2, 1, 5);
+const scanProbeAttempts = parseEnvInt("RELAY_SCAN_PROBE_ATTEMPTS", 2, 1, 4);
 const forceScanClassBPrefix = process.env.RELAY_FORCE_SCAN_CLASSB_PREFIX || "";
+const scanAllLocalClassBPrefixes = process.env.RELAY_SCAN_ALL_LOCAL_CLASSB_PREFIXES === "1";
 const relayCacheFilePath = path.join(rootDir, ".relay-bootstrap-cache.json");
 const relayCacheMaxAgeMs = 24 * 60 * 60 * 1000;
 const relayConvergeToLeader = process.env.RELAY_CONVERGE_TO_LEADER === "1";
@@ -226,6 +229,26 @@ function canReachTcp(host, port, timeoutMs = connectTimeoutMs, context = "probe"
   });
 }
 
+async function canReachTcpWithRetries(host, port, timeoutMs, attempts, context) {
+  const totalAttempts = Number.isFinite(attempts) ? Math.max(1, attempts) : 1;
+
+  for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {
+    const attemptContext = totalAttempts > 1 ? `${context}-attempt${attempt}` : context;
+    // eslint-disable-next-line no-await-in-loop
+    const reachable = await canReachTcp(host, port, timeoutMs, attemptContext);
+    if (reachable) {
+      return true;
+    }
+
+    if (attempt < totalAttempts) {
+      // eslint-disable-next-line no-await-in-loop
+      await delay(30);
+    }
+  }
+
+  return false;
+}
+
 function buildClassCHosts(ip) {
   if (!isIPv4(ip)) {
     return [];
@@ -330,11 +353,12 @@ function getClassBPrefixFromIp(ip) {
   return `${parts[0]}.${parts[1]}`;
 }
 
-function collectClassBPrefixes(localIps, forcedPrefix) {
+function collectClassBPrefixes(localIps, forcedPrefix, includeAllLocalPrefixes = false) {
   const prefixes = [];
   const seen = new Set();
 
-  for (const ip of localIps) {
+  const localCandidates = includeAllLocalPrefixes ? localIps : localIps.slice(0, 1);
+  for (const ip of localCandidates) {
     const prefix = getClassBPrefixFromIp(ip);
     if (!prefix || seen.has(prefix)) {
       continue;
@@ -384,6 +408,7 @@ async function scanHostList(hosts, port, options = {}) {
 
   const workerCount = options.workerCount ?? 40;
   const timeoutMs = options.timeoutMs ?? connectTimeoutMs;
+  const attemptsPerHost = options.attemptsPerHost ?? 1;
   const maxDurationMs = options.maxDurationMs ?? 0;
   const context = options.context ?? "scan";
   const deadline = maxDurationMs > 0 ? Date.now() + maxDurationMs : 0;
@@ -400,7 +425,7 @@ async function scanHostList(hosts, port, options = {}) {
       nextIndex += 1;
 
       // eslint-disable-next-line no-await-in-loop
-      const reachable = await canReachTcp(host, port, timeoutMs, context);
+      const reachable = await canReachTcpWithRetries(host, port, timeoutMs, attemptsPerHost, context);
       if (reachable) {
         foundHost = host;
         return;
@@ -417,6 +442,7 @@ async function scanForRelayHostOnSubnet(localIp, port) {
   return scanHostList(classCHosts, port, {
     workerCount: 80,
     timeoutMs: 250,
+    attemptsPerHost: scanProbeAttempts,
     context: `scan-classC-${localIp}`,
   });
 }
@@ -426,6 +452,7 @@ async function scanForRelayHostOnClassB(localIp, port) {
   return scanHostList(hosts, port, {
     workerCount: classBScanWorkerCount,
     timeoutMs: classBScanTimeoutMs,
+    attemptsPerHost: scanProbeAttempts,
     maxDurationMs: classBScanMaxDurationMs,
     context: `scan-classB-${localIp}`,
   });
@@ -434,13 +461,13 @@ async function scanForRelayHostOnClassB(localIp, port) {
 async function discoverRelayHostLocalOnly(localIps, port) {
   for (const localIp of localIps) {
     // eslint-disable-next-line no-await-in-loop
-    const selfReachable = await canReachTcp(localIp, port, 220, "discover-local-self");
+    const selfReachable = await canReachTcpWithRetries(localIp, port, 250, directProbeAttempts, "discover-local-self");
     if (selfReachable) {
       return localIp;
     }
   }
 
-  const prefixes = collectClassBPrefixes(localIps, forceScanClassBPrefix);
+  const prefixes = collectClassBPrefixes(localIps, forceScanClassBPrefix, scanAllLocalClassBPrefixes);
   for (const prefix of prefixes) {
     console.log(`[dev-all] Quick relay rescan on ${prefix}.0.0/16 ...`);
 
@@ -449,6 +476,7 @@ async function discoverRelayHostLocalOnly(localIps, port) {
     const found = await scanHostList(hosts, port, {
       workerCount: classBScanWorkerCount,
       timeoutMs: classBScanTimeoutMs,
+      attemptsPerHost: scanProbeAttempts,
       maxDurationMs: localRescanMaxDurationMs,
       context: `scan-local-rescan-${prefix}`,
     });
@@ -463,13 +491,13 @@ async function discoverRelayHostLocalOnly(localIps, port) {
 async function discoverRelayHost(localIps, port) {
   for (const localIp of localIps) {
     // eslint-disable-next-line no-await-in-loop
-    const selfReachable = await canReachTcp(localIp, port, 220, "discover-self");
+    const selfReachable = await canReachTcpWithRetries(localIp, port, 250, directProbeAttempts, "discover-self");
     if (selfReachable) {
       return localIp;
     }
   }
 
-  const prefixes = collectClassBPrefixes(localIps, forceScanClassBPrefix);
+  const prefixes = collectClassBPrefixes(localIps, forceScanClassBPrefix, scanAllLocalClassBPrefixes);
   for (const prefix of prefixes) {
     console.log(`[dev-all] No relay found yet; scanning full ${prefix}.0.0/16 on port ${port} ...`);
 
@@ -478,6 +506,7 @@ async function discoverRelayHost(localIps, port) {
     const found = await scanHostList(hosts, port, {
       workerCount: classBScanWorkerCount,
       timeoutMs: classBScanTimeoutMs,
+      attemptsPerHost: scanProbeAttempts,
       maxDurationMs: classBScanMaxDurationMs,
       context: `scan-classB-full-${prefix}`,
     });
@@ -493,7 +522,7 @@ async function waitForLocalRelay(host, port, totalWaitMs = 8000) {
   const deadline = Date.now() + totalWaitMs;
   while (Date.now() < deadline) {
     // eslint-disable-next-line no-await-in-loop
-    const reachable = await canReachTcp(host, port, 250, "wait-local-relay");
+    const reachable = await canReachTcpWithRetries(host, port, 250, directProbeAttempts, "wait-local-relay");
     if (reachable) {
       return true;
     }
@@ -515,7 +544,7 @@ async function waitForRelayOnAnyHost(hosts, port, totalWaitMs = 8000) {
   while (Date.now() < deadline) {
     for (const host of uniqueHosts) {
       // eslint-disable-next-line no-await-in-loop
-      const reachable = await canReachTcp(host, port, 220, "wait-any-relay");
+      const reachable = await canReachTcpWithRetries(host, port, 220, directProbeAttempts, "wait-any-relay");
       if (reachable) {
         return host;
       }
@@ -710,7 +739,7 @@ async function main() {
 
   const cachedRelayHost = readRelayHostCache();
   if (cachedRelayHost) {
-    const cachedReachable = await canReachTcp(cachedRelayHost, relayPort, 220, "cache-check");
+    const cachedReachable = await canReachTcpWithRetries(cachedRelayHost, relayPort, 250, directProbeAttempts, "cache-check");
     if (cachedReachable) {
       relayHostForBootstrap = cachedRelayHost;
       console.log(`[dev-all] Found cached relay at ws://${relayHostForBootstrap}:${relayPort}`);
@@ -721,7 +750,7 @@ async function main() {
   }
 
   if (!relayHostForBootstrap) {
-    const loopbackReachable = await canReachTcp("127.0.0.1", relayPort, 200, "loopback-check");
+    const loopbackReachable = await canReachTcpWithRetries("127.0.0.1", relayPort, 200, directProbeAttempts, "loopback-check");
     if (loopbackReachable) {
       relayHostForBootstrap = preferredLocalIp;
       console.log(`[dev-all] Found existing local relay at ws://${relayHostForBootstrap}:${relayPort}`);
