@@ -17,6 +17,7 @@ type ErrorMessage = Extract<ServerSignalMessage, { type: "error" }>;
 type RelayRoomUpsertedMessage = Extract<ServerSignalMessage, { type: "relay-room-upserted" }>;
 type RelayRoomRemovedMessage = Extract<ServerSignalMessage, { type: "relay-room-removed" }>;
 type RelayRoomSnapshotMessage = Extract<ServerSignalMessage, { type: "relay-room-snapshot" }>;
+type RelayServerStatusMessage = Extract<ServerSignalMessage, { type: "relay-server-status" }>;
 type RelayRoomListingInput = Extract<ClientSignalMessage, { type: "relay-room-register" }>["listing"];
 
 type MaybeAsyncHandler<T> = (message: T) => void | Promise<void>;
@@ -43,6 +44,7 @@ interface SignalingHandlers {
   onRelayRoomUpserted?: MaybeAsyncHandler<RelayRoomUpsertedMessage>;
   onRelayRoomRemoved?: MaybeAsyncHandler<RelayRoomRemovedMessage>;
   onRelayRoomSnapshot?: MaybeAsyncHandler<RelayRoomSnapshotMessage>;
+  onRelayServerStatus?: MaybeAsyncHandler<RelayServerStatusMessage>;
 }
 
 export class SignalingClient {
@@ -193,6 +195,10 @@ export class SignalingClient {
   unsubscribeRelayRooms(): void {
     this.relayDiscoverySubscriptionRequested = false;
     this.sendIfConnected({ type: "relay-room-unsubscribe" });
+  }
+
+  requestRelayServerStatus(): void {
+    this.sendIfConnected({ type: "relay-server-status-request" });
   }
 
   private send(message: ClientSignalMessage): void {
@@ -360,6 +366,22 @@ export class SignalingClient {
 
         if (this.handlers.onRelayRoomSnapshot) {
           void this.handlers.onRelayRoomSnapshot(message);
+        }
+        return;
+
+      case "relay-server-status":
+        if (
+          !Number.isFinite(message.serverStartedAt)
+          || !Number.isFinite(message.serverNow)
+          || !Number.isInteger(message.connectedClients)
+          || !Number.isInteger(message.relayListings)
+        ) {
+          this.handlers.onError("Invalid relay-server-status payload");
+          return;
+        }
+
+        if (this.handlers.onRelayServerStatus) {
+          void this.handlers.onRelayServerStatus(message);
         }
         return;
     }

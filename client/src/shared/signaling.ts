@@ -55,7 +55,8 @@ export type ClientSignalMessage =
   | { type: "relay-room-remove"; roomId: string }
   | { type: "relay-room-list-request" }
   | { type: "relay-room-subscribe" }
-  | { type: "relay-room-unsubscribe" };
+  | { type: "relay-room-unsubscribe" }
+  | { type: "relay-server-status-request" };
 
 export type ServerSignalMessage =
   | {
@@ -158,6 +159,13 @@ export type ServerSignalMessage =
       type: "relay-room-snapshot";
       listings: RelayRoomListing[];
       timestamp: number;
+    }
+  | {
+      type: "relay-server-status";
+      serverStartedAt: number;
+      serverNow: number;
+      connectedClients: number;
+      relayListings: number;
     };
 
 export type HostServiceStatus = "stopped" | "starting" | "running";

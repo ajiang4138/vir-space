@@ -33,6 +33,42 @@ function isIPv4(value: string): boolean {
   });
 }
 
+function scorePreferredAddress(address: string): number {
+  if (address === "127.0.0.1") {
+    return 100;
+  }
+
+  if (address.startsWith("169.254.")) {
+    return 90;
+  }
+
+  if (address.startsWith("192.168.56.")) {
+    return 80;
+  }
+
+  if (address.startsWith("100.")) {
+    return 0;
+  }
+
+  if (address.startsWith("25.")) {
+    return 1;
+  }
+
+  if (address.startsWith("10.")) {
+    return 2;
+  }
+
+  if (address.startsWith("172.")) {
+    return 3;
+  }
+
+  if (address.startsWith("192.168.")) {
+    return 4;
+  }
+
+  return 10;
+}
+
 function readCachedRelayBootstrapHost(): string | null {
   const candidates = [
     path.resolve(process.cwd(), ".relay-bootstrap-cache.json"),
@@ -84,12 +120,9 @@ function getLocalNetworkInfo(): LocalNetworkInfo {
   }
 
   const sortedAddresses = Array.from(addresses).sort((left, right) => {
-    if (left === "127.0.0.1") {
-      return -1;
-    }
-
-    if (right === "127.0.0.1") {
-      return 1;
+    const scoreDelta = scorePreferredAddress(left) - scorePreferredAddress(right);
+    if (scoreDelta !== 0) {
+      return scoreDelta;
     }
 
     return left.localeCompare(right);
@@ -97,7 +130,7 @@ function getLocalNetworkInfo(): LocalNetworkInfo {
 
   return {
     hostname: os.hostname(),
-    preferredAddress: sortedAddresses.find((address) => address !== "127.0.0.1") ?? "127.0.0.1",
+    preferredAddress: sortedAddresses[0] ?? "127.0.0.1",
     addresses: sortedAddresses,
   };
 }

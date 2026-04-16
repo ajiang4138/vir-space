@@ -70,7 +70,8 @@ type ClientMessage =
   | { type: "relay-room-remove"; roomId: string }
   | { type: "relay-room-list-request" }
   | { type: "relay-room-subscribe" }
-  | { type: "relay-room-unsubscribe" };
+  | { type: "relay-room-unsubscribe" }
+  | { type: "relay-server-status-request" };
 
 type ServerMessage =
   | {
@@ -164,6 +165,13 @@ type ServerMessage =
       type: "relay-room-snapshot";
       listings: RelayRoomListing[];
       timestamp: number;
+    }
+  | {
+      type: "relay-server-status";
+      serverStartedAt: number;
+      serverNow: number;
+      connectedClients: number;
+      relayListings: number;
     };
 
 interface ClientContext {
@@ -202,17 +210,35 @@ const relayMaxRoomIdLength = 80;
 const relayMaxHostDisplayNameLength = 64;
 const relayMaxHostIpLength = 128;
 const relayMaxParticipants = 64;
-const relayIdleShutdownMs = Number(process.env.RELAY_IDLE_SHUTDOWN_MS ?? 0);
+const relayIdleShutdownMs = Number(process.env.RELAY_IDLE_SHUTDOWN_MS ?? 60_000);
 const relayIdleShutdownEnabled = Number.isFinite(relayIdleShutdownMs) && relayIdleShutdownMs > 0;
 
 const relayListingsByKey = new Map<string, RelayRoomListingRecord>();
 const relayMutationWindows = new Map<string, { windowStartedAt: number; count: number }>();
-let lastRelayRoomHeartbeatAt = Date.now();
-let relayIdleShutdownScheduled = false;
+let relayNoConnectionsSinceAt = Date.now();
+const relayServerStartedAt = Date.now();
+let relayShutdownRequested = false;
 
-function noteRelayRoomHeartbeat(): void {
-  lastRelayRoomHeartbeatAt = Date.now();
-  relayIdleShutdownScheduled = false;
+function shutdownRelayProcess(reason: string): void {
+  if (relayShutdownRequested) {
+    return;
+  }
+
+  relayShutdownRequested = true;
+  console.log(reason);
+  setTimeout(() => {
+    process.exit(0);
+  }, 0);
+}
+
+function noteRelayClientConnected(): void {
+  relayNoConnectionsSinceAt = 0;
+}
+
+function noteRelayClientDisconnected(): void {
+  if (clientsById.size === 0) {
+    relayNoConnectionsSinceAt = Date.now();
+  }
 }
 
 const httpServer = createServer((_req, res) => {
@@ -280,6 +306,16 @@ function sendRelaySnapshot(client: ClientContext): void {
     type: "relay-room-snapshot",
     listings: snapshotRelayListings(),
     timestamp: Date.now(),
+  });
+}
+
+function sendRelayServerStatus(client: ClientContext): void {
+  sendTo(client, {
+    type: "relay-server-status",
+    serverStartedAt: relayServerStartedAt,
+    serverNow: Date.now(),
+    connectedClients: clientsById.size,
+    relayListings: relayListingsByKey.size,
   });
 }
 
@@ -436,15 +472,11 @@ function pruneStaleRelayListings(): void {
 
   if (
     relayIdleShutdownEnabled
-    && !relayIdleShutdownScheduled
-    && relayListingsByKey.size === 0
-    && nowMs - lastRelayRoomHeartbeatAt >= relayIdleShutdownMs
+    && clientsById.size === 0
+    && relayNoConnectionsSinceAt > 0
+    && nowMs - relayNoConnectionsSinceAt >= relayIdleShutdownMs
   ) {
-    relayIdleShutdownScheduled = true;
-    console.log(`Relay idle timeout reached (${relayIdleShutdownMs}ms) with no active room heartbeats; shutting down.`);
-    setTimeout(() => {
-      process.exit(0);
-    }, 0);
+    shutdownRelayProcess(`Relay idle timeout reached (${relayIdleShutdownMs}ms) with no active connections; shutting down.`);
   }
 }
 
@@ -506,8 +538,6 @@ function handleRelayDirectoryAction(
     sendError(client, "invalid relay room listing payload", undefined, "RELAY_BAD_REQUEST");
     return;
   }
-
-  noteRelayRoomHeartbeat();
 
   const upsertResult = upsertRelayListing(client.id, listing);
   if (!upsertResult) {
@@ -936,6 +966,7 @@ wss.on("connection", (socket) => {
     relayDiscoverySubscribed: false,
   };
   clientsById.set(client.id, client);
+  noteRelayClientConnected();
 
   let disconnected = false;
   const handleDisconnect = (): void => {
@@ -945,6 +976,7 @@ wss.on("connection", (socket) => {
 
     disconnected = true;
     clientsById.delete(client.id);
+    noteRelayClientDisconnected();
     removeRelayListingsForClient(client.id);
     leaveRoom(client, "disconnect");
   };
@@ -987,6 +1019,11 @@ wss.on("connection", (socket) => {
         || raw.type === "relay-room-unsubscribe"
       ) {
         handleRelayDirectoryAction(client, raw);
+        return;
+      }
+
+      if (raw.type === "relay-server-status-request") {
+        sendRelayServerStatus(client);
         return;
       }
 

@@ -52,6 +52,42 @@ function isPortInUseError(error: unknown): boolean {
   return candidate.code === "EADDRINUSE";
 }
 
+function scorePreferredAddress(address: string): number {
+  if (address === "127.0.0.1") {
+    return 100;
+  }
+
+  if (address.startsWith("169.254.")) {
+    return 90;
+  }
+
+  if (address.startsWith("192.168.56.")) {
+    return 80;
+  }
+
+  if (address.startsWith("100.")) {
+    return 0;
+  }
+
+  if (address.startsWith("25.")) {
+    return 1;
+  }
+
+  if (address.startsWith("10.")) {
+    return 2;
+  }
+
+  if (address.startsWith("172.")) {
+    return 3;
+  }
+
+  if (address.startsWith("192.168.")) {
+    return 4;
+  }
+
+  return 10;
+}
+
 function resolveLocalNetworkInfo(): LocalNetworkInfo {
   const addresses = new Set<string>();
 
@@ -76,19 +112,10 @@ function resolveLocalNetworkInfo(): LocalNetworkInfo {
   }
 
   const sortedAddresses = Array.from(addresses).sort((left, right) => {
-    if (left === right) return 0;
-    
-    // Always put localhost at the very end
-    if (left === "127.0.0.1") return 1;
-    if (right === "127.0.0.1") return -1;
-
-    // Prioritize Tailscale (100.x.x.x) and Hamachi (25.x.x.x) IP ranges for P2P VPNs
-    const isVpn = (ip: string) => ip.startsWith("100.") || ip.startsWith("25.");
-    const leftIsVpn = isVpn(left);
-    const rightIsVpn = isVpn(right);
-
-    if (leftIsVpn && !rightIsVpn) return -1;
-    if (!leftIsVpn && rightIsVpn) return 1;
+    const scoreDelta = scorePreferredAddress(left) - scorePreferredAddress(right);
+    if (scoreDelta !== 0) {
+      return scoreDelta;
+    }
 
     return left.localeCompare(right);
   });

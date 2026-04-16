@@ -14,6 +14,7 @@ const classBScanTimeoutMs = 100;
 const classBScanMaxDurationMs = 3500;
 const relayCacheFilePath = path.join(rootDir, ".relay-bootstrap-cache.json");
 const relayCacheMaxAgeMs = 24 * 60 * 60 * 1000;
+const relayConvergeToLeader = process.env.RELAY_CONVERGE_TO_LEADER === "1";
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -124,6 +125,16 @@ function writeRelayHostCache(host) {
     }), "utf8");
   } catch {
     // Best-effort cache write.
+  }
+}
+
+function clearRelayHostCache() {
+  try {
+    if (fs.existsSync(relayCacheFilePath)) {
+      fs.unlinkSync(relayCacheFilePath);
+    }
+  } catch {
+    // Best-effort cache clear.
   }
 }
 
@@ -378,8 +389,66 @@ function spawnNpmCommand(args) {
   });
 }
 
+function escapePowerShellSingleQuoted(value) {
+  return String(value).replace(/'/g, "''");
+}
+
+function spawnHiddenDetachedRelayOnWindows(nodeArgs, relayEnv) {
+  const powerShellPath = process.env.SystemRoot
+    ? path.join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    : "powershell.exe";
+
+  const relayIdleShutdownMs = relayEnv.RELAY_IDLE_SHUTDOWN_MS || "60000";
+  const quotedNodePath = escapePowerShellSingleQuoted(process.execPath);
+  const quotedRootDir = escapePowerShellSingleQuoted(rootDir);
+  const quotedArgString = nodeArgs
+    .map((arg) => `"${String(arg).replace(/"/g, "\\\"")}"`)
+    .join(" ");
+  const escapedArgString = escapePowerShellSingleQuoted(quotedArgString);
+
+  const script = [
+    "$ErrorActionPreference='Stop'",
+    `$env:RELAY_IDLE_SHUTDOWN_MS='${escapePowerShellSingleQuoted(relayIdleShutdownMs)}'`,
+    `$p = Start-Process -FilePath '${quotedNodePath}' -ArgumentList '${escapedArgString}' -WorkingDirectory '${quotedRootDir}' -WindowStyle Hidden -PassThru`,
+    "Write-Output $p.Id",
+  ].join("; ");
+
+  const launched = spawnSync(powerShellPath, [
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-Command",
+    script,
+  ], {
+    cwd: rootDir,
+    env: relayEnv,
+    windowsHide: true,
+    encoding: "utf8",
+  });
+
+  if (launched.error) {
+    throw launched.error;
+  }
+
+  if (launched.status !== 0) {
+    const details = `${launched.stderr || launched.stdout || ""}`.trim();
+    throw new Error(`Failed to launch hidden relay process on Windows: ${details || `exit code ${launched.status}`}`);
+  }
+
+  const pidCandidate = `${launched.stdout || ""}`.trim().split(/\s+/).pop() || "";
+  const pid = Number.parseInt(pidCandidate, 10);
+  if (!Number.isInteger(pid) || pid <= 0) {
+    throw new Error(`Failed to parse hidden relay process PID from PowerShell output: ${launched.stdout || "<empty>"}`);
+  }
+
+  return {
+    pid,
+    killed: false,
+  };
+}
+
 function spawnDetachedRelayServer() {
-  const isWindows = process.platform === "win32";
   const relayEnv = {
     ...process.env,
     RELAY_IDLE_SHUTDOWN_MS: process.env.RELAY_IDLE_SHUTDOWN_MS || "60000",
@@ -388,31 +457,39 @@ function spawnDetachedRelayServer() {
   const detachedOptions = {
     cwd: rootDir,
     env: relayEnv,
-    detached: !isWindows,
+    // Keep relay alive independently of the dev-all process across platforms.
+    detached: true,
     stdio: "ignore",
     windowsHide: true,
   };
 
-  // Prefer direct node + tsx cli invocation to avoid spawning an extra cmd.exe window.
+  // Use direct node invocation only (never npm/cmd) to avoid extra terminal windows.
   const tsxCliPath = path.join(rootDir, "server", "node_modules", "tsx", "dist", "cli.mjs");
   if (fs.existsSync(tsxCliPath)) {
+    if (process.platform === "win32") {
+      return spawnHiddenDetachedRelayOnWindows([tsxCliPath, relayEntryPath], relayEnv);
+    }
+
     const child = spawn(process.execPath, [tsxCliPath, relayEntryPath], detachedOptions);
     child.unref();
     return child;
   }
 
-  // Fallback to npm-cli.js directly (still avoids cmd.exe as an intermediate process).
-  const npmExecPath = process.env.npm_execpath;
-  if (npmExecPath && fs.existsSync(npmExecPath)) {
-    const child = spawn(process.execPath, [npmExecPath, "--prefix", "server", "exec", "tsx", relayEntryPath], detachedOptions);
+  // Build fallback: run compiled server directly, still via node with hidden detached process.
+  const builtServerEntryPath = path.join(rootDir, "server", "dist", "index.js");
+  if (fs.existsSync(builtServerEntryPath)) {
+    if (process.platform === "win32") {
+      return spawnHiddenDetachedRelayOnWindows([builtServerEntryPath], relayEnv);
+    }
+
+    const child = spawn(process.execPath, [builtServerEntryPath], detachedOptions);
     child.unref();
     return child;
   }
 
-  const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
-  const child = spawn(npmCommand, ["--prefix", "server", "exec", "tsx", relayEntryPath], detachedOptions);
-  child.unref();
-  return child;
+  throw new Error(
+    "Unable to launch relay without shell: missing server/node_modules/tsx/dist/cli.mjs and server/dist/index.js",
+  );
 }
 
 function spawnNpmCommandWithEnv(args, env) {
@@ -474,6 +551,9 @@ async function main() {
     if (cachedReachable) {
       relayHostForBootstrap = cachedRelayHost;
       console.log(`[dev-all] Found cached relay at ws://${relayHostForBootstrap}:${relayPort}`);
+    } else {
+      clearRelayHostCache();
+      console.log(`[dev-all] Cached relay ${cachedRelayHost}:${relayPort} is unreachable; cleared stale cache.`);
     }
   }
 
@@ -510,7 +590,12 @@ async function main() {
     localRelayCandidate = spawnDetachedRelayServer();
     startedLocalRelay = true;
 
-    const reachableLocalRelayHost = await waitForRelayOnAnyHost(localIps, relayPort);
+    const preferredHostReachable = await waitForLocalRelay(preferredLocalIp, relayPort, 5000);
+    let reachableLocalRelayHost = preferredHostReachable ? preferredLocalIp : null;
+    if (!reachableLocalRelayHost) {
+      reachableLocalRelayHost = await waitForRelayOnAnyHost(localIps, relayPort);
+    }
+
     if (!reachableLocalRelayHost) {
       const localhostReachable = await waitForLocalRelay("127.0.0.1", relayPort, 1200);
       if (localhostReachable) {
@@ -530,7 +615,7 @@ async function main() {
     writeRelayHostCache(relayHostForBootstrap);
   }
 
-  if (startedLocalRelay && relayHostForBootstrap) {
+  if (relayConvergeToLeader && startedLocalRelay && relayHostForBootstrap) {
     await delay(400);
     const discoveredAfterSpawn = await discoverRelayHostLocalOnly(localIps, relayPort);
     const usableDiscoveredHost = discoveredAfterSpawn;
@@ -552,6 +637,8 @@ async function main() {
         }
       }
     }
+  } else if (startedLocalRelay) {
+    console.log("[dev-all] Leader convergence disabled; keeping local relay candidate active.");
   }
 
   const clientEnv = {

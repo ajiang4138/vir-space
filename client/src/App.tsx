@@ -90,6 +90,20 @@ function isLoopbackHost(hostname: string): boolean {
   return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
 }
 
+function isLikelyVirtualAdapterHost(hostname: string): boolean {
+  return hostname.startsWith("169.254.") || hostname.startsWith("192.168.56.");
+}
+
+function pickPreferredHostAddress(addresses: string[]): string | null {
+  const nonLoopback = addresses.filter((address) => !isLoopbackHost(address));
+  const preferred = nonLoopback.find((address) => !isLikelyVirtualAdapterHost(address));
+  if (preferred) {
+    return preferred;
+  }
+
+  return nonLoopback[0] ?? null;
+}
+
 function isWsProtocol(protocol: string): boolean {
   return protocol === "ws:" || protocol === "wss:";
 }
@@ -196,6 +210,12 @@ export default function App(): JSX.Element {
   const [bootstrapUrl, setBootstrapUrl] = useState(defaultBootstrapUrl);
   const [signalingState, setSignalingState] = useState<SignalingConnectionState>("disconnected");
   const [webRtcStatus, setWebRtcStatus] = useState<WebRtcStatus>("idle");
+  const [connectedRelayUrl, setConnectedRelayUrl] = useState(defaultBootstrapUrl);
+  const [relayConnectedAtMs, setRelayConnectedAtMs] = useState<number | null>(null);
+  const [relayServerStartedAtMs, setRelayServerStartedAtMs] = useState<number | null>(null);
+  const [relayServerLastSeenAtMs, setRelayServerLastSeenAtMs] = useState<number | null>(null);
+  const [relayServerConnectedClients, setRelayServerConnectedClients] = useState<number | null>(null);
+  const [relayServerListings, setRelayServerListings] = useState<number | null>(null);
 
   const activeRoomRef = useRef<ActiveRoom | null>(null);
   const currentUserIdRef = useRef("");
@@ -555,7 +575,12 @@ export default function App(): JSX.Element {
 
       try {
         const cachedRelayHost = await window.electronApi.getCachedRelayBootstrapHost();
-        if (!cancelled && cachedRelayHost && !isLoopbackHost(cachedRelayHost)) {
+        if (
+          !cancelled
+          && cachedRelayHost
+          && !isLoopbackHost(cachedRelayHost)
+          && !isLikelyVirtualAdapterHost(cachedRelayHost)
+        ) {
           setBootstrapUrl(`ws://${cachedRelayHost}:${defaultHostPort}`);
           return;
         }
@@ -569,8 +594,8 @@ export default function App(): JSX.Element {
           return;
         }
 
-        const preferredAddress = networkInfo.preferredAddress;
-        if (preferredAddress && !isLoopbackHost(preferredAddress)) {
+        const preferredAddress = pickPreferredHostAddress([networkInfo.preferredAddress, ...networkInfo.addresses]);
+        if (preferredAddress) {
           setBootstrapUrl(`ws://${preferredAddress}:${defaultHostPort}`);
         }
       } catch {
@@ -615,7 +640,7 @@ export default function App(): JSX.Element {
             return;
           }
 
-          hostIp = networkInfo.preferredAddress;
+          hostIp = pickPreferredHostAddress([networkInfo.preferredAddress, ...networkInfo.addresses]) ?? "";
         } catch {
           addEvent("error: failed to resolve host IP for relay discovery listing");
           return;
@@ -694,7 +719,7 @@ export default function App(): JSX.Element {
       if (!hostIp || isLoopbackHost(hostIp)) {
         try {
           const networkInfo = await window.electronApi.getLocalNetworkInfo();
-          hostIp = networkInfo.preferredAddress;
+          hostIp = pickPreferredHostAddress([networkInfo.preferredAddress, ...networkInfo.addresses]) ?? "";
         } catch {
           return;
         }
@@ -795,6 +820,9 @@ export default function App(): JSX.Element {
         setSignalingState("connected");
         setSessionState("connected to bootstrap server");
         addEvent(`connected to bootstrap signaling server: ${bootstrapUrlRef.current}`);
+        setConnectedRelayUrl(bootstrapUrlRef.current);
+        setRelayConnectedAtMs(Date.now());
+        signalingRef.current?.requestRelayServerStatus();
         relayReconnectAttemptsRef.current = 0;
         if (relayReconnectTimerRef.current !== null) {
           window.clearTimeout(relayReconnectTimerRef.current);
@@ -829,6 +857,7 @@ export default function App(): JSX.Element {
       onClose: () => {
         setSignalingState("disconnected");
         addEvent(`signaling disconnected: ${bootstrapUrlRef.current}`);
+        setRelayConnectedAtMs(null);
         relayListedRoomIdRef.current = null;
         relayListingSignatureRef.current = null;
 
@@ -1033,6 +1062,12 @@ export default function App(): JSX.Element {
       onRelayRoomSnapshot: (message) => {
         applyRelaySnapshot(message.listings);
       },
+      onRelayServerStatus: (message) => {
+        setRelayServerStartedAtMs(message.serverStartedAt);
+        setRelayServerLastSeenAtMs(Date.now());
+        setRelayServerConnectedClients(message.connectedClients);
+        setRelayServerListings(message.relayListings);
+      },
     });
 
     return () => {
@@ -1048,7 +1083,7 @@ export default function App(): JSX.Element {
   }, []);
 
   useEffect(() => {
-    if (setupStep !== "join" || activeRoom || signalingState !== "disconnected") {
+    if (activeRoom || signalingState !== "disconnected") {
       if (relayReconnectTimerRef.current !== null) {
         window.clearTimeout(relayReconnectTimerRef.current);
         relayReconnectTimerRef.current = null;
@@ -1084,7 +1119,7 @@ export default function App(): JSX.Element {
     relayReconnectTimerRef.current = window.setTimeout(() => {
       relayReconnectTimerRef.current = null;
 
-      if (setupStep !== "join" || activeRoomRef.current || pendingActionRef.current || signalingState !== "disconnected") {
+      if (activeRoomRef.current || pendingActionRef.current || signalingState !== "disconnected") {
         return;
       }
 
@@ -1092,6 +1127,7 @@ export default function App(): JSX.Element {
       setSignalingState("connecting");
       setSessionState("connecting to bootstrap server");
       addEvent(`reconnecting to bootstrap signaling server: ${url}`);
+      setConnectedRelayUrl(url);
       signalingRef.current?.connect(url);
     }, delayMs);
 
@@ -1162,8 +1198,8 @@ export default function App(): JSX.Element {
       if (isLoopbackHost(parsed.hostname) && intent === "create") {
         try {
           const networkInfo = await window.electronApi.getLocalNetworkInfo();
-          const preferredAddress = networkInfo.preferredAddress;
-          if (preferredAddress && !isLoopbackHost(preferredAddress)) {
+          const preferredAddress = pickPreferredHostAddress([networkInfo.preferredAddress, ...networkInfo.addresses]);
+          if (preferredAddress) {
             parsed.hostname = preferredAddress;
             resolvedBootstrapUrl = parsed.toString();
           }
@@ -1205,6 +1241,7 @@ export default function App(): JSX.Element {
     setSignalingState("connecting");
     setSessionState("connecting to bootstrap server");
     addEvent(`connecting to bootstrap signaling server: ${resolvedBootstrapUrl}`);
+    setConnectedRelayUrl(resolvedBootstrapUrl);
 
     if (intent === "create") {
       const requestedPort = parsePortFromWsUrl(resolvedBootstrapUrl);
@@ -1305,6 +1342,7 @@ export default function App(): JSX.Element {
       setSignalingState("connecting");
       setSessionState("connecting to bootstrap server");
       addEvent(`connecting to bootstrap signaling server: ${url}`);
+      setConnectedRelayUrl(url);
       signalingRef.current?.connect(url);
     } catch {
       addEvent("error: invalid bootstrap URL format for room discovery");
@@ -1437,7 +1475,18 @@ export default function App(): JSX.Element {
               />
             </div>
             <div className="setup-debug">
-              <DebugLog events={events} />
+              <DebugLog
+                events={events}
+                relayConnection={{
+                  url: connectedRelayUrl,
+                  state: signalingState,
+                  connectedAtMs: relayConnectedAtMs,
+                  serverStartedAtMs: relayServerStartedAtMs,
+                  serverLastSeenAtMs: relayServerLastSeenAtMs,
+                  serverConnectedClients: relayServerConnectedClients,
+                  serverRelayListings: relayServerListings,
+                }}
+              />
             </div>
           </div>
         </section>
@@ -1504,7 +1553,18 @@ export default function App(): JSX.Element {
               messages={messages}
               onSend={sendMessage}
             />
-            <DebugLog events={events} />
+            <DebugLog
+              events={events}
+              relayConnection={{
+                url: connectedRelayUrl,
+                state: signalingState,
+                connectedAtMs: relayConnectedAtMs,
+                serverStartedAtMs: relayServerStartedAtMs,
+                serverLastSeenAtMs: relayServerLastSeenAtMs,
+                serverConnectedClients: relayServerConnectedClients,
+                serverRelayListings: relayServerListings,
+              }}
+            />
           </section>
         </section>
       )}
