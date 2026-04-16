@@ -27,6 +27,7 @@ function parseEnvInt(name, fallback, min, max) {
 const classBScanWorkerCount = parseEnvInt("RELAY_CLASSB_SCAN_WORKERS", 1100, 50, 5000);
 const classBScanTimeoutMs = parseEnvInt("RELAY_CLASSB_SCAN_TIMEOUT_MS", 220, 50, 2000);
 const classBScanMaxDurationMs = parseEnvInt("RELAY_CLASSB_SCAN_MAX_DURATION_MS", 12000, 500, 60000);
+const forceScanClassBPrefix = process.env.RELAY_FORCE_SCAN_CLASSB_PREFIX || "10.90";
 const relayCacheFilePath = path.join(rootDir, ".relay-bootstrap-cache.json");
 const relayCacheMaxAgeMs = 24 * 60 * 60 * 1000;
 const relayConvergeToLeader = process.env.RELAY_CONVERGE_TO_LEADER === "1";
@@ -247,6 +248,54 @@ function shouldTryClassBScan(ip) {
   return ip.startsWith("10.") || ip.startsWith("100.") || ip.startsWith("25.");
 }
 
+function parseClassBPrefix(rawValue) {
+  if (typeof rawValue !== "string") {
+    return null;
+  }
+
+  const trimmed = rawValue.trim();
+  const parts = trimmed.split(".");
+  if (parts.length !== 2) {
+    return null;
+  }
+
+  const first = Number.parseInt(parts[0], 10);
+  const second = Number.parseInt(parts[1], 10);
+  if (!Number.isFinite(first) || !Number.isFinite(second)) {
+    return null;
+  }
+
+  if (first < 0 || first > 255 || second < 0 || second > 255) {
+    return null;
+  }
+
+  return `${first}.${second}`;
+}
+
+function buildClassBHostsByPrefix(prefix, excludedHosts = []) {
+  const normalized = parseClassBPrefix(prefix);
+  if (!normalized) {
+    return [];
+  }
+
+  const [first, second] = normalized.split(".");
+  const excluded = new Set(excludedHosts.filter((host) => isIPv4(host)));
+
+  const hosts = [];
+  for (let third = 0; third <= 255; third += 1) {
+    for (let fourth = 1; fourth <= 254; fourth += 1) {
+      const host = `${first}.${second}.${third}.${fourth}`;
+      if (excluded.has(host)) {
+        continue;
+      }
+
+      hosts.push(host);
+    }
+  }
+
+  return hosts;
+}
+
 async function scanHostList(hosts, port, options = {}) {
   if (!hosts.length) {
     return null;
@@ -352,6 +401,19 @@ async function discoverRelayHost(localIps, port) {
 
     // eslint-disable-next-line no-await-in-loop
     const found = await scanForRelayHostOnClassB(localIp, port);
+    if (found) {
+      return found;
+    }
+  }
+
+  const normalizedForcedPrefix = parseClassBPrefix(forceScanClassBPrefix);
+  if (normalizedForcedPrefix && !scannedClassBPrefixes.has(normalizedForcedPrefix)) {
+    console.log(`[dev-all] No relay found yet; scanning full ${normalizedForcedPrefix}.0.0/16 ...`);
+    const forcedHosts = buildClassBHostsByPrefix(normalizedForcedPrefix, localIps);
+    const found = await scanHostList(forcedHosts, port, {
+      workerCount: classBScanWorkerCount,
+      timeoutMs: classBScanTimeoutMs,
+    });
     if (found) {
       return found;
     }
