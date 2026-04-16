@@ -9,3 +9,4 @@ yarn-error.log*
 pnpm-debug.log*
 ROOM_DISCOVERY_PLAN.txt
 .relay-bootstrap-cache.json
+.relay-scan-attempts.log

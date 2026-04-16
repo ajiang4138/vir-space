@@ -59,6 +59,7 @@ const relayDiscoveredRoomsCleanupIntervalMs = 5_000;
 const relayHostListingHeartbeatIntervalMs = 8_000;
 const relayReconnectBaseDelayMs = 1_500;
 const relayReconnectMaxDelayMs = 10_000;
+const relayServerStatusPollIntervalMs = 2_000;
 
 function nowLabel(): string {
   return new Date().toLocaleTimeString();
@@ -231,6 +232,7 @@ export default function App(): JSX.Element {
   const relayListedRoomIdRef = useRef<string | null>(null);
   const discoveredRoomsByKeyRef = useRef<Map<string, DiscoveredRoomSummary>>(new Map());
   const relayReconnectTimerRef = useRef<number | null>(null);
+  const relayServerStatusPollTimerRef = useRef<number | null>(null);
   const relayReconnectAttemptsRef = useRef(0);
   const lastSelectedRelayLogRef = useRef<string | null>(null);
 
@@ -823,6 +825,13 @@ export default function App(): JSX.Element {
         setConnectedRelayUrl(bootstrapUrlRef.current);
         setRelayConnectedAtMs(Date.now());
         signalingRef.current?.requestRelayServerStatus();
+        if (relayServerStatusPollTimerRef.current !== null) {
+          window.clearInterval(relayServerStatusPollTimerRef.current);
+          relayServerStatusPollTimerRef.current = null;
+        }
+        relayServerStatusPollTimerRef.current = window.setInterval(() => {
+          signalingRef.current?.requestRelayServerStatus();
+        }, relayServerStatusPollIntervalMs);
         relayReconnectAttemptsRef.current = 0;
         if (relayReconnectTimerRef.current !== null) {
           window.clearTimeout(relayReconnectTimerRef.current);
@@ -855,6 +864,10 @@ export default function App(): JSX.Element {
         });
       },
       onClose: () => {
+        if (relayServerStatusPollTimerRef.current !== null) {
+          window.clearInterval(relayServerStatusPollTimerRef.current);
+          relayServerStatusPollTimerRef.current = null;
+        }
         setSignalingState("disconnected");
         addEvent(`signaling disconnected: ${bootstrapUrlRef.current}`);
         setRelayConnectedAtMs(null);
@@ -1071,6 +1084,10 @@ export default function App(): JSX.Element {
     });
 
     return () => {
+      if (relayServerStatusPollTimerRef.current !== null) {
+        window.clearInterval(relayServerStatusPollTimerRef.current);
+        relayServerStatusPollTimerRef.current = null;
+      }
       if (relayReconnectTimerRef.current !== null) {
         window.clearTimeout(relayReconnectTimerRef.current);
         relayReconnectTimerRef.current = null;
