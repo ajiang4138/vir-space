@@ -9,9 +9,24 @@ const runningChildren = new Set();
 let shuttingDown = false;
 const relayPort = 8787;
 const connectTimeoutMs = 350;
-const classBScanWorkerCount = 900;
-const classBScanTimeoutMs = 100;
-const classBScanMaxDurationMs = 3500;
+
+function parseEnvInt(name, fallback, min, max) {
+  const raw = process.env[name];
+  if (!raw) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < min || parsed > max) {
+    return fallback;
+  }
+
+  return parsed;
+}
+
+const classBScanWorkerCount = parseEnvInt("RELAY_CLASSB_SCAN_WORKERS", 1100, 50, 5000);
+const classBScanTimeoutMs = parseEnvInt("RELAY_CLASSB_SCAN_TIMEOUT_MS", 220, 50, 2000);
+const classBScanMaxDurationMs = parseEnvInt("RELAY_CLASSB_SCAN_MAX_DURATION_MS", 12000, 500, 60000);
 const relayCacheFilePath = path.join(rootDir, ".relay-bootstrap-cache.json");
 const relayCacheMaxAgeMs = 24 * 60 * 60 * 1000;
 const relayConvergeToLeader = process.env.RELAY_CONVERGE_TO_LEADER === "1";
