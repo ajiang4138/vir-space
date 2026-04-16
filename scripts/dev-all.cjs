@@ -193,8 +193,25 @@ function buildClassBHosts(ip) {
   const selfThird = Number.parseInt(parts[2], 10);
   const selfFourth = Number.parseInt(parts[3], 10);
 
+  const prioritizedThirds = [];
+  for (let offset = 0; offset <= 255; offset += 1) {
+    const upper = selfThird + offset;
+    if (upper >= 0 && upper <= 255) {
+      prioritizedThirds.push(upper);
+    }
+
+    if (offset === 0) {
+      continue;
+    }
+
+    const lower = selfThird - offset;
+    if (lower >= 0 && lower <= 255) {
+      prioritizedThirds.push(lower);
+    }
+  }
+
   const hosts = [];
-  for (let third = 0; third <= 255; third += 1) {
+  for (const third of prioritizedThirds) {
     for (let fourth = 1; fourth <= 254; fourth += 1) {
       if (third === selfThird && fourth === selfFourth) {
         continue;
