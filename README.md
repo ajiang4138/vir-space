@@ -38,7 +38,7 @@ VIR is a desktop collaboration app for creating or joining shared rooms with rea
 1. Clone the repository:
 
 ```bash
-git clone <your-repo-url>
+git clone [<your-repo-url>](https://github.com/ajiang4138/vir-space)
 cd vir-space
 ```
 
