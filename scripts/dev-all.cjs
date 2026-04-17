@@ -24,20 +24,20 @@ function parseEnvInt(name, fallback, min, max) {
   return parsed;
 }
 
-const classBScanWorkerCount = parseEnvInt("RELAY_CLASSB_SCAN_WORKERS", 250, 20, 5000);
+const classBScanWorkerCount = 1024;
 const classBScanTimeoutMs = parseEnvInt("RELAY_CLASSB_SCAN_TIMEOUT_MS", 750, 50, 5000);
 const classBScanMaxDurationMs = parseEnvInt("RELAY_CLASSB_SCAN_MAX_DURATION_MS", 0, 0, 120000);
 const localRescanMaxDurationMs = parseEnvInt("RELAY_LOCAL_RESCAN_MAX_DURATION_MS", 45000, 0, 120000);
 const directProbeAttempts = parseEnvInt("RELAY_DIRECT_PROBE_ATTEMPTS", 2, 1, 5);
 const scanProbeAttempts = parseEnvInt("RELAY_SCAN_PROBE_ATTEMPTS", 2, 1, 4);
 const forceScanClassBPrefix = process.env.RELAY_FORCE_SCAN_CLASSB_PREFIX || "";
-const scanAllLocalClassBPrefixes = process.env.RELAY_SCAN_ALL_LOCAL_CLASSB_PREFIXES !== "0";
+const scanAllLocalClassBPrefixes = process.env.RELAY_SCAN_ALL_LOCAL_CLASSB_PREFIXES === "1";
 const relayCacheFilePath = path.join(rootDir, ".relay-bootstrap-cache.json");
 const relayCacheMaxAgeMs = 24 * 60 * 60 * 1000;
 const relayConvergeToLeader = process.env.RELAY_CONVERGE_TO_LEADER === "1";
 const relayScanLogEnabled = process.env.RELAY_SCAN_LOG_ENABLED !== "0";
 const relayScanLogFilePath = path.join(rootDir, process.env.RELAY_SCAN_LOG_FILE || ".relay-scan-attempts.log");
-const deferRelayDiscoveryUntilAfterClientStarts = process.env.RELAY_DEFER_DISCOVERY !== "0";
+const deferRelayDiscoveryUntilAfterClientStarts = false;
 let relayScanLogStream = null;
 
 function initializeRelayScanLog() {
@@ -130,7 +130,7 @@ function getLocalIPv4Addresses() {
 
     const lowerName = name.toLowerCase();
     if (
-      lowerName.includes("virtual") ||
+      (lowerName.includes("virtual") && !lowerName.includes("pangp") && !lowerName.includes("vpn")) ||
       lowerName.includes("vbox") ||
       lowerName.includes("wsl") ||
       lowerName.includes("loopback")
@@ -161,90 +161,40 @@ function getLocalIPv4Addresses() {
     return true;
   });
 
-  unique.sort((left, right) => {
-    const ipScore = (ip) => {
-      if (ip.startsWith("100.")) return 0; // Tailscale
-      if (ip.startsWith("25.")) return 1; // Hamachi
-      if (ip.startsWith("10.")) return 2;
-      if (ip.startsWith("172.")) return 3;
-      if (ip.startsWith("192.168.")) return 4;
-      return 5;
-    };
+  const ipScore = (ip) => {
+    if (ip.startsWith("100.")) return 0; // Tailscale
+    if (ip.startsWith("25.")) return 1; // Hamachi
+    if (ip.startsWith("10.")) return 2;
+    if (ip.startsWith("172.")) return 3;
+    if (ip.startsWith("192.168.")) return 4;
+    return 5;
+  };
 
-    // Ethernet/VPN adapters get priority over Wi-Fi.
-    const ifaceScore = (ifaceName) => {
-      const lower = ifaceName.toLowerCase();
-      if (lower.includes("wi-fi") || lower.includes("wifi") || lower.includes("wireless") || lower.includes("wlan")) return 1;
-      return 0;
-    };
+  // Ethernet/VPN adapters get priority over Wi-Fi.
+  const ifaceScore = (ifaceName) => {
+    const lower = ifaceName.toLowerCase();
+    if (lower.includes("pangp") || lower.includes("vpn")) return -1;
+    if (lower.includes("wi-fi") || lower.includes("wifi") || lower.includes("wireless") || lower.includes("wlan")) return 1;
+    return 0;
+  };
+
+  return unique.sort((left, right) => {
+    const ifaceDelta = ifaceScore(left.ifaceName) - ifaceScore(right.ifaceName);
+    if (ifaceDelta !== 0) {
+      return ifaceDelta;
+    }
 
     const scoreDelta = ipScore(left.ip) - ipScore(right.ip);
     if (scoreDelta !== 0) {
       return scoreDelta;
     }
 
-    const ifaceDelta = ifaceScore(left.ifaceName) - ifaceScore(right.ifaceName);
-    if (ifaceDelta !== 0) {
-      return ifaceDelta;
-    }
-
     return left.ip.localeCompare(right.ip);
-  });
-
-  return unique.map((entry) => entry.ip);
+  }).map((entry) => entry.ip);
 }
-function readRelayHostCache() {
-  try {
-    if (!fs.existsSync(relayCacheFilePath)) {
-      return null;
-    }
-
-    const raw = fs.readFileSync(relayCacheFilePath, "utf8");
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") {
-      return null;
-    }
-
-    const host = typeof parsed.host === "string" ? parsed.host.trim() : "";
-    const savedAt = typeof parsed.savedAt === "number" ? parsed.savedAt : 0;
-    if (!host || !isIPv4(host) || !Number.isFinite(savedAt)) {
-      return null;
-    }
-
-    if (Date.now() - savedAt > relayCacheMaxAgeMs) {
-      return null;
-    }
-
-    return host;
-  } catch {
-    return null;
-  }
-}
-
-function writeRelayHostCache(host) {
-  if (!host || !isIPv4(host)) {
-    return;
-  }
-
-  try {
-    fs.writeFileSync(relayCacheFilePath, JSON.stringify({
-      host,
-      savedAt: Date.now(),
-    }), "utf8");
-  } catch {
-    // Best-effort cache write.
-  }
-}
-
-function clearRelayHostCache() {
-  try {
-    if (fs.existsSync(relayCacheFilePath)) {
-      fs.unlinkSync(relayCacheFilePath);
-    }
-  } catch {
-    // Best-effort cache clear.
-  }
-}
+function readRelayHostCache() { return null; }
+function writeRelayHostCache(host) {}
+function clearRelayHostCache() {}
 
 function canReachTcp(host, port, timeoutMs = connectTimeoutMs, context = "probe") {
   return new Promise((resolve) => {
@@ -580,6 +530,27 @@ async function discoverRelayHost(localIps, port) {
     }
   }
 
+  // --- Phase 1: Fast Scan (Local /24 Subnets) ---
+  const fastScanHosts = [];
+  for (const ip of localIps) {
+    const parts = ip.split(".");
+    const prefix = `${parts[0]}.${parts[1]}.${parts[2]}`;
+    for (let i = 1; i <= 254; i++) {
+      const host = `${prefix}.${i}`;
+      if (!localIps.includes(host)) fastScanHosts.push(host);
+    }
+  }
+
+  const fastFound = await scanHostList([...new Set(fastScanHosts)], port, {
+    workerCount: classBScanWorkerCount,
+    timeoutMs: 500,
+    attemptsPerHost: 1,
+    context: "fast-scan",
+  });
+
+  if (fastFound) return fastFound;
+
+  // --- Phase 2: Deep Scan (Full Class B Prefixes) ---
   const prefixes = collectClassBPrefixes(localIps, forceScanClassBPrefix, scanAllLocalClassBPrefixes);
   for (const prefix of prefixes) {
     console.log(`[dev-all] No relay found yet; scanning full ${prefix}.0.0/16 on port ${port} ...`);
@@ -876,7 +847,7 @@ async function main() {
       }
     }
 
-    writeRelayHostCache(deferredRelayHost);
+    // writeRelayHostCache removed.
 
     const bootstrapUrl = process.env.VITE_BOOTSTRAP_SIGNALING_URL?.trim() || `ws://${deferredRelayHost}:${relayPort}`;
     const clientEnv = {
@@ -888,57 +859,7 @@ async function main() {
     console.log(`[dev-all] Client launched immediately with bootstrap ${bootstrapUrl}`);
     console.log("[dev-all] Relay discovery is running in background (non-blocking startup).\n");
 
-    // --- Background convergence: scan for a remote relay after client is up ---
-    (async () => {
-      try {
-        await delay(2000);
-        if (shuttingDown) {
-          return;
-        }
-
-        // Scan class-B subnets for remote relays, excluding our own local IPs
-        // so we don't just rediscover the relay we spawned ourselves.
-        const prefixes = collectClassBPrefixes(localIps, forceScanClassBPrefix, scanAllLocalClassBPrefixes);
-        let discoveredHost = null;
-        for (const prefix of prefixes) {
-          if (shuttingDown) {
-            return;
-          }
-
-          const seedIp = localIps.find((ip) => getClassBPrefixFromIp(ip) === prefix) || null;
-          const hosts = buildClassBHostsByPrefix(prefix, localIps, seedIp);
-          // eslint-disable-next-line no-await-in-loop
-          const found = await scanHostList(hosts, relayPort, {
-            workerCount: classBScanWorkerCount,
-            timeoutMs: classBScanTimeoutMs,
-            attemptsPerHost: scanProbeAttempts,
-            maxDurationMs: localRescanMaxDurationMs > 0 ? localRescanMaxDurationMs : 8000,
-            context: `convergence-scan-${prefix}`,
-          });
-          if (found) {
-            discoveredHost = found;
-            break;
-          }
-        }
-
-        if (!discoveredHost || discoveredHost === deferredRelayHost || shuttingDown) {
-          return;
-        }
-
-        // Found a different (remote) relay — update cache so future launches converge.
-        writeRelayHostCache(discoveredHost);
-        console.log(`[dev-all] Background convergence: found remote relay at ${discoveredHost}:${relayPort}, updated cache.`);
-
-        // If we spawned a local relay and a remote one is available, kill ours.
-        if (deferredSpawnedLocalRelay) {
-          terminateChild(deferredSpawnedLocalRelay);
-          deferredSpawnedLocalRelay = null;
-          console.log(`[dev-all] Background convergence: stopped local relay in favor of remote relay.`);
-        }
-      } catch {
-        // Best-effort background convergence.
-      }
-    })();
+    // Background convergence removed.
 
     const shutdown = () => {
       if (shuttingDown) {
@@ -983,18 +904,6 @@ async function main() {
   let bootstrapUrl = "";
   let relayHostForBootstrap = null;
 
-  const cachedRelayHost = readRelayHostCache();
-  if (cachedRelayHost) {
-    const cachedReachable = await canReachTcpWithRetries(cachedRelayHost, relayPort, 250, directProbeAttempts, "cache-check");
-    if (cachedReachable) {
-      relayHostForBootstrap = cachedRelayHost;
-      console.log(`[dev-all] Found cached relay at ws://${relayHostForBootstrap}:${relayPort}`);
-    } else {
-      clearRelayHostCache();
-      console.log(`[dev-all] Cached relay ${cachedRelayHost}:${relayPort} is unreachable; cleared stale cache.`);
-    }
-  }
-
   if (!relayHostForBootstrap) {
     const loopbackReachable = await canReachTcpWithRetries("127.0.0.1", relayPort, 200, directProbeAttempts, "loopback-check");
     if (loopbackReachable) {
@@ -1010,7 +919,6 @@ async function main() {
   if (relayHostForBootstrap) {
     bootstrapUrl = `ws://${relayHostForBootstrap}:${relayPort}`;
     console.log(`[dev-all] Found existing relay at ${bootstrapUrl}`);
-    writeRelayHostCache(relayHostForBootstrap);
   }
 
   if (!relayHostForBootstrap) {
@@ -1019,7 +927,6 @@ async function main() {
     if (relayHostForBootstrap) {
       bootstrapUrl = `ws://${relayHostForBootstrap}:${relayPort}`;
       console.log(`[dev-all] Found existing relay after retry at ${bootstrapUrl}`);
-      writeRelayHostCache(relayHostForBootstrap);
     }
   }
 
@@ -1051,34 +958,9 @@ async function main() {
     relayHostForBootstrap = reachableLocalRelayHost;
     bootstrapUrl = `ws://${relayHostForBootstrap}:${relayPort}`;
     console.log(`[dev-all] Local relay ready in background. Bootstrap URL: ${bootstrapUrl}`);
-    writeRelayHostCache(relayHostForBootstrap);
   }
 
-  if (relayConvergeToLeader && startedLocalRelay && relayHostForBootstrap) {
-    await delay(400);
-    const discoveredAfterSpawn = await discoverRelayHostLocalOnly(localIps, relayPort);
-    const usableDiscoveredHost = discoveredAfterSpawn;
-
-    if (usableDiscoveredHost && usableDiscoveredHost !== relayHostForBootstrap) {
-      const leaderHost = compareIPv4(usableDiscoveredHost, relayHostForBootstrap) < 0
-        ? usableDiscoveredHost
-        : relayHostForBootstrap;
-
-      if (leaderHost !== relayHostForBootstrap) {
-        relayHostForBootstrap = leaderHost;
-        bootstrapUrl = `ws://${relayHostForBootstrap}:${relayPort}`;
-        console.log(`[dev-all] Converged to existing relay leader at ${bootstrapUrl}`);
-
-        if (localRelayCandidate) {
-          terminateChild(localRelayCandidate);
-          localRelayCandidate = null;
-          console.log("[dev-all] Stopped local relay candidate after convergence.");
-        }
-      }
-    }
-  } else if (startedLocalRelay) {
-    console.log("[dev-all] Leader convergence disabled; keeping local relay candidate active.");
-  }
+  // convergence logic removed to prevent disconnections.
 
   const clientEnv = {
     ...process.env,

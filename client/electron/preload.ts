@@ -8,7 +8,6 @@ contextBridge.exposeInMainWorld("electronApi", {
   stopHostService: () => ipcRenderer.invoke("host-service:stop"),
   getHostServiceStatus: () => ipcRenderer.invoke("host-service:status"),
   getLocalNetworkInfo: () => ipcRenderer.invoke("host-service:network-info"),
-  getCachedRelayBootstrapHost: () => ipcRenderer.invoke("relay-bootstrap-cache:host"),
   startRelayDiscoveryScan: () => ipcRenderer.invoke("relay-discovery:start"),
   getRelayDiscoveryStatus: () => ipcRenderer.invoke("relay-discovery:status"),
   selectFileForSharing: () => ipcRenderer.invoke("file-transfer:select-file"),

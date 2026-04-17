@@ -1,5 +1,4 @@
 import { app, BrowserWindow, ipcMain } from "electron";
-import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -120,7 +119,7 @@ function createSplashWindow(): void {
   <body>
     <div class="wrap">
       <h1>VIR is starting</h1>
-      <p>Preparing collaboration services and loading the workspace.</p>
+      <p>Discovering network relays...</p>
       <div class="bar"></div>
     </div>
   </body>
@@ -136,7 +135,7 @@ function createSplashWindow(): void {
 const relayPort = 8787;
 const relayConnectTimeoutMs = 750;
 const relayProbeAttempts = 2;
-const relayScanWorkers = 250;
+const relayScanWorkers = 1024;
 const relayScanMaxDurationMs = 45_000;
 
 let relayDiscoveryTask: Promise<RelayDiscoveryStatus> | null = null;
@@ -198,51 +197,6 @@ function scorePreferredAddress(address: string): number {
   }
 
   return 10;
-}
-
-function getRelayCacheCandidatePaths(): string[] {
-  return [
-    path.resolve(process.cwd(), ".relay-bootstrap-cache.json"),
-    path.resolve(process.cwd(), "..", ".relay-bootstrap-cache.json"),
-    path.resolve(__dirname, "..", "..", "..", ".relay-bootstrap-cache.json"),
-  ];
-}
-
-function readCachedRelayBootstrapHost(): string | null {
-  for (const candidatePath of getRelayCacheCandidatePaths()) {
-    try {
-      if (!fs.existsSync(candidatePath)) {
-        continue;
-      }
-
-      const raw = fs.readFileSync(candidatePath, "utf8");
-      const parsed = JSON.parse(raw) as { host?: string };
-      const host = typeof parsed.host === "string" ? parsed.host.trim() : "";
-      if (host && isIPv4(host)) {
-        return host;
-      }
-    } catch {
-      // Try the next candidate path.
-    }
-  }
-
-  return null;
-}
-
-function writeCachedRelayBootstrapHost(host: string): void {
-  if (!isIPv4(host)) {
-    return;
-  }
-
-  const candidates = getRelayCacheCandidatePaths();
-  const existingPath = candidates.find((candidatePath) => fs.existsSync(candidatePath));
-  const targetPath = existingPath ?? candidates[0];
-
-  try {
-    fs.writeFileSync(targetPath, JSON.stringify({ host, savedAt: Date.now() }), "utf8");
-  } catch {
-    // Best-effort cache write.
-  }
 }
 
 function updateRelayDiscoveryStatus(next: Partial<RelayDiscoveryStatus>): RelayDiscoveryStatus {
@@ -424,7 +378,7 @@ function getLocalNonLoopbackIPv4Addresses(): string[] {
 
     const lowerName = name.toLowerCase();
     if (
-      lowerName.includes("virtual") ||
+      (lowerName.includes("virtual") && !lowerName.includes("pangp") && !lowerName.includes("vpn")) ||
       lowerName.includes("vbox") ||
       lowerName.includes("wsl") ||
       lowerName.includes("loopback")
@@ -455,22 +409,23 @@ function getLocalNonLoopbackIPv4Addresses(): string[] {
     return true;
   });
 
+  // Ethernet/VPN adapters get priority over Wi-Fi.
+  const ifaceScore = (ifaceName: string): number => {
+    const lower = ifaceName.toLowerCase();
+    if (lower.includes("pangp") || lower.includes("vpn")) return -1;
+    if (lower.includes("wi-fi") || lower.includes("wifi") || lower.includes("wireless") || lower.includes("wlan")) return 1;
+    return 0;
+  };
+
   return unique.sort((left, right) => {
-    const ipScoreDelta = scorePreferredAddress(left.ip) - scorePreferredAddress(right.ip);
-    if (ipScoreDelta !== 0) {
-      return ipScoreDelta;
-    }
-
-    // Ethernet/VPN adapters get priority over Wi-Fi.
-    const ifaceScore = (ifaceName: string): number => {
-      const lower = ifaceName.toLowerCase();
-      if (lower.includes("wi-fi") || lower.includes("wifi") || lower.includes("wireless") || lower.includes("wlan")) return 1;
-      return 0;
-    };
-
     const ifaceDelta = ifaceScore(left.ifaceName) - ifaceScore(right.ifaceName);
     if (ifaceDelta !== 0) {
       return ifaceDelta;
+    }
+
+    const ipScoreDelta = scorePreferredAddress(left.ip) - scorePreferredAddress(right.ip);
+    if (ipScoreDelta !== 0) {
+      return ipScoreDelta;
     }
 
     return left.ip.localeCompare(right.ip);
@@ -479,14 +434,6 @@ function getLocalNonLoopbackIPv4Addresses(): string[] {
 
 async function discoverRelayBootstrapHostInBackground(): Promise<string | null> {
   const localIps = getLocalNonLoopbackIPv4Addresses();
-  const cachedHost = readCachedRelayBootstrapHost();
-
-  if (cachedHost) {
-    const cachedReachable = await canReachTcpWithRetries(cachedHost, relayPort, 500, relayProbeAttempts);
-    if (cachedReachable) {
-      return cachedHost;
-    }
-  }
 
   for (const localIp of localIps) {
     // eslint-disable-next-line no-await-in-loop
@@ -501,14 +448,34 @@ async function discoverRelayBootstrapHostInBackground(): Promise<string | null> 
   // each other's relays.
   const seenPrefixes = new Set<string>();
   const prefixes: string[] = [];
-  for (const ip of localIps) {
-    const prefix = getClassBPrefixFromIp(ip);
-    if (prefix && !seenPrefixes.has(prefix)) {
-      seenPrefixes.add(prefix);
+  if (localIps.length > 0) {
+    const prefix = getClassBPrefixFromIp(localIps[0]);
+    if (prefix) {
       prefixes.push(prefix);
     }
   }
 
+  // --- Phase 1: Fast Scan (Local /24 Subnets) ---
+  // Scan the immediate 254 neighbors of all local interfaces simultaneously.
+  const fastScanHosts: string[] = [];
+  for (const ip of localIps) {
+    const parts = ip.split(".");
+    const prefix = `${parts[0]}.${parts[1]}.${parts[2]}`;
+    for (let i = 1; i <= 254; i++) {
+      const host = `${prefix}.${i}`;
+      if (!localIps.includes(host)) fastScanHosts.push(host);
+    }
+  }
+
+  const fastFound = await scanHostList([...new Set(fastScanHosts)], relayPort, {
+    workerCount: relayScanWorkers,
+    timeoutMs: 500, // Very aggressive for local subnet
+    attemptsPerHost: 1,
+  });
+
+  if (fastFound) return fastFound;
+
+  // --- Phase 2: Deep Scan (Full Class B Prefixes) ---
   for (const prefix of prefixes) {
     const seedIp = localIps.find((ip) => getClassBPrefixFromIp(ip) === prefix) ?? null;
     const hosts = buildClassBHostsByPrefix(prefix, localIps, seedIp);
@@ -538,7 +505,6 @@ async function runRelayDiscoveryScan(): Promise<RelayDiscoveryStatus> {
   try {
     const discoveredHost = await discoverRelayBootstrapHostInBackground();
     if (discoveredHost) {
-      writeCachedRelayBootstrapHost(discoveredHost);
       return updateRelayDiscoveryStatus({
         phase: "found",
         host: discoveredHost,
@@ -633,8 +599,6 @@ ipcMain.handle("host-service:status", async () => hostService.getStatus());
 
 ipcMain.handle("host-service:network-info", async () => getLocalNetworkInfo());
 
-ipcMain.handle("relay-bootstrap-cache:host", async () => readCachedRelayBootstrapHost());
-
 ipcMain.handle("relay-discovery:start", async () => startRelayDiscoveryScan());
 
 ipcMain.handle("relay-discovery:status", async () => getRelayDiscoveryStatusSnapshot());
@@ -705,13 +669,25 @@ function createWindow(): void {
 
 app.whenReady().then(() => {
   createSplashWindow();
-  createWindow();
-  void startRelayDiscoveryScan();
+
+  const handleAppReady = () => {
+    createWindow();
+  };
+
+  if (process.env.VITE_BOOTSTRAP_SIGNALING_URL) {
+    handleAppReady();
+  } else {
+    startRelayDiscoveryScan().finally(handleAppReady);
+  }
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createSplashWindow();
-      createWindow();
+      if (process.env.VITE_BOOTSTRAP_SIGNALING_URL) {
+        handleAppReady();
+      } else {
+        startRelayDiscoveryScan().finally(handleAppReady);
+      }
     }
   });
 });

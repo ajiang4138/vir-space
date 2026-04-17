@@ -24,7 +24,6 @@ declare global {
       stopHostService: () => Promise<HostServiceInfo>;
       getHostServiceStatus: () => Promise<HostServiceInfo>;
       getLocalNetworkInfo: () => Promise<LocalNetworkInfo>;
-      getCachedRelayBootstrapHost: () => Promise<string | null>;
       startRelayDiscoveryScan: () => Promise<RelayDiscoveryStatus>;
       getRelayDiscoveryStatus: () => Promise<RelayDiscoveryStatus>;
       selectFileForSharing: () => Promise<PickedFileInfo | null>;

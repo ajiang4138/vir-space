@@ -1078,21 +1078,6 @@ export default function App(): JSX.Element {
       }
 
       try {
-        const cachedRelayHost = await window.electronApi.getCachedRelayBootstrapHost();
-        if (
-          !cancelled
-          && cachedRelayHost
-          && !isLoopbackHost(cachedRelayHost)
-          && !isLikelyVirtualAdapterHost(cachedRelayHost)
-        ) {
-          setBootstrapUrl(`ws://${cachedRelayHost}:${defaultHostPort}`);
-          return;
-        }
-      } catch {
-        // Continue with local network probe fallback.
-      }
-
-      try {
         const networkInfo = await window.electronApi.getLocalNetworkInfo();
         if (cancelled) {
           return;
