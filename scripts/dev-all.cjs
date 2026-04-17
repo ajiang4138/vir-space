@@ -24,12 +24,12 @@ function parseEnvInt(name, fallback, min, max) {
   return parsed;
 }
 
-const classBScanWorkerCount = parseEnvInt("RELAY_CLASSB_SCAN_WORKERS", 450, 50, 5000);
-const classBScanTimeoutMs = parseEnvInt("RELAY_CLASSB_SCAN_TIMEOUT_MS", 750, 50, 3000);
+const classBScanWorkerCount = parseEnvInt("RELAY_CLASSB_SCAN_WORKERS", 100, 20, 5000);
+const classBScanTimeoutMs = parseEnvInt("RELAY_CLASSB_SCAN_TIMEOUT_MS", 2000, 50, 5000);
 const classBScanMaxDurationMs = parseEnvInt("RELAY_CLASSB_SCAN_MAX_DURATION_MS", 0, 0, 120000);
 const localRescanMaxDurationMs = parseEnvInt("RELAY_LOCAL_RESCAN_MAX_DURATION_MS", 5000, 0, 120000);
-const directProbeAttempts = parseEnvInt("RELAY_DIRECT_PROBE_ATTEMPTS", 2, 1, 5);
-const scanProbeAttempts = parseEnvInt("RELAY_SCAN_PROBE_ATTEMPTS", 2, 1, 4);
+const directProbeAttempts = parseEnvInt("RELAY_DIRECT_PROBE_ATTEMPTS", 3, 1, 5);
+const scanProbeAttempts = parseEnvInt("RELAY_SCAN_PROBE_ATTEMPTS", 3, 1, 4);
 const forceScanClassBPrefix = process.env.RELAY_FORCE_SCAN_CLASSB_PREFIX || "";
 const scanAllLocalClassBPrefixes = process.env.RELAY_SCAN_ALL_LOCAL_CLASSB_PREFIXES !== "0";
 const relayCacheFilePath = path.join(rootDir, ".relay-bootstrap-cache.json");
