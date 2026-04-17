@@ -56,8 +56,8 @@ function isPortInUseError(error: unknown): boolean {
   return candidate.code === "EADDRINUSE";
 }
 
-function resolveLocalNetworkInfo(): LocalNetworkInfo {
-  const sortedAddresses = getPreferredIpv4AddressesIncludingLoopback();
+async function resolveLocalNetworkInfo(): Promise<LocalNetworkInfo> {
+  const sortedAddresses = await getPreferredIpv4AddressesIncludingLoopback();
   const preferredAddress = sortedAddresses[0] ?? "127.0.0.1";
 
   return {
@@ -120,7 +120,7 @@ export class HostRoomService {
     }
 
     this.status = "starting";
-    this.localNetworkInfo = resolveLocalNetworkInfo();
+    this.localNetworkInfo = await resolveLocalNetworkInfo();
 
     const httpServer = createServer();
 
