@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import dgram from "node:dgram";
 import os from "node:os";
 
 export interface RankedIpv4Address {
@@ -34,6 +35,10 @@ function isLinkLocalIpv4(ip: string): boolean {
 
 function isKnownHostOnlyVirtualIpv4(ip: string): boolean {
   return ip.startsWith("192.168.56.");
+}
+
+function isProbablyUsableNonLoopbackIpv4(ip: string): boolean {
+  return isIpv4Address(ip) && !isLoopbackIpv4(ip) && !isLinkLocalIpv4(ip) && !isKnownHostOnlyVirtualIpv4(ip);
 }
 
 function isCarrierGradeNatIpv4(ip: string): boolean {
@@ -240,14 +245,97 @@ export function getRankedIpv4Addresses(): RankedIpv4Address[] {
   return ranked;
 }
 
-export function getPreferredNonLoopbackIpv4Addresses(): string[] {
+function getPreferredNonLoopbackIpv4AddressesFromRanking(): string[] {
   return getRankedIpv4Addresses()
     .map((entry) => entry.ip)
-    .filter((ip) => !isLoopbackIpv4(ip) && !isLinkLocalIpv4(ip) && !isKnownHostOnlyVirtualIpv4(ip));
+    .filter((ip) => isProbablyUsableNonLoopbackIpv4(ip));
 }
 
-export function getPreferredIpv4AddressesIncludingLoopback(): string[] {
-  const nonLoopback = getPreferredNonLoopbackIpv4Addresses();
+function promoteAddress(addresses: string[], preferredAddress: string | null): string[] {
+  if (!preferredAddress) {
+    return addresses;
+  }
+
+  const existingIndex = addresses.indexOf(preferredAddress);
+  if (existingIndex === -1) {
+    return [preferredAddress, ...addresses];
+  }
+
+  if (existingIndex === 0) {
+    return addresses;
+  }
+
+  const reordered = [...addresses];
+  reordered.splice(existingIndex, 1);
+  reordered.unshift(preferredAddress);
+  return reordered;
+}
+
+function resolveOutgoingAddressForProbe(targetHost: string, timeoutMs: number): Promise<string | null> {
+  return new Promise((resolve) => {
+    const socket = dgram.createSocket("udp4");
+    let settled = false;
+
+    const finalize = (address: string | null): void => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(timeoutHandle);
+      socket.removeAllListeners();
+      socket.close();
+      resolve(address);
+    };
+
+    const timeoutHandle = setTimeout(() => {
+      finalize(null);
+    }, timeoutMs);
+
+    socket.once("error", () => {
+      finalize(null);
+    });
+
+    socket.connect(53, targetHost, () => {
+      const socketAddress = socket.address();
+      if (typeof socketAddress === "string") {
+        finalize(null);
+        return;
+      }
+
+      const localAddress = socketAddress.address;
+      if (!isProbablyUsableNonLoopbackIpv4(localAddress)) {
+        finalize(null);
+        return;
+      }
+
+      finalize(localAddress);
+    });
+  });
+}
+
+async function resolvePreferredOutgoingIpv4Address(timeoutMs = 350): Promise<string | null> {
+  const probeTargets = ["1.1.1.1", "8.8.8.8", "9.9.9.9"];
+
+  for (const target of probeTargets) {
+    // eslint-disable-next-line no-await-in-loop
+    const address = await resolveOutgoingAddressForProbe(target, timeoutMs);
+    if (address) {
+      return address;
+    }
+  }
+
+  return null;
+}
+
+export async function getPreferredNonLoopbackIpv4Addresses(): Promise<string[]> {
+  const ranked = getPreferredNonLoopbackIpv4AddressesFromRanking();
+  const outgoing = await resolvePreferredOutgoingIpv4Address();
+  return promoteAddress(ranked, outgoing);
+}
+
+export async function getPreferredIpv4AddressesIncludingLoopback(): Promise<string[]> {
+  const nonLoopback = await getPreferredNonLoopbackIpv4Addresses();
   if (nonLoopback.length === 0) {
     return ["127.0.0.1"];
   }

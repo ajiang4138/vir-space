@@ -382,12 +382,12 @@ async function scanHostList(
   return foundHost;
 }
 
-function getLocalNonLoopbackIPv4Addresses(): string[] {
+async function getLocalNonLoopbackIPv4Addresses(): Promise<string[]> {
   return getPreferredNonLoopbackIpv4Addresses();
 }
 
 async function discoverRelayBootstrapHostInBackground(): Promise<string | null> {
-  const localIps = getLocalNonLoopbackIPv4Addresses();
+  const localIps = await getLocalNonLoopbackIPv4Addresses();
   const cachedHost = readCachedRelayBootstrapHost();
 
   for (const localIp of localIps) {
@@ -486,8 +486,8 @@ function getRelayDiscoveryStatusSnapshot(): RelayDiscoveryStatus {
   return relayDiscoveryStatus;
 }
 
-function getLocalNetworkInfo(): LocalNetworkInfo {
-  const sortedAddresses = getPreferredIpv4AddressesIncludingLoopback();
+async function getLocalNetworkInfo(): Promise<LocalNetworkInfo> {
+  const sortedAddresses = await getPreferredIpv4AddressesIncludingLoopback();
 
   return {
     hostname: os.hostname(),
