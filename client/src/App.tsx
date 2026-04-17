@@ -2346,19 +2346,7 @@ export default function App(): JSX.Element {
               />
             </div>
             <div className="setup-debug">
-              <DebugLog
-                events={events}
-                relayConnection={{
-                  url: connectedRelayUrl,
-                  state: signalingState,
-                  connectedAtMs: relayConnectedAtMs,
-                  serverStartedAtMs: relayServerStartedAtMs,
-                  serverLastSeenAtMs: relayServerLastSeenAtMs,
-                  serverConnectedClients: relayServerConnectedClients,
-                  serverRelayListings: relayServerListings,
-                }}
-                onReconnect={reconnectRelay}
-              />
+              <DebugLog events={events} />
             </div>
           </div>
         </section>
@@ -2566,23 +2554,10 @@ export default function App(): JSX.Element {
                     </button>
                   )}
                 </section>
-                
                 <details className="menu-section menu-section-collapsible" open>
-                  <summary className="menu-section-title">Relay Info</summary>
+                  <summary className="menu-section-title">Debug Events</summary>
                   <div className="setup-debug" style={{ margin: 0, border: "none", boxShadow: "none" }}>
-                    <DebugLog
-                      events={events}
-                      relayConnection={{
-                        url: connectedRelayUrl,
-                        state: signalingState,
-                        connectedAtMs: relayConnectedAtMs,
-                        serverStartedAtMs: relayServerStartedAtMs,
-                        serverLastSeenAtMs: relayServerLastSeenAtMs,
-                        serverConnectedClients: relayServerConnectedClients,
-                        serverRelayListings: relayServerListings,
-                      }}
-                      onReconnect={reconnectRelay}
-                    />
+                    <DebugLog events={events} />
                   </div>
                 </details>
               </div>
@@ -2590,8 +2565,18 @@ export default function App(): JSX.Element {
           </aside>
         </section>
       )}
-
-      <DebugWindow events={events} routeBadges={debugRouteBadges} />
+      <DebugWindow
+        events={events}
+        routeBadges={debugRouteBadges}
+        relayConnection={{
+          url: connectedRelayUrl,
+          state: signalingState,
+          connectedAtMs: relayConnectedAtMs,
+          serverStartedAtMs: relayServerStartedAtMs,
+          serverLastSeenAtMs: relayServerLastSeenAtMs,
+        }}
+        onReconnect={reconnectRelay}
+      />
       {isTransferBeforeExitModalOpen && (
         <TransferBeforeExitModal
           canTransfer={Boolean(activeRoom?.participants.some((participant) => participant.peerId !== activeRoom.myPeerId))}

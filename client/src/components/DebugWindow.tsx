@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { WebRtcConnectionRoute } from "../lib/webrtc";
 import { THEME_DEFAULTS } from "../theme/themeDefaults";
 
@@ -8,9 +8,19 @@ interface DebugRouteBadge {
   route: WebRtcConnectionRoute;
 }
 
+interface RelayConnectionProps {
+  url: string;
+  state: "connected" | "connecting" | "disconnected";
+  connectedAtMs: number | null;
+  serverStartedAtMs: number | null;
+  serverLastSeenAtMs: number | null;
+}
+
 interface DebugWindowProps {
   events: string[];
   routeBadges: DebugRouteBadge[];
+  relayConnection: RelayConnectionProps;
+  onReconnect: () => void;
 }
 
 const debugWindowName = "vir-space-debug-window";
@@ -149,6 +159,11 @@ function ensureDebugWindow(target: Window | null): Window | null {
   <body data-initialized="true">
     <section class="debug-shell">
       <section class="route-panel">
+        <h1>Relay Connection</h1>
+        <div id="relay-info" class="events-list" style="padding-top: 8px; padding-bottom: 8px; font-size: 0.9rem; color: var(--dbg-text-secondary);"></div>
+      </section>
+
+      <section class="route-panel">
         <h1>Connection Route</h1>
         <ul id="route-list" class="route-list"></ul>
       </section>
@@ -239,8 +254,72 @@ function renderEvents(target: Window, events: string[]): void {
   list.scrollTop = list.scrollHeight;
 }
 
-export function DebugWindow({ events, routeBadges }: DebugWindowProps): null {
+function formatRelayAge(ageMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ageMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
+function renderRelayConnection(
+  target: Window,
+  relay: RelayConnectionProps,
+  onReconnect: () => void,
+  nowMs: number
+): void {
+  const container = target.document.getElementById("relay-info");
+  if (!container) return;
+
+  const ageLabel = relay.connectedAtMs
+    ? formatRelayAge(nowMs - relay.connectedAtMs)
+    : "not connected";
+
+  const uptimeLabel = relay.serverStartedAtMs
+    ? formatRelayAge(nowMs - relay.serverStartedAtMs)
+    : "unknown";
+
+  const lastSeenLabel = relay.serverLastSeenAtMs
+    ? new Date(relay.serverLastSeenAtMs).toLocaleTimeString()
+    : "never";
+
+  container.innerHTML = `
+    <div style="margin-bottom: 4px;"><strong>Relay:</strong> ${relay.url || "-"} <button id="retry-relay-btn" style="margin-left: 8px; padding: 2px 6px; font-size: 0.85em; cursor: pointer; color: black;">Retry</button></div>
+    <div style="margin-bottom: 4px;"><strong>State:</strong> ${relay.state === "connecting" ? "connecting…" : relay.state}</div>
+    <div style="margin-bottom: 4px;"><strong>Age:</strong> ${relay.state === "connected" ? ageLabel : relay.state === "connecting" ? "connecting…" : "not connected"}</div>
+    <div style="margin-bottom: 4px;"><strong>Server Uptime:</strong> ${uptimeLabel}</div>
+    <div><strong>Server Last Seen:</strong> ${lastSeenLabel}</div>
+  `;
+
+  const btn = target.document.getElementById("retry-relay-btn");
+  if (btn) {
+    btn.onclick = onReconnect;
+  }
+}
+
+export function DebugWindow({ events, routeBadges, relayConnection, onReconnect }: DebugWindowProps): null {
   const debugWindowRef = useRef<Window | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (
+      (!relayConnection.connectedAtMs || relayConnection.state !== "connected")
+      && !relayConnection.serverStartedAtMs
+    ) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [relayConnection.connectedAtMs, relayConnection.state]);
 
   useEffect(() => {
     const debugWindow = ensureDebugWindow(debugWindowRef.current);
@@ -251,7 +330,8 @@ export function DebugWindow({ events, routeBadges }: DebugWindowProps): null {
     debugWindowRef.current = debugWindow;
     renderRouteBadges(debugWindow, routeBadges);
     renderEvents(debugWindow, events);
-  }, [events, routeBadges]);
+    renderRelayConnection(debugWindow, relayConnection, onReconnect, nowMs);
+  }, [events, routeBadges, relayConnection, nowMs, onReconnect]);
 
   useEffect(() => {
     return () => {
