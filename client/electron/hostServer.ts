@@ -13,6 +13,7 @@ import type {
     RoomStatePayload,
     ServerSignalMessage,
 } from "../src/shared/signaling.js";
+import { getPreferredIpv4AddressesIncludingLoopback } from "./networkAddress.js";
 
 interface ClientContext {
   id: string;
@@ -55,74 +56,8 @@ function isPortInUseError(error: unknown): boolean {
   return candidate.code === "EADDRINUSE";
 }
 
-function scorePreferredAddress(address: string): number {
-  if (address === "127.0.0.1") {
-    return 100;
-  }
-
-  if (address.startsWith("169.254.")) {
-    return 90;
-  }
-
-  if (address.startsWith("192.168.56.")) {
-    return 80;
-  }
-
-  if (address.startsWith("100.")) {
-    return 0;
-  }
-
-  if (address.startsWith("25.")) {
-    return 1;
-  }
-
-  if (address.startsWith("10.")) {
-    return 2;
-  }
-
-  if (address.startsWith("172.")) {
-    return 3;
-  }
-
-  if (address.startsWith("192.168.")) {
-    return 4;
-  }
-
-  return 10;
-}
-
 function resolveLocalNetworkInfo(): LocalNetworkInfo {
-  const addresses = new Set<string>();
-
-  for (const interfaces of Object.values(os.networkInterfaces())) {
-    if (!interfaces) {
-      continue;
-    }
-
-    for (const detail of interfaces) {
-      if (detail.family !== "IPv4") {
-        continue;
-      }
-
-      addresses.add(detail.address);
-    }
-  }
-
-  if (addresses.size === 0) {
-    addresses.add("127.0.0.1");
-  } else {
-    addresses.add("127.0.0.1");
-  }
-
-  const sortedAddresses = Array.from(addresses).sort((left, right) => {
-    const scoreDelta = scorePreferredAddress(left) - scorePreferredAddress(right);
-    if (scoreDelta !== 0) {
-      return scoreDelta;
-    }
-
-    return left.localeCompare(right);
-  });
-
+  const sortedAddresses = getPreferredIpv4AddressesIncludingLoopback();
   const preferredAddress = sortedAddresses[0] ?? "127.0.0.1";
 
   return {

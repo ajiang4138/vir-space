@@ -5,15 +5,19 @@ import os from "node:os";
 import path from "node:path";
 import type { HostServiceInfo, LocalNetworkInfo, RelayDiscoveryStatus } from "../src/shared/signaling.js";
 import {
-  buildFileManifest,
-  createReceiverTransfer,
-  finalizeReceiverTransfer,
-  readFilePiece,
-  removeReceiverTransfer,
-  selectFileForSharing,
-  writeReceiverPiece,
+    buildFileManifest,
+    createReceiverTransfer,
+    finalizeReceiverTransfer,
+    readFilePiece,
+    removeReceiverTransfer,
+    selectFileForSharing,
+    writeReceiverPiece,
 } from "./fileTransfer.js";
 import { HostRoomService } from "./hostServer.js";
+import {
+    getPreferredIpv4AddressesIncludingLoopback,
+    getPreferredNonLoopbackIpv4Addresses,
+} from "./networkAddress.js";
 
 const hostService = new HostRoomService();
 let isQuitting = false;
@@ -162,42 +166,6 @@ function isIPv4(value: string): boolean {
     const num = Number.parseInt(part, 10);
     return num >= 0 && num <= 255;
   });
-}
-
-function scorePreferredAddress(address: string): number {
-  if (address === "127.0.0.1") {
-    return 100;
-  }
-
-  if (address.startsWith("169.254.")) {
-    return 90;
-  }
-
-  if (address.startsWith("192.168.56.")) {
-    return 80;
-  }
-
-  if (address.startsWith("100.")) {
-    return 0;
-  }
-
-  if (address.startsWith("25.")) {
-    return 1;
-  }
-
-  if (address.startsWith("10.")) {
-    return 2;
-  }
-
-  if (address.startsWith("172.")) {
-    return 3;
-  }
-
-  if (address.startsWith("192.168.")) {
-    return 4;
-  }
-
-  return 10;
 }
 
 function getRelayCacheCandidatePaths(): string[] {
@@ -415,84 +383,25 @@ async function scanHostList(
 }
 
 function getLocalNonLoopbackIPv4Addresses(): string[] {
-  const entries: Array<{ ip: string; ifaceName: string }> = [];
-
-  for (const [name, interfaces] of Object.entries(os.networkInterfaces())) {
-    if (!interfaces) {
-      continue;
-    }
-
-    const lowerName = name.toLowerCase();
-    if (
-      lowerName.includes("virtual") ||
-      lowerName.includes("vbox") ||
-      lowerName.includes("wsl") ||
-      lowerName.includes("loopback")
-    ) {
-      continue;
-    }
-
-    for (const detail of interfaces) {
-      if (detail.family !== "IPv4" || detail.internal || !detail.address || !isIPv4(detail.address)) {
-        continue;
-      }
-
-      // Exclude known virtual/link-local IP ranges
-      if (detail.address.startsWith("169.254.") || detail.address.startsWith("192.168.56.")) {
-        continue;
-      }
-
-      entries.push({ ip: detail.address, ifaceName: name });
-    }
-  }
-
-  const seen = new Set<string>();
-  const unique = entries.filter((entry) => {
-    if (seen.has(entry.ip)) {
-      return false;
-    }
-    seen.add(entry.ip);
-    return true;
-  });
-
-  return unique.sort((left, right) => {
-    const ipScoreDelta = scorePreferredAddress(left.ip) - scorePreferredAddress(right.ip);
-    if (ipScoreDelta !== 0) {
-      return ipScoreDelta;
-    }
-
-    // Ethernet/VPN adapters get priority over Wi-Fi.
-    const ifaceScore = (ifaceName: string): number => {
-      const lower = ifaceName.toLowerCase();
-      if (lower.includes("wi-fi") || lower.includes("wifi") || lower.includes("wireless") || lower.includes("wlan")) return 1;
-      return 0;
-    };
-
-    const ifaceDelta = ifaceScore(left.ifaceName) - ifaceScore(right.ifaceName);
-    if (ifaceDelta !== 0) {
-      return ifaceDelta;
-    }
-
-    return left.ip.localeCompare(right.ip);
-  }).map((entry) => entry.ip);
+  return getPreferredNonLoopbackIpv4Addresses();
 }
 
 async function discoverRelayBootstrapHostInBackground(): Promise<string | null> {
   const localIps = getLocalNonLoopbackIPv4Addresses();
   const cachedHost = readCachedRelayBootstrapHost();
 
-  if (cachedHost) {
-    const cachedReachable = await canReachTcpWithRetries(cachedHost, relayPort, 500, relayProbeAttempts);
-    if (cachedReachable) {
-      return cachedHost;
-    }
-  }
-
   for (const localIp of localIps) {
     // eslint-disable-next-line no-await-in-loop
     const selfReachable = await canReachTcpWithRetries(localIp, relayPort, 500, relayProbeAttempts);
     if (selfReachable) {
       return localIp;
+    }
+  }
+
+  if (cachedHost && !localIps.includes(cachedHost)) {
+    const cachedReachable = await canReachTcpWithRetries(cachedHost, relayPort, 500, relayProbeAttempts);
+    if (cachedReachable) {
+      return cachedHost;
     }
   }
 
@@ -578,36 +487,7 @@ function getRelayDiscoveryStatusSnapshot(): RelayDiscoveryStatus {
 }
 
 function getLocalNetworkInfo(): LocalNetworkInfo {
-  const addresses = new Set<string>();
-
-  for (const interfaces of Object.values(os.networkInterfaces())) {
-    if (!interfaces) {
-      continue;
-    }
-
-    for (const detail of interfaces) {
-      if (detail.family !== "IPv4") {
-        continue;
-      }
-
-      addresses.add(detail.address);
-    }
-  }
-
-  if (addresses.size === 0) {
-    addresses.add("127.0.0.1");
-  } else {
-    addresses.add("127.0.0.1");
-  }
-
-  const sortedAddresses = Array.from(addresses).sort((left, right) => {
-    const scoreDelta = scorePreferredAddress(left) - scorePreferredAddress(right);
-    if (scoreDelta !== 0) {
-      return scoreDelta;
-    }
-
-    return left.localeCompare(right);
-  });
+  const sortedAddresses = getPreferredIpv4AddressesIncludingLoopback();
 
   return {
     hostname: os.hostname(),
