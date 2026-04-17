@@ -1,5 +1,5 @@
 import {
-    CHAT_CHANNEL_LABEL,
+    APP_DATA_CHANNEL_LABEL,
     FILE_CONTROL_CHANNEL_LABEL,
     FILE_DATA_CHANNEL_LABEL,
 } from "./fileTransfer/protocol";
@@ -11,6 +11,15 @@ export type WebRtcStatus =
   | "disconnected"
   | "failed"
   | "closed";
+
+export type WebRtcRouteKind = "direct" | "relayed" | "unknown";
+
+export interface WebRtcConnectionRoute {
+  kind: WebRtcRouteKind;
+  localCandidateType: string | null;
+  remoteCandidateType: string | null;
+  protocol: string | null;
+}
 
 interface WebRtcHandlers {
   onIceCandidate: (candidate: RTCIceCandidateInit) => void;
@@ -63,7 +72,7 @@ function resolveIceServers(): RTCIceServer[] {
 
 export class WebRtcPeerManager {
   private pc: RTCPeerConnection | null = null;
-  private chatChannel: RTCDataChannel | null = null;
+  private appDataChannel: RTCDataChannel | null = null;
   private fileControlChannel: RTCDataChannel | null = null;
   private fileDataChannel: RTCDataChannel | null = null;
   private openChannelLabels = new Set<string>();
@@ -109,8 +118,8 @@ export class WebRtcPeerManager {
     const pc = this.ensurePeerConnection();
     this.handlers.onStatusChange?.("connecting");
 
-    if (!this.chatChannel) {
-      const channel = pc.createDataChannel(CHAT_CHANNEL_LABEL, {
+    if (!this.appDataChannel) {
+      const channel = pc.createDataChannel(APP_DATA_CHANNEL_LABEL, {
         ordered: true,
       });
       this.bindDataChannel(channel);
@@ -163,13 +172,21 @@ export class WebRtcPeerManager {
     await pc.addIceCandidate(new RTCIceCandidate(candidate));
   }
 
-  sendChatMessage(text: string): boolean {
-    if (!this.chatChannel || this.chatChannel.readyState !== "open") {
+  sendAppDataMessage(text: string): boolean {
+    if (!this.appDataChannel || this.appDataChannel.readyState !== "open") {
       return false;
     }
 
-    this.chatChannel.send(text);
-    return true;
+    if (this.appDataChannel.bufferedAmount > 8 * 1024 * 1024) {
+      return false;
+    }
+
+    try {
+      this.appDataChannel.send(text);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   sendFileControlMessage(text: string): boolean {
@@ -177,8 +194,12 @@ export class WebRtcPeerManager {
       return false;
     }
 
-    this.fileControlChannel.send(text);
-    return true;
+    try {
+      this.fileControlChannel.send(text);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   sendFileDataMessage(data: ArrayBuffer): boolean {
@@ -206,8 +227,103 @@ export class WebRtcPeerManager {
     return this.fileControlChannel?.readyState === "open" && this.fileDataChannel?.readyState === "open";
   }
 
+  async getConnectionRoute(): Promise<WebRtcConnectionRoute> {
+    if (!this.pc || this.pc.connectionState !== "connected") {
+      return {
+        kind: "unknown",
+        localCandidateType: null,
+        remoteCandidateType: null,
+        protocol: null,
+      };
+    }
+
+    try {
+      const stats = await this.pc.getStats();
+      let selectedPair: {
+        type?: string;
+        nominated?: boolean;
+        state?: string;
+        localCandidateId?: string;
+        remoteCandidateId?: string;
+      } | null = null;
+
+      for (const report of stats.values()) {
+        const reportLike = report as { type?: string; selectedCandidatePairId?: string };
+        if (reportLike.type === "transport" && reportLike.selectedCandidatePairId) {
+          const pairReport = stats.get(reportLike.selectedCandidatePairId) as {
+            type?: string;
+            nominated?: boolean;
+            state?: string;
+            localCandidateId?: string;
+            remoteCandidateId?: string;
+          } | undefined;
+
+          if (pairReport) {
+            selectedPair = pairReport;
+            break;
+          }
+        }
+      }
+
+      if (!selectedPair) {
+        for (const report of stats.values()) {
+          const pairReport = report as {
+            type?: string;
+            nominated?: boolean;
+            state?: string;
+            localCandidateId?: string;
+            remoteCandidateId?: string;
+          };
+
+          if (pairReport.type === "candidate-pair" && (pairReport.nominated || pairReport.state === "succeeded")) {
+            selectedPair = pairReport;
+            break;
+          }
+        }
+      }
+
+      if (!selectedPair || selectedPair.type !== "candidate-pair") {
+        return {
+          kind: "unknown",
+          localCandidateType: null,
+          remoteCandidateType: null,
+          protocol: null,
+        };
+      }
+
+      const localReport = selectedPair.localCandidateId ? stats.get(selectedPair.localCandidateId) : null;
+      const remoteReport = selectedPair.remoteCandidateId ? stats.get(selectedPair.remoteCandidateId) : null;
+
+      const localCandidate = localReport && (localReport as { type?: string }).type === "local-candidate"
+        ? (localReport as { candidateType?: string; protocol?: string })
+        : null;
+      const remoteCandidate = remoteReport && (remoteReport as { type?: string }).type === "remote-candidate"
+        ? (remoteReport as { candidateType?: string; protocol?: string })
+        : null;
+
+      const localType = localCandidate?.candidateType ?? null;
+      const remoteType = remoteCandidate?.candidateType ?? null;
+      const protocol = localCandidate?.protocol ?? remoteCandidate?.protocol ?? null;
+      const isRelayed = localType === "relay" || remoteType === "relay";
+
+      return {
+        kind: isRelayed ? "relayed" : "direct",
+        localCandidateType: localType,
+        remoteCandidateType: remoteType,
+        protocol,
+      };
+    } catch {
+      return {
+        kind: "unknown",
+        localCandidateType: null,
+        remoteCandidateType: null,
+        protocol: null,
+      };
+    }
+  }
+
   close(): void {
-    for (const channel of [this.chatChannel, this.fileControlChannel, this.fileDataChannel]) {
+    for (const channel of [this.appDataChannel, this.fileControlChannel, this.fileDataChannel]) {
       if (!channel) {
         continue;
       }
@@ -218,7 +334,7 @@ export class WebRtcPeerManager {
       channel.close();
     }
 
-    this.chatChannel = null;
+    this.appDataChannel = null;
     this.fileControlChannel = null;
     this.fileDataChannel = null;
     this.openChannelLabels.clear();
@@ -242,8 +358,8 @@ export class WebRtcPeerManager {
   }
 
   private bindDataChannel(channel: RTCDataChannel): void {
-    if (channel.label === CHAT_CHANNEL_LABEL) {
-      this.chatChannel = channel;
+    if (channel.label === APP_DATA_CHANNEL_LABEL) {
+      this.appDataChannel = channel;
     } else if (channel.label === FILE_CONTROL_CHANNEL_LABEL) {
       this.fileControlChannel = channel;
     } else if (channel.label === FILE_DATA_CHANNEL_LABEL) {
@@ -270,7 +386,7 @@ export class WebRtcPeerManager {
     };
 
     channel.onmessage = (event) => {
-      if (channel.label === CHAT_CHANNEL_LABEL) {
+      if (channel.label === APP_DATA_CHANNEL_LABEL) {
         this.handlers.onDataMessage(String(event.data));
         return;
       }

@@ -55,13 +55,13 @@ interface RelayRoomListingRecord {
 }
 
 type ClientMessage =
-  | { type: "create-room"; roomId: string; displayName: string; roomPassword: string }
-  | { type: "join-room"; roomId: string; displayName: string; roomPassword: string }
+  | { type: "create-room"; roomId: string; displayName: string; roomPassword: string; userHash: string; hostCandidateBootstrapUrl?: string }
+  | { type: "join-room"; roomId: string; displayName: string; roomPassword: string; userHash: string; hostCandidateBootstrapUrl?: string }
   | { type: "leave-room"; roomId: string }
   | { type: "end-room"; roomId: string }
+  | { type: "transfer-room-ownership"; roomId: string }
+  | { type: "kick-user"; roomId: string; targetPeerId: string }
   | { type: "chat-message"; roomId: string; text: string; senderDisplayName?: string }
-  | { type: "whiteboard-update"; roomId: string; data: string; senderDisplayName?: string }
-  | { type: "editor-update"; roomId: string; data: string; senderDisplayName?: string }
   | { type: "offer"; roomId: string; targetPeerId: string; sdp: SessionDescriptionPayload }
   | { type: "answer"; roomId: string; targetPeerId: string; sdp: SessionDescriptionPayload }
   | { type: "ice-candidate"; roomId: string; targetPeerId: string; candidate: IceCandidatePayload }
@@ -109,20 +109,6 @@ type ServerMessage =
       text: string;
     }
   | {
-      type: "whiteboard-update";
-      roomId: string;
-      senderPeerId: string;
-      senderDisplayName: string;
-      data: string;
-    }
-  | {
-      type: "editor-update";
-      roomId: string;
-      senderPeerId: string;
-      senderDisplayName: string;
-      data: string;
-    }
-  | {
       type: "offer" | "answer";
       roomId: string;
       senderPeerId: string;
@@ -143,6 +129,21 @@ type ServerMessage =
       type: "room-closed";
       roomId: string;
       reason: "host-ended" | "host-disconnected";
+      message: string;
+    }
+  | {
+      type: "room-host-transferred";
+      roomId: string;
+      previousHostPeerId: string;
+      previousHostDisplayName: string;
+      newHostPeerId: string;
+      newHostDisplayName: string;
+      newHostBootstrapUrl: string | null;
+      room: RoomStatePayload;
+    }
+  | {
+      type: "user-kicked";
+      roomId: string;
       message: string;
     }
   | {
@@ -181,6 +182,8 @@ interface ClientContext {
   displayName?: string;
   role?: ParticipantRole;
   relayDiscoverySubscribed?: boolean;
+  userHash?: string;
+  hostCandidateBootstrapUrl?: string;
 }
 
 interface Room {
@@ -192,6 +195,7 @@ interface Room {
   guestDisplayName: string | null;
   status: "open" | "closed";
   participants: Map<string, ClientContext>;
+  bannedHashes: Set<string>;
 }
 
 const PORT = 8787;
@@ -591,6 +595,28 @@ function broadcastRoomState(room: Room): void {
   }
 }
 
+function refreshLegacyGuestFields(room: Room): void {
+  const guestCandidate = Array.from(room.participants.values()).find((participant) => participant.id !== room.hostPeerId);
+  room.guestPeerId = guestCandidate?.id ?? null;
+  room.guestDisplayName = guestCandidate?.displayName ?? null;
+}
+
+function getNextHostBySeniority(room: Room, currentHostPeerId: string): ClientContext | undefined {
+  for (const participant of room.participants.values()) {
+    if (participant.id === currentHostPeerId) {
+      continue;
+    }
+
+    if (participant.socket.readyState !== WebSocket.OPEN) {
+      continue;
+    }
+
+    return participant;
+  }
+
+  return undefined;
+}
+
 function closeRoom(room: Room, reason: "host-ended" | "host-disconnected"): void {
   room.status = "closed";
   const roomState = getRoomStatePayload(room);
@@ -642,10 +668,7 @@ function leaveRoom(client: ClientContext, reason: "leave-request" | "disconnect"
   }
 
   room.participants.delete(client.id);
-  if (room.guestPeerId === client.id) {
-    room.guestPeerId = null;
-    room.guestDisplayName = null;
-  }
+  refreshLegacyGuestFields(room);
 
   client.role = undefined;
 
@@ -669,7 +692,14 @@ function leaveRoom(client: ClientContext, reason: "leave-request" | "disconnect"
   }
 }
 
-function createRoom(client: ClientContext, roomId: string, displayName: string, roomPassword: string): void {
+function createRoom(
+  client: ClientContext,
+  roomId: string,
+  displayName: string,
+  roomPassword: string,
+  userHash: string,
+  hostCandidateBootstrapUrl?: string,
+): void {
   const existingRoom = rooms.get(roomId);
   if (existingRoom?.status === "open") {
     sendError(client, "Room already exists", roomId, "ROOM_EXISTS");
@@ -681,6 +711,8 @@ function createRoom(client: ClientContext, roomId: string, displayName: string, 
   client.roomId = roomId;
   client.displayName = displayName;
   client.role = "host";
+  client.userHash = userHash;
+  client.hostCandidateBootstrapUrl = hostCandidateBootstrapUrl;
 
   const room: Room = {
     roomId,
@@ -691,6 +723,7 @@ function createRoom(client: ClientContext, roomId: string, displayName: string, 
     guestDisplayName: null,
     status: "open",
     participants: new Map([[client.id, client]]),
+    bannedHashes: new Set(),
   };
 
   rooms.set(roomId, room);
@@ -704,7 +737,14 @@ function createRoom(client: ClientContext, roomId: string, displayName: string, 
   });
 }
 
-function joinRoom(client: ClientContext, roomId: string, displayName: string, roomPassword: string): void {
+function joinRoom(
+  client: ClientContext,
+  roomId: string,
+  displayName: string,
+  roomPassword: string,
+  userHash: string,
+  hostCandidateBootstrapUrl?: string,
+): void {
   const room = rooms.get(roomId);
   if (!room) {
     sendError(client, "Room does not exist", roomId, "ROOM_NOT_FOUND");
@@ -713,6 +753,11 @@ function joinRoom(client: ClientContext, roomId: string, displayName: string, ro
 
   if (room.status !== "open") {
     sendError(client, "Room is closed", roomId, "ROOM_CLOSED");
+    return;
+  }
+
+  if (room.bannedHashes.has(userHash)) {
+    sendError(client, "You have been banned from this room", roomId, "USER_BANNED");
     return;
   }
 
@@ -736,9 +781,10 @@ function joinRoom(client: ClientContext, roomId: string, displayName: string, ro
   client.roomId = roomId;
   client.displayName = displayName;
   client.role = "guest";
+  client.userHash = userHash;
+  client.hostCandidateBootstrapUrl = hostCandidateBootstrapUrl;
   room.participants.set(client.id, client);
-  room.guestPeerId = client.id;
-  room.guestDisplayName = displayName;
+  refreshLegacyGuestFields(room);
 
   const roomState = getRoomStatePayload(room);
 
@@ -770,9 +816,43 @@ function joinRoom(client: ClientContext, roomId: string, displayName: string, ro
   broadcastRoomState(room);
 }
 
+function transferRoomOwnership(client: ClientContext, room: Room): void {
+  const nextHost = getNextHostBySeniority(room, client.id);
+  if (!nextHost) {
+    sendError(client, "No eligible participant available for transfer", room.roomId, "NO_TRANSFER_TARGET");
+    return;
+  }
+
+  const previousHostPeerId = client.id;
+  const previousHostDisplayName = client.displayName ?? room.hostDisplayName;
+
+  room.hostPeerId = nextHost.id;
+  room.hostDisplayName = nextHost.displayName ?? "Peer";
+  client.role = "guest";
+  nextHost.role = "host";
+
+  refreshLegacyGuestFields(room);
+  const roomState = getRoomStatePayload(room);
+
+  for (const member of room.participants.values()) {
+    sendTo(member, {
+      type: "room-host-transferred",
+      roomId: room.roomId,
+      previousHostPeerId,
+      previousHostDisplayName,
+      newHostPeerId: nextHost.id,
+      newHostDisplayName: room.hostDisplayName,
+      newHostBootstrapUrl: null,
+      room: roomState,
+    });
+  }
+
+  broadcastRoomState(room);
+}
+
 function handleRoomAction(
   client: ClientContext,
-  message: Extract<ClientMessage, { type: "create-room" | "join-room" | "leave-room" | "end-room" }>,
+  message: Extract<ClientMessage, { type: "create-room" | "join-room" | "leave-room" | "end-room" | "transfer-room-ownership" }>,
 ): void {
   if (message.type === "leave-room") {
     if (client.roomId !== message.roomId) {
@@ -800,12 +880,30 @@ function handleRoomAction(
     return;
   }
 
+  if (message.type === "transfer-room-ownership") {
+    const room = rooms.get(message.roomId);
+    if (!room) {
+      sendError(client, "Room does not exist", message.roomId, "ROOM_NOT_FOUND");
+      return;
+    }
+
+    if (room.hostPeerId !== client.id || room.status !== "open") {
+      sendError(client, "Only host can transfer ownership", message.roomId, "ONLY_HOST_CAN_TRANSFER");
+      return;
+    }
+
+    transferRoomOwnership(client, room);
+    return;
+  }
+
   const roomId = message.roomId.trim();
   const displayName = message.displayName.trim();
   const roomPassword = message.roomPassword.trim();
+  const userHash = message.userHash.trim();
+  const hostCandidateBootstrapUrl = message.hostCandidateBootstrapUrl?.trim();
 
-  if (!roomId || !displayName || !roomPassword) {
-    sendError(client, "roomId, displayName, and roomPassword are required", roomId, "BAD_REQUEST");
+  if (!roomId || !displayName || !roomPassword || !userHash) {
+    sendError(client, "roomId, displayName, roomPassword, and userHash are required", roomId, "BAD_REQUEST");
     return;
   }
 
@@ -815,11 +913,11 @@ function handleRoomAction(
   }
 
   if (message.type === "create-room") {
-    createRoom(client, roomId, displayName, roomPassword);
+    createRoom(client, roomId, displayName, roomPassword, userHash, hostCandidateBootstrapUrl);
     return;
   }
 
-  joinRoom(client, roomId, displayName, roomPassword);
+  joinRoom(client, roomId, displayName, roomPassword, userHash, hostCandidateBootstrapUrl);
 }
 
 function handleRelay(
@@ -899,64 +997,49 @@ function handleChatMessage(
   }
 }
 
-function handleWhiteboardUpdate(
-  client: ClientContext,
-  message: Extract<ClientMessage, { type: "whiteboard-update" }>,
-): void {
+function handleKickUser(client: ClientContext, message: Extract<ClientMessage, { type: "kick-user" }>): void {
   const roomId = client.roomId;
   if (!roomId || roomId !== message.roomId) {
+    sendError(client, "You must join room before kicking", message.roomId, "NOT_IN_ROOM");
     return;
   }
 
   const room = rooms.get(roomId);
   if (!room || room.status !== "open") {
+    sendError(client, "Room is not active", roomId, "ROOM_CLOSED");
     return;
   }
 
-  const senderDisplayName = client.displayName ?? message.senderDisplayName ?? "Peer";
-  for (const member of room.participants.values()) {
-    if (member.id === client.id) {
-      continue;
-    }
-
-    sendTo(member, {
-      type: "whiteboard-update",
-      roomId,
-      senderPeerId: client.id,
-      senderDisplayName,
-      data: message.data,
-    });
-  }
-}
-
-function handleEditorUpdate(
-  client: ClientContext,
-  message: Extract<ClientMessage, { type: "editor-update" }>,
-): void {
-  const roomId = client.roomId;
-  if (!roomId || roomId !== message.roomId) {
+  if (room.hostPeerId !== client.id) {
+    sendError(client, "Only host can kick users", message.roomId, "ONLY_HOST_CAN_KICK");
     return;
   }
 
-  const room = rooms.get(roomId);
-  if (!room || room.status !== "open") {
+  const targetClient = room.participants.get(message.targetPeerId);
+  if (!targetClient) {
+    sendError(client, "Target user not found", message.roomId, "USER_NOT_FOUND");
     return;
   }
 
-  const senderDisplayName = client.displayName ?? message.senderDisplayName ?? "Peer";
-  for (const member of room.participants.values()) {
-    if (member.id === client.id) {
-      continue;
-    }
-
-    sendTo(member, {
-      type: "editor-update",
-      roomId,
-      senderPeerId: client.id,
-      senderDisplayName,
-      data: message.data,
-    });
+  if (targetClient.id === room.hostPeerId) {
+    sendError(client, "Cannot kick the host", message.roomId, "CANNOT_KICK_HOST");
+    return;
   }
+
+  // Ban the user's hash
+  if (targetClient.userHash) {
+    room.bannedHashes.add(targetClient.userHash);
+  }
+
+  // Send kick notification to the target user
+  sendTo(targetClient, {
+    type: "user-kicked",
+    roomId,
+    message: "You have been kicked from the room",
+  });
+
+  // Remove the kicked user from the room
+  leaveRoom(targetClient, "leave-request");
 }
 
 wss.on("connection", (socket) => {
@@ -985,23 +1068,24 @@ wss.on("connection", (socket) => {
     try {
       const raw = JSON.parse(data.toString()) as ClientMessage;
 
-      if (raw.type === "create-room" || raw.type === "join-room" || raw.type === "leave-room" || raw.type === "end-room") {
+      if (
+        raw.type === "create-room" ||
+        raw.type === "join-room" ||
+        raw.type === "leave-room" ||
+        raw.type === "end-room" ||
+        raw.type === "transfer-room-ownership"
+      ) {
         handleRoomAction(client, raw);
+        return;
+      }
+
+      if (raw.type === "kick-user") {
+        handleKickUser(client, raw);
         return;
       }
 
       if (raw.type === "chat-message") {
         handleChatMessage(client, raw);
-        return;
-      }
-
-      if (raw.type === "whiteboard-update") {
-        handleWhiteboardUpdate(client, raw);
-        return;
-      }
-
-      if (raw.type === "editor-update") {
-        handleEditorUpdate(client, raw);
         return;
       }
 

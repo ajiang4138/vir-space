@@ -40,13 +40,12 @@ export interface RelayRoomListing extends RelayRoomListingInput {
 }
 
 export type ClientSignalMessage =
-  | ({ type: "create-room" } & RoomActionPayload)
-  | ({ type: "join-room" } & RoomActionPayload)
+  | ({ type: "create-room"; userHash: string; hostCandidateBootstrapUrl?: string } & RoomActionPayload)
+  | ({ type: "join-room"; userHash: string; hostCandidateBootstrapUrl?: string } & RoomActionPayload)
   | { type: "leave-room"; roomId: string }
   | { type: "end-room"; roomId: string }
-  | { type: "chat-message"; roomId: string; text: string; senderDisplayName?: string }
-  | { type: "whiteboard-update"; roomId: string; data: string; senderDisplayName?: string }
-  | { type: "editor-update"; roomId: string; data: string; senderDisplayName?: string }
+  | { type: "transfer-room-ownership"; roomId: string }
+  | { type: "kick-user"; roomId: string; targetPeerId: string }
   | { type: "offer"; roomId: string; targetPeerId: string; sdp: RTCSessionDescriptionInit }
   | { type: "answer"; roomId: string; targetPeerId: string; sdp: RTCSessionDescriptionInit }
   | { type: "ice-candidate"; roomId: string; targetPeerId: string; candidate: RTCIceCandidateInit }
@@ -90,27 +89,6 @@ export type ServerSignalMessage =
       room: RoomStatePayload;
     }
   | {
-      type: "chat-message";
-      roomId: string;
-      senderPeerId: string;
-      senderDisplayName: string;
-      text: string;
-    }
-  | {
-      type: "whiteboard-update";
-      roomId: string;
-      senderPeerId: string;
-      senderDisplayName: string;
-      data: string;
-    }
-  | {
-      type: "editor-update";
-      roomId: string;
-      senderPeerId: string;
-      senderDisplayName: string;
-      data: string;
-    }
-  | {
       type: "offer";
       roomId: string;
       senderPeerId: string;
@@ -137,6 +115,21 @@ export type ServerSignalMessage =
       type: "room-closed";
       roomId: string;
       reason: "host-ended" | "host-disconnected";
+      message: string;
+    }
+  | {
+      type: "room-host-transferred";
+      roomId: string;
+      previousHostPeerId: string;
+      previousHostDisplayName: string;
+      newHostPeerId: string;
+      newHostDisplayName: string;
+      newHostBootstrapUrl: string | null;
+      room: RoomStatePayload;
+    }
+  | {
+      type: "user-kicked";
+      roomId: string;
       message: string;
     }
   | {
@@ -193,3 +186,23 @@ export interface RelayDiscoveryStatus {
   updatedAt: number;
   lastError: string | null;
 }
+
+export type AppDataMessage =
+  | {
+      type: "chat-message";
+      senderPeerId: string;
+      senderDisplayName: string;
+      text: string;
+    }
+  | {
+      type: "whiteboard-update";
+      senderPeerId: string;
+      senderDisplayName: string;
+      data: string;
+    }
+  | {
+      type: "editor-update";
+      senderPeerId: string;
+      senderDisplayName: string;
+      data: string;
+    };

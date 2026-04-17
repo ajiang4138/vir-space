@@ -5,14 +5,13 @@ type RoomJoinedMessage = Extract<ServerSignalMessage, { type: "room-joined" }>;
 type RoomStateMessage = Extract<ServerSignalMessage, { type: "room-state" }>;
 type ParticipantJoinedMessage = Extract<ServerSignalMessage, { type: "participant-joined" }>;
 type ParticipantLeftMessage = Extract<ServerSignalMessage, { type: "participant-left" }>;
-type ChatMessage = Extract<ServerSignalMessage, { type: "chat-message" }>;
-type WhiteboardUpdateMessage = Extract<ServerSignalMessage, { type: "whiteboard-update" }>;
-type EditorUpdateMessage = Extract<ServerSignalMessage, { type: "editor-update" }>;
 type OfferMessage = Extract<ServerSignalMessage, { type: "offer" }>;
 type AnswerMessage = Extract<ServerSignalMessage, { type: "answer" }>;
 type IceCandidateMessage = Extract<ServerSignalMessage, { type: "ice-candidate" }>;
 type PeerLeftMessage = Extract<ServerSignalMessage, { type: "peer-left" }>;
 type RoomClosedMessage = Extract<ServerSignalMessage, { type: "room-closed" }>;
+type RoomHostTransferredMessage = Extract<ServerSignalMessage, { type: "room-host-transferred" }>;
+type UserKickedMessage = Extract<ServerSignalMessage, { type: "user-kicked" }>;
 type ErrorMessage = Extract<ServerSignalMessage, { type: "error" }>;
 type RelayRoomUpsertedMessage = Extract<ServerSignalMessage, { type: "relay-room-upserted" }>;
 type RelayRoomRemovedMessage = Extract<ServerSignalMessage, { type: "relay-room-removed" }>;
@@ -32,14 +31,13 @@ interface SignalingHandlers {
   onRoomState?: MaybeAsyncHandler<RoomStateMessage>;
   onParticipantJoined?: MaybeAsyncHandler<ParticipantJoinedMessage>;
   onParticipantLeft?: MaybeAsyncHandler<ParticipantLeftMessage>;
-  onChatMessage?: MaybeAsyncHandler<ChatMessage>;
-  onEditorUpdate?: MaybeAsyncHandler<EditorUpdateMessage>;
-  onWhiteboardUpdate?: MaybeAsyncHandler<WhiteboardUpdateMessage>;
   onOffer?: MaybeAsyncHandler<OfferMessage>;
   onAnswer?: MaybeAsyncHandler<AnswerMessage>;
   onIceCandidate?: MaybeAsyncHandler<IceCandidateMessage>;
   onPeerLeft?: MaybeAsyncHandler<PeerLeftMessage>;
   onRoomClosed?: MaybeAsyncHandler<RoomClosedMessage>;
+  onRoomHostTransferred?: MaybeAsyncHandler<RoomHostTransferredMessage>;
+  onUserKicked?: MaybeAsyncHandler<UserKickedMessage>;
   onServerError?: MaybeAsyncHandler<ErrorMessage>;
   onRelayRoomUpserted?: MaybeAsyncHandler<RelayRoomUpsertedMessage>;
   onRelayRoomRemoved?: MaybeAsyncHandler<RelayRoomRemovedMessage>;
@@ -90,21 +88,25 @@ export class SignalingClient {
     this.socket = null;
   }
 
-  createRoom(payload: RoomActionPayload): void {
+  createRoom(payload: RoomActionPayload, userHash: string, hostCandidateBootstrapUrl?: string): void {
     this.send({
       type: "create-room",
       roomId: payload.roomId,
       displayName: payload.displayName,
       roomPassword: payload.roomPassword,
+      userHash,
+      hostCandidateBootstrapUrl,
     });
   }
 
-  joinRoom(payload: RoomActionPayload): void {
+  joinRoom(payload: RoomActionPayload, userHash: string, hostCandidateBootstrapUrl?: string): void {
     this.send({
       type: "join-room",
       roomId: payload.roomId,
       displayName: payload.displayName,
       roomPassword: payload.roomPassword,
+      userHash,
+      hostCandidateBootstrapUrl,
     });
   }
 
@@ -122,30 +124,18 @@ export class SignalingClient {
     });
   }
 
-  sendChatMessage(roomId: string, text: string, senderDisplayName?: string): void {
+  transferRoomOwnership(roomId: string): void {
     this.send({
-      type: "chat-message",
+      type: "transfer-room-ownership",
       roomId,
-      text,
-      senderDisplayName,
     });
   }
 
-  sendWhiteboardUpdate(roomId: string, data: string, senderDisplayName?: string): void {
+  kickUser(roomId: string, targetPeerId: string): void {
     this.send({
-      type: "whiteboard-update",
+      type: "kick-user",
       roomId,
-      data,
-      senderDisplayName,
-    });
-  }
-
-  sendEditorUpdate(roomId: string, data: string, senderDisplayName?: string): void {
-    this.send({
-      type: "editor-update",
-      roomId,
-      data,
-      senderDisplayName,
+      targetPeerId,
     });
   }
 
@@ -276,24 +266,6 @@ export class SignalingClient {
         }
         return;
 
-      case "chat-message":
-        if (this.handlers.onChatMessage) {
-          void this.handlers.onChatMessage(message);
-        }
-        return;
-
-      case "whiteboard-update":
-        if (this.handlers.onWhiteboardUpdate) {
-          void this.handlers.onWhiteboardUpdate(message);
-        }
-        return;
-
-      case "editor-update":
-        if (this.handlers.onEditorUpdate) {
-          void this.handlers.onEditorUpdate(message);
-        }
-        return;
-
       case "offer":
         if (this.handlers.onOffer) {
           void this.handlers.onOffer(message);
@@ -321,6 +293,18 @@ export class SignalingClient {
       case "room-closed":
         if (this.handlers.onRoomClosed) {
           void this.handlers.onRoomClosed(message);
+        }
+        return;
+
+      case "room-host-transferred":
+        if (this.handlers.onRoomHostTransferred) {
+          void this.handlers.onRoomHostTransferred(message);
+        }
+        return;
+
+      case "user-kicked":
+        if (this.handlers.onUserKicked) {
+          void this.handlers.onUserKicked(message);
         }
         return;
 

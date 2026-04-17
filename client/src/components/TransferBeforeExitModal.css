@@ -1,0 +1,94 @@
+.transfer-before-exit-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--ui-overlay-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.transfer-before-exit-modal {
+  width: min(520px, 90vw);
+  background: var(--ui-surface-strong);
+  border: 1px solid var(--ui-border-panel-strong);
+  border-radius: 8px;
+  box-shadow: var(--ui-shadow-panel-strong);
+  overflow: hidden;
+}
+
+.transfer-before-exit-modal-content {
+  padding: 32px 24px;
+}
+
+.transfer-before-exit-modal-title {
+  margin: 0 0 12px;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--ui-text-primary);
+}
+
+.transfer-before-exit-modal-message {
+  margin: 0;
+  font-size: 14px;
+  color: var(--ui-text-secondary);
+  line-height: 1.5;
+}
+
+.transfer-before-exit-modal-note {
+  margin: 12px 0 0;
+  color: var(--ui-warning-fg);
+  font-size: 0.92rem;
+}
+
+.transfer-before-exit-modal-footer {
+  padding: 16px 24px;
+  border-top: 1px solid var(--ui-border-soft);
+  background: var(--ui-surface-soft);
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.transfer-before-exit-modal-button {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 4px;
+  background: var(--ui-primary-gradient);
+  color: var(--ui-text-inverse);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.transfer-before-exit-modal-button:hover {
+  background: var(--ui-primary-gradient-hover);
+}
+
+.transfer-before-exit-modal-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.transfer-before-exit-modal-button.ghost {
+  background: transparent;
+  color: var(--ui-text-primary);
+  border: 1px solid var(--ui-border-input);
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.transfer-before-exit-modal-button.ghost:hover {
+  background: var(--ui-surface-muted);
+  border-color: var(--ui-border-panel-strong);
+}
+
+.transfer-before-exit-modal-button.danger {
+  background: var(--ui-danger-solid);
+  border: none;
+  transition: background-color 0.2s ease;
+}
+
+.transfer-before-exit-modal-button.danger:hover {
+  background: var(--ui-danger-solid-hover);
+}

@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import type { Server as HttpServer } from "node:http";
+import { createServer } from "node:http";
 import os from "node:os";
 import { WebSocket, WebSocketServer } from "ws";
 import type {
@@ -18,6 +20,7 @@ interface ClientContext {
   roomId?: string;
   displayName?: string;
   role?: ParticipantRole;
+  hostCandidateBootstrapUrl?: string;
 }
 
 interface ActiveRoom {
@@ -139,6 +142,7 @@ function buildWsUrls(networkInfo: LocalNetworkInfo | null, port: number | null):
 
 export class HostRoomService {
   private server: WebSocketServer | null = null;
+  private httpServer: HttpServer | null = null;
   private activeRoom: ActiveRoom | null = null;
   private status: HostServiceStatus = "stopped";
   private port: number | null = null;
@@ -183,41 +187,26 @@ export class HostRoomService {
     this.status = "starting";
     this.localNetworkInfo = resolveLocalNetworkInfo();
 
-    let server: WebSocketServer | null = null;
-    const startPort = normalizeRequestedPort(requestedPort);
+    const httpServer = createServer();
 
-    for (let attempt = 0; attempt < maxPortFallbackAttempts; attempt += 1) {
-      const candidatePort = startPort + attempt;
-      if (candidatePort > 65535) {
-        break;
-      }
-
-      try {
-        server = await this.createListeningServer(candidatePort);
-        break;
-      } catch (error) {
-        if (isPortInUseError(error)) {
-          continue;
-        }
-
-        this.status = "stopped";
-        this.port = null;
-        this.localNetworkInfo = null;
-        throw error;
-      }
-    }
-
-    if (!server) {
+    // Attempt to bind with retry logic for port TIME_WAIT state
+    await this.waitForPort(httpServer, requestedPort).catch((error) => {
+      httpServer.close();
       this.status = "stopped";
       this.port = null;
       this.localNetworkInfo = null;
-      throw new Error(`failed to start host service; no free port found in range ${startPort}-${Math.min(65535, startPort + maxPortFallbackAttempts - 1)}`);
-    }
+      throw error;
+    });
+
+    const server = new WebSocketServer({
+      server: httpServer,
+    });
 
     this.server = server;
+    this.httpServer = httpServer;
     this.status = "running";
 
-    const address = server.address();
+    const address = httpServer.address();
     if (typeof address === "object" && address !== null) {
       this.port = address.port;
     } else {
@@ -226,6 +215,39 @@ export class HostRoomService {
 
     this.bindServerEvents(server);
     return this.getStatus();
+  }
+
+  private async waitForPort(httpServer: ReturnType<typeof createServer>, port: number): Promise<void> {
+    const maxRetries = 5;
+    const retryDelay = 200; // ms
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const onListening = () => {
+            httpServer.removeListener("error", onError);
+            resolve();
+          };
+          const onError = (error: Error) => {
+            httpServer.removeListener("listening", onListening);
+            reject(error);
+          };
+
+          httpServer.once("listening", onListening);
+          httpServer.once("error", onError);
+
+          httpServer.listen(port, "0.0.0.0");
+        });
+        return; // Success
+      } catch (error) {
+        if (attempt < maxRetries - 1) {
+          // Wait before retrying
+          await new Promise((resolve) => setTimeout(resolve, retryDelay));
+        } else {
+          throw error; // Final attempt failed
+        }
+      }
+    }
   }
 
   async stop(reason: "host-ended" | "host-disconnected" = "host-disconnected"): Promise<void> {
@@ -247,6 +269,7 @@ export class HostRoomService {
       await this.closeServer();
     } finally {
       this.server = null;
+      this.httpServer = null;
       this.activeRoom = null;
       this.status = "stopped";
       this.port = null;
@@ -280,24 +303,15 @@ export class HostRoomService {
             raw.type === "create-room" ||
             raw.type === "join-room" ||
             raw.type === "leave-room" ||
-            raw.type === "end-room"
+            raw.type === "end-room" ||
+            raw.type === "transfer-room-ownership"
           ) {
             this.handleRoomAction(client, raw);
             return;
           }
 
-          if (raw.type === "chat-message") {
-            this.handleChatMessage(client, raw);
-            return;
-          }
-
-          if (raw.type === "whiteboard-update") {
-            this.handleWhiteboardUpdate(client, raw);
-            return;
-          }
-
-          if (raw.type === "editor-update") {
-            this.handleEditorUpdate(client, raw);
+          if (raw.type === "kick-user") {
+            this.handleKickUser(client, raw);
             return;
           }
 
@@ -337,7 +351,7 @@ export class HostRoomService {
 
   private handleRoomAction(
     client: ClientContext,
-    message: Extract<ClientSignalMessage, { type: "create-room" | "join-room" | "leave-room" | "end-room" }>,
+    message: Extract<ClientSignalMessage, { type: "create-room" | "join-room" | "leave-room" | "end-room" | "transfer-room-ownership" }>,
   ): void {
     if (message.type === "leave-room") {
       if (client.roomId !== message.roomId) {
@@ -365,9 +379,21 @@ export class HostRoomService {
       return;
     }
 
+    if (message.type === "transfer-room-ownership") {
+      const room = this.activeRoom;
+      if (!room || room.roomId !== message.roomId || room.hostPeerId !== client.id || room.status !== "open") {
+        this.sendError(client, "Only the active host can transfer ownership", message.roomId, "ONLY_HOST_CAN_TRANSFER");
+        return;
+      }
+
+      this.transferRoomOwnership(client, room);
+      return;
+    }
+
     const roomId = message.roomId.trim();
     const displayName = message.displayName.trim();
     const roomPassword = message.roomPassword.trim();
+    const hostCandidateBootstrapUrl = message.hostCandidateBootstrapUrl?.trim();
 
     if (!roomId || !displayName || !roomPassword) {
       this.sendError(client, "roomId, displayName, and roomPassword are required", roomId);
@@ -380,14 +406,20 @@ export class HostRoomService {
     }
 
     if (message.type === "create-room") {
-      this.createRoom(client, roomId, displayName, roomPassword);
+      this.createRoom(client, roomId, displayName, roomPassword, hostCandidateBootstrapUrl);
       return;
     }
 
-    this.joinRoom(client, roomId, displayName, roomPassword);
+    this.joinRoom(client, roomId, displayName, roomPassword, hostCandidateBootstrapUrl);
   }
 
-  private createRoom(client: ClientContext, roomId: string, displayName: string, roomPassword: string): void {
+  private createRoom(
+    client: ClientContext,
+    roomId: string,
+    displayName: string,
+    roomPassword: string,
+    hostCandidateBootstrapUrl?: string,
+  ): void {
     if (this.activeRoom && this.activeRoom.status === "open") {
       this.sendError(client, "A room is already active", roomId, "ROOM_EXISTS");
       return;
@@ -396,6 +428,7 @@ export class HostRoomService {
     client.roomId = roomId;
     client.displayName = displayName;
     client.role = "host";
+    client.hostCandidateBootstrapUrl = hostCandidateBootstrapUrl;
 
     const room: ActiveRoom = {
       roomId,
@@ -419,7 +452,13 @@ export class HostRoomService {
     });
   }
 
-  private joinRoom(client: ClientContext, roomId: string, displayName: string, roomPassword: string): void {
+  private joinRoom(
+    client: ClientContext,
+    roomId: string,
+    displayName: string,
+    roomPassword: string,
+    hostCandidateBootstrapUrl?: string,
+  ): void {
     const room = this.activeRoom;
 
     if (!room || room.roomId !== roomId || room.status !== "open") {
@@ -445,9 +484,9 @@ export class HostRoomService {
     client.roomId = roomId;
     client.displayName = displayName;
     client.role = "guest";
+    client.hostCandidateBootstrapUrl = hostCandidateBootstrapUrl;
     room.participants.set(client.id, client);
-    room.guestPeerId = client.id;
-    room.guestDisplayName = displayName;
+    this.refreshLegacyGuestFields(room);
 
     const roomState = this.getRoomStatePayload(room);
     this.sendTo(client, {
@@ -468,6 +507,63 @@ export class HostRoomService {
       },
       room: roomState,
     });
+
+    this.broadcastRoomState(room);
+  }
+
+  private refreshLegacyGuestFields(room: ActiveRoom): void {
+    const guestCandidate = Array.from(room.participants.values()).find((participant) => participant.id !== room.hostPeerId);
+    room.guestPeerId = guestCandidate?.id ?? null;
+    room.guestDisplayName = guestCandidate?.displayName ?? null;
+  }
+
+  private getNextHostBySeniority(room: ActiveRoom, currentHostPeerId: string): ClientContext | undefined {
+    for (const participant of room.participants.values()) {
+      if (participant.id === currentHostPeerId) {
+        continue;
+      }
+
+      if (participant.socket.readyState !== WebSocket.OPEN) {
+        continue;
+      }
+
+      return participant;
+    }
+
+    return undefined;
+  }
+
+  private transferRoomOwnership(currentHost: ClientContext, room: ActiveRoom): void {
+    const nextHost = this.getNextHostBySeniority(room, currentHost.id);
+    if (!nextHost) {
+      this.sendError(currentHost, "No eligible participant available for transfer", room.roomId, "NO_TRANSFER_TARGET");
+      return;
+    }
+
+    const previousHostPeerId = currentHost.id;
+    const previousHostDisplayName = currentHost.displayName ?? room.hostDisplayName;
+    const newHostBootstrapUrl = nextHost.hostCandidateBootstrapUrl ?? null;
+
+    room.hostPeerId = nextHost.id;
+    room.hostDisplayName = nextHost.displayName ?? "Peer";
+    currentHost.role = "guest";
+    nextHost.role = "host";
+
+    this.refreshLegacyGuestFields(room);
+    const roomState = this.getRoomStatePayload(room);
+
+    for (const member of room.participants.values()) {
+      this.sendTo(member, {
+        type: "room-host-transferred",
+        roomId: room.roomId,
+        previousHostPeerId,
+        previousHostDisplayName,
+        newHostPeerId: nextHost.id,
+        newHostDisplayName: room.hostDisplayName,
+        newHostBootstrapUrl,
+        room: roomState,
+      });
+    }
 
     this.broadcastRoomState(room);
   }
@@ -508,89 +604,41 @@ export class HostRoomService {
     });
   }
 
-  private handleChatMessage(
+  private handleKickUser(
     client: ClientContext,
-    message: Extract<ClientSignalMessage, { type: "chat-message" }>,
+    message: Extract<ClientSignalMessage, { type: "kick-user" }>,
   ): void {
     const room = this.activeRoom;
-    if (!room || room.status !== "open" || client.roomId !== message.roomId) {
-      this.sendError(client, "You must join the room before sending chat", message.roomId, "NOT_IN_ROOM");
+    const roomId = message.roomId;
+
+    if (!room || room.roomId !== roomId || room.status !== "open") {
+      this.sendError(client, "Room is not active", roomId, "ROOM_CLOSED");
       return;
     }
 
-    const senderDisplayName = client.displayName ?? message.senderDisplayName ?? "Peer";
-    const text = message.text.trim();
-    if (!text) {
+    if (client.roomId !== roomId || room.hostPeerId !== client.id) {
+      this.sendError(client, "Only host can kick users", roomId, "ONLY_HOST_CAN_KICK");
       return;
     }
 
-    for (const member of room.participants.values()) {
-      if (member.id === client.id) {
-        continue;
-      }
-
-      this.sendTo(member, {
-        type: "chat-message",
-        roomId: room.roomId,
-        senderPeerId: client.id,
-        senderDisplayName,
-        text,
-      });
-    }
-  }
-
-  private handleWhiteboardUpdate(
-    client: ClientContext,
-    message: Extract<ClientSignalMessage, { type: "whiteboard-update" }>,
-  ): void {
-    const room = this.activeRoom;
-    if (!room || room.status !== "open" || client.roomId !== message.roomId) {
-      this.sendError(client, "You must join the room before sending whiteboard data", message.roomId, "NOT_IN_ROOM");
+    const targetClient = room.participants.get(message.targetPeerId);
+    if (!targetClient) {
+      this.sendError(client, "Target user not found", roomId, "USER_NOT_FOUND");
       return;
     }
 
-    const senderDisplayName = client.displayName ?? message.senderDisplayName ?? "Peer";
-
-    for (const member of room.participants.values()) {
-      if (member.id === client.id) {
-        continue;
-      }
-
-      this.sendTo(member, {
-        type: "whiteboard-update",
-        roomId: room.roomId,
-        senderPeerId: client.id,
-        senderDisplayName,
-        data: message.data,
-      });
-    }
-  }
-
-  private handleEditorUpdate(
-    client: ClientContext,
-    message: Extract<ClientSignalMessage, { type: "editor-update" }>,
-  ): void {
-    const room = this.activeRoom;
-    if (!room || room.status !== "open" || client.roomId !== message.roomId) {
-      this.sendError(client, "You must join the room before sending editor data", message.roomId, "NOT_IN_ROOM");
+    if (targetClient.id === room.hostPeerId) {
+      this.sendError(client, "Cannot kick the host", roomId, "CANNOT_KICK_HOST");
       return;
     }
 
-    const senderDisplayName = client.displayName ?? message.senderDisplayName ?? "Peer";
+    this.sendTo(targetClient, {
+      type: "user-kicked",
+      roomId,
+      message: "You have been kicked from the room",
+    });
 
-    for (const member of room.participants.values()) {
-      if (member.id === client.id) {
-        continue;
-      }
-
-      this.sendTo(member, {
-        type: "editor-update",
-        roomId: room.roomId,
-        senderPeerId: client.id,
-        senderDisplayName,
-        data: message.data,
-      });
-    }
+    this.leaveGuest(targetClient);
   }
 
   private handleClientDisconnect(client: ClientContext): void {
@@ -622,10 +670,7 @@ export class HostRoomService {
     }
 
     room.participants.delete(client.id);
-    if (room.guestPeerId === client.id) {
-      room.guestPeerId = null;
-      room.guestDisplayName = null;
-    }
+    this.refreshLegacyGuestFields(room);
 
     client.roomId = undefined;
     client.displayName = undefined;
@@ -730,15 +775,22 @@ export class HostRoomService {
   }
 
   private async closeServer(): Promise<void> {
-    if (!this.server) {
-      return;
+    const wsServer = this.server;
+    const httpServer = this.httpServer;
+
+    this.server = null;
+    this.httpServer = null;
+
+    if (wsServer) {
+      await new Promise<void>((resolve) => {
+        wsServer.close(() => resolve());
+      });
     }
 
-    const server = this.server;
-    this.server = null;
-
-    await new Promise<void>((resolve) => {
-      server.close(() => resolve());
-    });
+    if (httpServer) {
+      await new Promise<void>((resolve) => {
+        httpServer.close(() => resolve());
+      });
+    }
   }
 }
