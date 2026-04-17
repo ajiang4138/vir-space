@@ -21,6 +21,8 @@ interface DebugWindowProps {
   routeBadges: DebugRouteBadge[];
   relayConnection: RelayConnectionProps;
   onReconnect: () => void;
+  isOpen: boolean;
+  onRequestClose: () => void;
 }
 
 const debugWindowName = "vir-space-debug-window";
@@ -236,6 +238,9 @@ function renderEvents(target: Window, events: string[]): void {
     return;
   }
 
+  const autoScrollThresholdPx = 24;
+  const isNearBottom = (list.scrollHeight - list.clientHeight - list.scrollTop) <= autoScrollThresholdPx;
+
   list.replaceChildren();
 
   if (events.length === 0) {
@@ -251,7 +256,9 @@ function renderEvents(target: Window, events: string[]): void {
     list.appendChild(item);
   }
 
-  list.scrollTop = list.scrollHeight;
+  if (isNearBottom) {
+    list.scrollTop = list.scrollHeight;
+  }
 }
 
 function formatRelayAge(ageMs: number): string {
@@ -300,7 +307,7 @@ function renderRelayConnection(
   }
 }
 
-export function DebugWindow({ events, routeBadges, relayConnection, onReconnect }: DebugWindowProps): null {
+export function DebugWindow({ events, routeBadges, relayConnection, onReconnect, isOpen, onRequestClose }: DebugWindowProps): null {
   const debugWindowRef = useRef<Window | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
@@ -322,16 +329,47 @@ export function DebugWindow({ events, routeBadges, relayConnection, onReconnect 
   }, [relayConnection.connectedAtMs, relayConnection.state]);
 
   useEffect(() => {
+    if (!isOpen) {
+      if (debugWindowRef.current && !debugWindowRef.current.closed) {
+        debugWindowRef.current.close();
+      }
+
+      debugWindowRef.current = null;
+      return;
+    }
+
     const debugWindow = ensureDebugWindow(debugWindowRef.current);
     if (!debugWindow) {
       return;
     }
 
     debugWindowRef.current = debugWindow;
+    const handleWindowClose = (): void => {
+      debugWindowRef.current = null;
+      onRequestClose();
+    };
+
+    debugWindow.addEventListener("beforeunload", handleWindowClose);
+
+    return () => {
+      debugWindow.removeEventListener("beforeunload", handleWindowClose);
+    };
+  }, [isOpen, onRequestClose]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    const debugWindow = debugWindowRef.current;
+    if (!debugWindow || debugWindow.closed) {
+      return;
+    }
+
     renderRouteBadges(debugWindow, routeBadges);
     renderEvents(debugWindow, events);
     renderRelayConnection(debugWindow, relayConnection, onReconnect, nowMs);
-  }, [events, routeBadges, relayConnection, nowMs, onReconnect]);
+  }, [events, isOpen, routeBadges, relayConnection, nowMs, onReconnect]);
 
   useEffect(() => {
     return () => {
