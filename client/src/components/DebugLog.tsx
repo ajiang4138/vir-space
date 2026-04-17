@@ -11,6 +11,7 @@ interface DebugLogProps {
     serverConnectedClients: number | null;
     serverRelayListings: number | null;
   };
+  onReconnect: () => void;
 }
 
 function formatRelayAge(ageMs: number): string {
@@ -30,7 +31,7 @@ function formatRelayAge(ageMs: number): string {
   return `${seconds}s`;
 }
 
-export function DebugLog({ events, relayConnection }: DebugLogProps): JSX.Element {
+export function DebugLog({ events, relayConnection, onReconnect }: DebugLogProps): JSX.Element {
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   useEffect(() => {
@@ -66,7 +67,17 @@ export function DebugLog({ events, relayConnection }: DebugLogProps): JSX.Elemen
     <section className="card debug-log">
       <h2>Debug Events</h2>
       <div className="relay-debug">
-        <p><strong>Relay:</strong> {relayConnection.url || "-"}</p>
+        <p>
+          <strong>Relay:</strong> {relayConnection.url || "-"}
+          <button
+            type="button"
+            className="text-button"
+            style={{ marginLeft: "1rem", padding: "0.2rem 0.5rem", fontSize: "0.85em" }}
+            onClick={onReconnect}
+          >
+            Retry Relay
+          </button>
+        </p>
         <p><strong>State:</strong> {relayConnection.state === "connecting" ? "connecting…" : relayConnection.state}</p>
         <p><strong>Age:</strong> {relayConnection.state === "connected" ? ageLabel : relayConnection.state === "connecting" ? "connecting…" : "not connected"}</p>
         <p><strong>Server Uptime:</strong> {relayServerUptimeLabel}</p>

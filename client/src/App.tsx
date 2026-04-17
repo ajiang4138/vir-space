@@ -1485,6 +1485,13 @@ export default function App(): JSX.Element {
     clearRoomState("room closed by host");
   };
 
+  const reconnectRelay = (): void => {
+    addEvent("manual relay reconnect requested");
+    relayReconnectAttemptsRef.current = 0;
+    signalingRef.current?.disconnect();
+    void window.electronApi.startRelayDiscoveryScan().catch(() => undefined);
+  };
+
   const sendMessage = (text: string): void => {
     const room = activeRoomRef.current;
     if (!room) {
@@ -1604,6 +1611,7 @@ export default function App(): JSX.Element {
                   serverConnectedClients: relayServerConnectedClients,
                   serverRelayListings: relayServerListings,
                 }}
+                onReconnect={reconnectRelay}
               />
             </div>
           </div>
@@ -1682,6 +1690,7 @@ export default function App(): JSX.Element {
                 serverConnectedClients: relayServerConnectedClients,
                 serverRelayListings: relayServerListings,
               }}
+              onReconnect={reconnectRelay}
             />
           </section>
         </section>
