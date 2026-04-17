@@ -19,10 +19,10 @@ const hostService = new HostRoomService();
 let isQuitting = false;
 
 const relayPort = 8787;
-const relayConnectTimeoutMs = 2000;
-const relayProbeAttempts = 3;
-const relayScanWorkers = 100;
-const relayScanMaxDurationMs = 90_000;
+const relayConnectTimeoutMs = 750;
+const relayProbeAttempts = 2;
+const relayScanWorkers = 250;
+const relayScanMaxDurationMs = 45_000;
 
 let relayDiscoveryTask: Promise<RelayDiscoveryStatus> | null = null;
 let relayDiscoveryStatus: RelayDiscoveryStatus = {
