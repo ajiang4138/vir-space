@@ -35,11 +35,35 @@ function isKnownHostOnlyVirtualIpv4(ip: string): boolean {
   return ip.startsWith("192.168.56.");
 }
 
+function isCarrierGradeNatIpv4(ip: string): boolean {
+  const parts = ip.split(".");
+  if (parts.length !== 4) {
+    return false;
+  }
+
+  const first = Number.parseInt(parts[0], 10);
+  const second = Number.parseInt(parts[1], 10);
+  return first === 100 && second >= 64 && second <= 127;
+}
+
+function isRfc1918_172Ipv4(ip: string): boolean {
+  const parts = ip.split(".");
+  if (parts.length !== 4) {
+    return false;
+  }
+
+  const first = Number.parseInt(parts[0], 10);
+  const second = Number.parseInt(parts[1], 10);
+  return first === 172 && second >= 16 && second <= 31;
+}
+
 function scoreInterfaceName(name: string): number {
   const lower = name.toLowerCase();
 
-  if (/(vpn|wireguard|nordlynx|proton|tailscale|zerotier|hamachi|openvpn|ipsec|ppp|utun|tun|tap|wg)/.test(lower)) {
-    return -30;
+  if (
+    /(vpn|wireguard|nordlynx|proton|tailscale|zerotier|hamachi|openvpn|ipsec|ikev2|l2tp|pptp|sstp|ppp|utun|tun|tap|wg|anyconnect|fortinet|forticlient|globalprotect|pulse|juniper|zscaler|mullvad|surfshark|expressvpn|private internet access|\bpia\b|cloudflare|warp)/.test(lower)
+  ) {
+    return -40;
   }
 
   if (/(wi-?fi|wifi|wireless|wlan)/.test(lower)) {
@@ -68,6 +92,27 @@ function scoreIpAddress(ip: string, internal: boolean): number {
 
   if (isKnownHostOnlyVirtualIpv4(ip)) {
     return 70;
+  }
+
+  // Prefer common VPN ranges over typical home LAN addressing.
+  if (isCarrierGradeNatIpv4(ip)) {
+    return -25;
+  }
+
+  if (ip.startsWith("25.") || ip.startsWith("26.")) {
+    return -18;
+  }
+
+  if (ip.startsWith("10.")) {
+    return -12;
+  }
+
+  if (isRfc1918_172Ipv4(ip)) {
+    return -10;
+  }
+
+  if (ip.startsWith("192.168.")) {
+    return 6;
   }
 
   return 0;
