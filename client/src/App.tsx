@@ -1953,18 +1953,7 @@ export default function App(): JSX.Element {
         return;
       }
 
-      if (intent === "create") {
-        try {
-          const networkInfo = await window.electronApi.getLocalNetworkInfo();
-          const preferredAddress = pickPreferredHostAddress([networkInfo.preferredAddress, ...networkInfo.addresses]);
-          if (preferredAddress) {
-            parsed.hostname = preferredAddress;
-            resolvedBootstrapUrl = parsed.toString();
-          }
-        } catch {
-          // Fallback to manual prompt below.
-        }
-      }
+      resolvedBootstrapUrl = parsed.toString();
     } catch {
       addEvent("error: invalid bootstrap URL format");
       setSessionState("signaling disconnected");
