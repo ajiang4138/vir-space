@@ -327,6 +327,7 @@ export class HostRoomService {
             || raw.type === "relay-room-list-request"
             || raw.type === "relay-room-subscribe"
             || raw.type === "relay-room-unsubscribe"
+            || raw.type === "relay-server-status-request"
           ) {
             // Local host service does not implement relay-directory features.
             // Ignore these messages so room create/join flows continue working.

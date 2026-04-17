@@ -1814,12 +1814,13 @@ export default function App(): JSX.Element {
         handoverReconnectInProgressRef.current = false;
         handoverReconnectAttemptsRef.current = 0;
         leaveAfterOwnershipTransferRef.current = false;
-        addEvent(`error: ${message.message}`);
 
         const normalizedMessage = message.message.trim().toLowerCase();
-        if (!message.code && normalizedMessage === "unsupported message type") {
+        if (normalizedMessage === "unsupported message type") {
           return;
         }
+
+        addEvent(`error: ${message.message}`);
 
         if (message.code?.startsWith("RELAY_")) {
           return;
