@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { ChatPanel } from "./components/ChatPanel";
-import { DebugLog } from "./components/DebugLog";
 import { DebugWindow } from "./components/DebugWindow";
 import { FileSharePanel } from "./components/FileSharePanel";
 import { JoinForm } from "./components/JoinForm";
@@ -38,7 +37,8 @@ import type {
 import type { FileTransferViewState } from "./types/fileTransfer";
 
 type RoomIntent = "create" | "join";
-type SetupStep = "user-id" | "mode" | "create" | "join";
+type SetupStep = "create" | "join";
+type JoinSetupTab = "manual" | "discovery";
 type SignalingConnectionState = "disconnected" | "connecting" | "connected";
 type CenterWorkspace = "chatroom" | "whiteboard" | "editor" | "files";
 type OwnershipTransferMode = "stay-in-room" | "leave-room";
@@ -159,6 +159,32 @@ function parseHostnameFromWsUrl(url: string): string | null {
   }
 }
 
+function isIpv4Address(value: string): boolean {
+  return /^(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}$/.test(value.trim());
+}
+
+function normalizeJoinBootstrapUrl(requestedBootstrapUrl: string): string | null {
+  const trimmed = requestedBootstrapUrl.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    if (!isWsProtocol(parsed.protocol) || !parsed.hostname) {
+      return null;
+    }
+
+    return parsed.toString();
+  } catch {
+    if (!isIpv4Address(trimmed)) {
+      return null;
+    }
+
+    return `ws://${trimmed}:${defaultHostPort}`;
+  }
+}
+
 function isPortInUseError(message: string): boolean {
   return /EADDRINUSE|address already in use/i.test(message);
 }
@@ -253,7 +279,8 @@ export default function App(): JSX.Element {
   });
   const [whiteboardHistory, setWhiteboardHistory] = useState<Array<{ action: string; data: string; senderPeerId: string; senderDisplayName: string }>>([]);
   const [editorText, setEditorText] = useState("");
-  const [setupStep, setSetupStep] = useState<SetupStep>("user-id");
+  const [setupStep, setSetupStep] = useState<SetupStep>("create");
+  const [joinSetupTab, setJoinSetupTab] = useState<JoinSetupTab>("manual");
   const [userIdDraft, setUserIdDraft] = useState("");
   const [currentUserId, setCurrentUserId] = useState("");
   const [bootstrapUrl, setBootstrapUrl] = useState(defaultBootstrapUrl);
@@ -266,6 +293,9 @@ export default function App(): JSX.Element {
   const [relayServerConnectedClients, setRelayServerConnectedClients] = useState<number | null>(null);
   const [relayServerListings, setRelayServerListings] = useState<number | null>(null);
   const [relayDiscoveryStatus, setRelayDiscoveryStatus] = useState<RelayDiscoveryStatus | null>(null);
+  const [isDebugWindowOpen, setIsDebugWindowOpen] = useState(false);
+  const [pendingRoomIntent, setPendingRoomIntent] = useState<RoomIntent | null>(null);
+  const [createRoomProgress, setCreateRoomProgress] = useState(0);
 
   const [activeWorkspace, setActiveWorkspace] = useState<CenterWorkspace>("chatroom");
   const [isLeftLaneCollapsed, setIsLeftLaneCollapsed] = useState(false);
@@ -276,7 +306,7 @@ export default function App(): JSX.Element {
   const [wasUserKicked, setWasUserKicked] = useState(false);
   const [isTransferBeforeExitModalOpen, setIsTransferBeforeExitModalOpen] = useState(false);
 
-  const setupStepRef = useRef<SetupStep>("user-id");
+  const setupStepRef = useRef<SetupStep>("create");
   const signalingStateRef = useRef<SignalingConnectionState>("disconnected");
   const activeRoomRef = useRef<ActiveRoom | null>(null);
   const handoverReconnectInProgressRef = useRef(false);
@@ -344,6 +374,11 @@ export default function App(): JSX.Element {
   const updateActiveRoom = (nextRoom: ActiveRoom | null): void => {
     activeRoomRef.current = nextRoom;
     setActiveRoom(nextRoom);
+  };
+
+  const setPendingAction = (next: PendingAction | null): void => {
+    pendingActionRef.current = next;
+    setPendingRoomIntent(next?.intent ?? null);
   };
 
   const setSessionState = (nextStatus: ConnectionStatus): void => {
@@ -925,7 +960,7 @@ export default function App(): JSX.Element {
     editorCrdtRef.current.dispose();
     setEditorText("");
     setSessionState(nextStatus);
-    setSetupStep(currentUserIdRef.current ? "mode" : "user-id");
+    setSetupStep("create");
     void refreshLocalBootstrapUrl(parsePortFromWsUrl(bootstrapUrlRef.current));
   };
 
@@ -1370,14 +1405,14 @@ export default function App(): JSX.Element {
     handoverReconnectInProgressRef.current = true;
     handoverReconnectAttemptsRef.current = 0;
     setBootstrapUrl(nextBootstrapUrl);
-    pendingActionRef.current = {
+    setPendingAction({
       intent,
       roomId: room.roomId,
       bootstrapUrl: nextBootstrapUrl,
       displayName: room.myDisplayName,
       roomPassword,
       hostCandidateBootstrapUrl: intent === "create" ? nextBootstrapUrl : undefined,
-    };
+    });
     setSignalingState("connecting");
     setSessionState("connecting to bootstrap server");
     addEvent(`switching signaling endpoint to ${nextBootstrapUrl}`);
@@ -1502,6 +1537,7 @@ export default function App(): JSX.Element {
         const userHash = getUserHash();
 
         if (pending.intent === "create") {
+          setCreateRoomProgress(85);
           signalingRef.current?.createRoom({
             roomId: pending.roomId,
             displayName: pending.displayName,
@@ -1533,7 +1569,8 @@ export default function App(): JSX.Element {
         relayListingSignatureRef.current = null;
 
         const room = activeRoomRef.current;
-        pendingActionRef.current = null;
+        setPendingAction(null);
+        setCreateRoomProgress(0);
 
         if (room?.myRole === "guest") {
           clearRoomState("host disconnected");
@@ -1553,10 +1590,12 @@ export default function App(): JSX.Element {
       },
       onRoomCreated: (message) => {
         const pending = pendingActionRef.current;
-        pendingActionRef.current = null;
+        setPendingAction(null);
         if (!pending) {
           return;
         }
+
+        setCreateRoomProgress(100);
 
         roomPasswordRef.current = pending.roomPassword;
         if (handoverReconnectInProgressRef.current) {
@@ -1576,10 +1615,12 @@ export default function App(): JSX.Element {
       },
       onRoomJoined: async (message) => {
         const pending = pendingActionRef.current;
-        pendingActionRef.current = null;
+        setPendingAction(null);
         if (!pending) {
           return;
         }
+
+        setCreateRoomProgress(0);
 
         roomPasswordRef.current = pending.roomPassword;
 
@@ -1796,7 +1837,8 @@ export default function App(): JSX.Element {
           setSessionState("signaling disconnected");
         }
 
-        pendingActionRef.current = null;
+        setPendingAction(null);
+        setCreateRoomProgress(0);
       },
       onRelayRoomUpserted: (message) => {
         upsertRelayDiscoveredRoom(message.listing);
@@ -1828,7 +1870,8 @@ export default function App(): JSX.Element {
         window.clearTimeout(relayReconnectTimerRef.current);
         relayReconnectTimerRef.current = null;
       }
-      pendingActionRef.current = null;
+      setPendingAction(null);
+      setCreateRoomProgress(0);
       cleanupPeerConnection("application shutdown");
       editorCrdtRef.current.dispose();
       signalingRef.current?.disconnect();
@@ -1931,28 +1974,51 @@ export default function App(): JSX.Element {
     const requestedBootstrapUrl = payload.bootstrapUrl.trim();
     const roomPassword = payload.roomPassword.trim();
     const displayName = currentUserId.trim();
+    const bootstrapAddressLabel = intent === "join" ? "bootstrap address" : "bootstrap URL";
 
     if (!roomId || !displayName || !requestedBootstrapUrl || !roomPassword) {
-      addEvent("error: bootstrap URL, room ID, display name, and room password are required");
+      addEvent(`error: ${bootstrapAddressLabel}, room ID, display name, and room password are required`);
+      if (intent === "create") {
+        setCreateRoomProgress(0);
+      }
       return;
     }
 
     if (roomPassword.length < minimumRoomPasswordLength) {
       addEvent(`error: room password must be at least ${minimumRoomPasswordLength} characters`);
       setSessionState("invalid room password");
+      if (intent === "create") {
+        setCreateRoomProgress(0);
+      }
       return;
     }
 
+    if (intent === "create") {
+      setCreateRoomProgress(10);
+    }
+
     let resolvedBootstrapUrl = requestedBootstrapUrl;
-    try {
-      const parsed = new URL(requestedBootstrapUrl);
-      if (!isWsProtocol(parsed.protocol)) {
-        addEvent("error: bootstrap URL must use ws:// or wss://");
+    if (intent === "join") {
+      const normalizedJoinUrl = normalizeJoinBootstrapUrl(requestedBootstrapUrl);
+      if (!normalizedJoinUrl) {
+        addEvent("error: bootstrap address must be an IPv4 address or a ws:// / wss:// URL");
         setSessionState("signaling disconnected");
         return;
       }
 
-      if (intent === "create") {
+      resolvedBootstrapUrl = normalizedJoinUrl;
+    } else {
+      try {
+        const parsed = new URL(requestedBootstrapUrl);
+        if (!isWsProtocol(parsed.protocol)) {
+          addEvent("error: bootstrap URL must use ws:// or wss://");
+          setSessionState("signaling disconnected");
+          if (intent === "create") {
+            setCreateRoomProgress(0);
+          }
+          return;
+        }
+
         try {
           const networkInfo = await window.electronApi.getLocalNetworkInfo();
           const preferredAddress = pickPreferredHostAddress([networkInfo.preferredAddress, ...networkInfo.addresses]);
@@ -1963,11 +2029,14 @@ export default function App(): JSX.Element {
         } catch {
           // Fallback to manual prompt below.
         }
+      } catch {
+        addEvent("error: invalid bootstrap URL format");
+        setSessionState("signaling disconnected");
+        if (intent === "create") {
+          setCreateRoomProgress(0);
+        }
+        return;
       }
-    } catch {
-      addEvent("error: invalid bootstrap URL format");
-      setSessionState("signaling disconnected");
-      return;
     }
 
     try {
@@ -1978,6 +2047,9 @@ export default function App(): JSX.Element {
         if (!cleanedIp) {
           addEvent("error: host IP is required when localhost cannot be used");
           setSessionState("signaling disconnected");
+          if (intent === "create") {
+            setCreateRoomProgress(0);
+          }
           return;
         }
 
@@ -1987,6 +2059,9 @@ export default function App(): JSX.Element {
     } catch {
       addEvent("error: failed to resolve bootstrap URL");
       setSessionState("signaling disconnected");
+      if (intent === "create") {
+        setCreateRoomProgress(0);
+      }
       return;
     }
 
@@ -1998,20 +2073,26 @@ export default function App(): JSX.Element {
     updateActiveRoom(null);
 
     const requestedPort = parsePortFromWsUrl(resolvedBootstrapUrl);
+    if (intent === "create") {
+      setCreateRoomProgress(35);
+    }
     const hostCandidateBootstrapUrl = await resolveHostCandidateBootstrapUrl(requestedPort);
 
-    pendingActionRef.current = {
+    setPendingAction({
       intent,
       roomId,
       bootstrapUrl: resolvedBootstrapUrl,
       displayName,
       roomPassword,
       hostCandidateBootstrapUrl,
-    };
+    });
     setSignalingState("connecting");
     setSessionState("connecting to bootstrap server");
     addEvent(`connecting to bootstrap signaling server: ${resolvedBootstrapUrl}`);
     setConnectedRelayUrl(resolvedBootstrapUrl);
+    if (intent === "create") {
+      setCreateRoomProgress(60);
+    }
 
     if (intent === "create") {
       const requestedPort = parsePortFromWsUrl(resolvedBootstrapUrl);
@@ -2039,15 +2120,16 @@ export default function App(): JSX.Element {
           if (isPortInUseError(message)) {
             addEvent(`port ${requestedPort} already in use; reusing existing signaling server`);
           } else {
-            pendingActionRef.current = null;
+            setPendingAction(null);
             addEvent(`error: ${message}`);
             setSessionState("signaling disconnected");
+            setCreateRoomProgress(0);
             return;
           }
         }
       }
 
-      pendingActionRef.current = { intent, roomId, bootstrapUrl: resolvedBootstrapUrl, displayName, roomPassword };
+      setPendingAction({ intent, roomId, bootstrapUrl: resolvedBootstrapUrl, displayName, roomPassword });
       setBootstrapUrl(resolvedBootstrapUrl);
     }
 
@@ -2071,13 +2153,8 @@ export default function App(): JSX.Element {
 
     setCurrentUserId(normalized);
     setUserIdDraft(normalized);
-    setSetupStep("mode");
     setSessionState("idle");
     addEvent(`ready as ${normalized}`);
-  };
-
-  const switchUser = (): void => {
-    setSetupStep("user-id");
   };
 
   const chooseJoinMode = (): void => {
@@ -2154,6 +2231,11 @@ export default function App(): JSX.Element {
   const endRoom = (): void => {
     const room = activeRoomRef.current;
     if (!room || room.myRole !== "host") {
+      return;
+    }
+
+    if (room.participants.length <= 1) {
+      performEndRoom();
       return;
     }
 
@@ -2327,6 +2409,7 @@ export default function App(): JSX.Element {
             <div className="setup-primary">
               <JoinForm
                 step={setupStep}
+                joinTab={joinSetupTab}
                 userIdDraft={userIdDraft}
                 currentUserId={currentUserId}
                 discoveredRooms={discoveredRooms}
@@ -2334,19 +2417,18 @@ export default function App(): JSX.Element {
                 relayDiscoveryPhase={relayDiscoveryStatus?.phase ?? "idle"}
                 relayDiscoveryHost={relayDiscoveryStatus?.host ?? null}
                 roomActionDisabled={Boolean(activeRoom)}
+                createRoomInProgress={pendingRoomIntent === "create"}
+                createRoomProgress={createRoomProgress}
                 defaultBootstrapUrl={bootstrapUrlRef.current}
                 onUserIdDraftChange={setUserIdDraft}
                 onSubmitUserId={submitUserId}
                 onChooseCreate={() => setSetupStep("create")}
                 onChooseJoin={chooseJoinMode}
-                onBackToMode={() => setSetupStep("mode")}
-                onSwitchUser={switchUser}
+                onChooseManualJoinTab={() => setJoinSetupTab("manual")}
+                onChooseDiscoveryJoinTab={() => setJoinSetupTab("discovery")}
                 onCreateRoom={createRoom}
                 onJoinRoom={joinRoom}
               />
-            </div>
-            <div className="setup-debug">
-              <DebugLog events={events} />
             </div>
           </div>
         </section>
@@ -2553,13 +2635,14 @@ export default function App(): JSX.Element {
                       Leave Room
                     </button>
                   )}
+                  <button
+                    type="button"
+                    className="ghost debug-panel-button"
+                    onClick={() => setIsDebugWindowOpen((value) => !value)}
+                  >
+                    {isDebugWindowOpen ? "Close Debug Panel" : "Open Debug Panel"}
+                  </button>
                 </section>
-                <details className="menu-section menu-section-collapsible" open>
-                  <summary className="menu-section-title">Debug Events</summary>
-                  <div className="setup-debug" style={{ margin: 0, border: "none", boxShadow: "none" }}>
-                    <DebugLog events={events} />
-                  </div>
-                </details>
               </div>
             ) : null}
           </aside>
@@ -2576,6 +2659,8 @@ export default function App(): JSX.Element {
           serverLastSeenAtMs: relayServerLastSeenAtMs,
         }}
         onReconnect={reconnectRelay}
+        isOpen={isDebugWindowOpen}
+        onRequestClose={() => setIsDebugWindowOpen(false)}
       />
       {isTransferBeforeExitModalOpen && (
         <TransferBeforeExitModal

@@ -352,6 +352,10 @@ body {
   width: 100%;
 }
 
+.debug-panel-button {
+  font: inherit;
+}
+
 .setup-page-content {
   display: grid;
   gap: 18px;
@@ -1014,7 +1018,122 @@ body {
 }
 
 .room-launcher {
+  display: flex;
+  flex-direction: column;
   gap: 16px;
+}
+
+.setup-username-block {
+  margin-top: auto;
+  min-height: 56px;
+  padding: 14px;
+  border-radius: 14px;
+  background: var(--ui-bg-subtle);
+  border: 1px solid var(--ui-border-soft);
+  font-size: 0.9rem;
+  display: flex;
+  align-items: center;
+}
+
+.setup-room-body {
+  flex: 1;
+  display: grid;
+  gap: 18px;
+  min-height: 0;
+}
+
+.setup-room-pane {
+  display: grid;
+  gap: 18px;
+  align-content: start;
+  min-height: 0;
+}
+
+.setup-username-form {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 28px;
+}
+
+.setup-username-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  color: var(--ui-text-primary);
+}
+
+.setup-username-label-text {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.setup-username-form input {
+  flex: 1;
+  min-width: 0;
+}
+
+.setup-username-save {
+  flex: 0 0 auto;
+}
+
+.setup-username-display {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ui-text-secondary);
+  box-shadow: none;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.setup-username-display:hover {
+  color: var(--ui-text-primary);
+}
+
+.setup-username-caption {
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.setup-username-value {
+  color: var(--ui-text-primary);
+  font-weight: 600;
+}
+
+.setup-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.setup-tab {
+  font: inherit;
+  border-radius: 999px;
+  border: 1px solid var(--ui-border-soft);
+  background: var(--ui-surface-soft);
+  color: var(--ui-text-secondary);
+  box-shadow: none;
+}
+
+.setup-tab.active {
+  background: var(--ui-primary-gradient);
+  border-color: transparent;
+  color: var(--ui-text-inverse);
+}
+
+.setup-tab:not(.active):hover {
+  background: var(--ui-surface-panel);
+  color: var(--ui-text-primary);
 }
 
 .setup-screen {
@@ -1061,7 +1180,39 @@ body {
 .join-room-layout {
   display: grid;
   gap: 14px;
-  grid-template-columns: minmax(280px, 1fr) minmax(280px, 1fr);
+  grid-template-columns: minmax(0, 1fr);
+  --join-panel-standard-height: 320px;
+}
+
+.join-mode-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.join-mode-tab {
+  font: inherit;
+  border-radius: 999px;
+  border: 1px solid var(--ui-border-soft);
+  background: var(--ui-surface-soft);
+  color: var(--ui-text-secondary);
+  box-shadow: none;
+}
+
+.join-mode-tab.active {
+  background: var(--ui-primary-gradient);
+  border-color: transparent;
+  color: var(--ui-text-inverse);
+}
+
+.join-mode-tab:not(.active):hover {
+  background: var(--ui-surface-panel);
+  color: var(--ui-text-primary);
+}
+
+.join-mode-panel {
+  min-width: 0;
+  min-height: var(--join-panel-standard-height);
 }
 
 .discover-panel {
@@ -1069,6 +1220,7 @@ body {
   gap: 10px;
   align-content: start;
   padding: 14px;
+  min-height: var(--join-panel-standard-height);
   border-radius: 14px;
   background: rgba(245, 248, 253, 0.9);
   border: 1px solid rgba(80, 106, 133, 0.14);
@@ -1172,6 +1324,7 @@ body {
 
 .join-manual-form {
   align-content: start;
+  min-height: var(--join-panel-standard-height);
 }
 
 .share-box {
@@ -1261,6 +1414,40 @@ input:disabled,
 textarea:disabled {
   opacity: 0.65;
   cursor: not-allowed;
+}
+
+.create-room-button {
+  position: relative;
+  overflow: hidden;
+}
+
+.create-room-button.loading {
+  cursor: progress;
+}
+
+.create-room-button-label {
+  position: relative;
+  z-index: 1;
+}
+
+.create-room-progress {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 7px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.3);
+  overflow: hidden;
+}
+
+.create-room-progress-bar {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #f8fcef 0%, #ffffff 100%);
+  transition: width 220ms ease;
 }
 
 .chat {
