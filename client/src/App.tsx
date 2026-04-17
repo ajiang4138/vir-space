@@ -1953,7 +1953,18 @@ export default function App(): JSX.Element {
         return;
       }
 
-      resolvedBootstrapUrl = parsed.toString();
+      if (intent === "create") {
+        try {
+          const networkInfo = await window.electronApi.getLocalNetworkInfo();
+          const preferredAddress = pickPreferredHostAddress([networkInfo.preferredAddress, ...networkInfo.addresses]);
+          if (preferredAddress) {
+            parsed.hostname = preferredAddress;
+            resolvedBootstrapUrl = parsed.toString();
+          }
+        } catch {
+          // Fallback to manual prompt below.
+        }
+      }
     } catch {
       addEvent("error: invalid bootstrap URL format");
       setSessionState("signaling disconnected");
@@ -2145,12 +2156,6 @@ export default function App(): JSX.Element {
   const endRoom = (): void => {
     const room = activeRoomRef.current;
     if (!room || room.myRole !== "host") {
-      return;
-    }
-
-    const hostIsAlone = room.participants.length <= 1;
-    if (hostIsAlone) {
-      performEndRoom();
       return;
     }
 
