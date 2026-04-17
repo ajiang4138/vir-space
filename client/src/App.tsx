@@ -1148,7 +1148,7 @@ export default function App(): JSX.Element {
 
         addEvent(`relay discovery found bootstrap server: ${discoveredUrl}`);
 
-        if (setupStepRef.current !== "join") {
+        if (setupStepRef.current !== "join" && setupStepRef.current !== "mode") {
           return;
         }
 
@@ -1492,7 +1492,7 @@ export default function App(): JSX.Element {
         }
 
         const pending = pendingActionRef.current;
-        if (setupStep === "join" || pending?.intent === "join") {
+        if (setupStep === "join" || setupStep === "mode" || pending?.intent === "join") {
           signalingRef.current?.subscribeRelayRooms();
         }
 
