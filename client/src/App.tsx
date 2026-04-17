@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { ChatPanel } from "./components/ChatPanel";
-import { DebugLog } from "./components/DebugLog";
 import { DebugWindow } from "./components/DebugWindow";
 import { FileSharePanel } from "./components/FileSharePanel";
 import { JoinForm } from "./components/JoinForm";
@@ -2365,22 +2364,6 @@ export default function App(): JSX.Element {
               onChangeUsername={changeUsername}
             />
           </div>
-          {isDebugPanelOpen && (
-            <div className="setup-debug-modal">
-              <DebugWindow
-                events={events}
-                routeBadges={debugRouteBadges}
-                relayConnection={{
-                  url: connectedRelayUrl,
-                  state: signalingState,
-                  connectedAtMs: relayConnectedAtMs,
-                  serverStartedAtMs: relayServerStartedAtMs,
-                  serverLastSeenAtMs: relayServerLastSeenAtMs,
-                }}
-                onReconnect={reconnectRelay}
-              />
-            </div>
-          )}
         </section>
       ) : (
         <section className="chatroom-page" style={chatroomLaneStyle}>
@@ -2585,30 +2568,35 @@ export default function App(): JSX.Element {
                       Leave Room
                     </button>
                   )}
+                  <button
+                    type="button"
+                    className="debug-toggle-button"
+                    onClick={() => setIsDebugPanelOpen((prev) => !prev)}
+                    aria-label={isDebugPanelOpen ? "Close Debug Panel" : "Open Debug Panel"}
+                    title={isDebugPanelOpen ? "Close Debug Panel" : "Open Debug Panel"}
+                  >
+                    Debug
+                  </button>
                 </section>
-                <details className="menu-section menu-section-collapsible" open>
-                  <summary className="menu-section-title">Debug Events</summary>
-                  <div className="setup-debug" style={{ margin: 0, border: "none", boxShadow: "none" }}>
-                    <DebugLog events={events} />
-                  </div>
-                </details>
               </div>
             ) : null}
           </aside>
         </section>
       )}
-      <DebugWindow
-        events={events}
-        routeBadges={debugRouteBadges}
-        relayConnection={{
-          url: connectedRelayUrl,
-          state: signalingState,
-          connectedAtMs: relayConnectedAtMs,
-          serverStartedAtMs: relayServerStartedAtMs,
-          serverLastSeenAtMs: relayServerLastSeenAtMs,
-        }}
-        onReconnect={reconnectRelay}
-      />
+      {isDebugPanelOpen && (
+        <DebugWindow
+          events={events}
+          routeBadges={debugRouteBadges}
+          relayConnection={{
+            url: connectedRelayUrl,
+            state: signalingState,
+            connectedAtMs: relayConnectedAtMs,
+            serverStartedAtMs: relayServerStartedAtMs,
+            serverLastSeenAtMs: relayServerLastSeenAtMs,
+          }}
+          onReconnect={reconnectRelay}
+        />
+      )}
       {isTransferBeforeExitModalOpen && (
         <TransferBeforeExitModal
           canTransfer={Boolean(activeRoom?.participants.some((participant) => participant.peerId !== activeRoom.myPeerId))}
