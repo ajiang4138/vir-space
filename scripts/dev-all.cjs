@@ -25,7 +25,7 @@ function parseEnvInt(name, fallback, min, max) {
 }
 
 const classBScanWorkerCount = parseEnvInt("RELAY_CLASSB_SCAN_WORKERS", 450, 50, 5000);
-const classBScanTimeoutMs = parseEnvInt("RELAY_CLASSB_SCAN_TIMEOUT_MS", 350, 50, 2000);
+const classBScanTimeoutMs = parseEnvInt("RELAY_CLASSB_SCAN_TIMEOUT_MS", 750, 50, 3000);
 const classBScanMaxDurationMs = parseEnvInt("RELAY_CLASSB_SCAN_MAX_DURATION_MS", 0, 0, 120000);
 const localRescanMaxDurationMs = parseEnvInt("RELAY_LOCAL_RESCAN_MAX_DURATION_MS", 5000, 0, 120000);
 const directProbeAttempts = parseEnvInt("RELAY_DIRECT_PROBE_ATTEMPTS", 2, 1, 5);
@@ -543,7 +543,7 @@ async function scanForRelayHostOnClassB(localIp, port) {
 async function discoverRelayHostLocalOnly(localIps, port) {
   for (const localIp of localIps) {
     // eslint-disable-next-line no-await-in-loop
-    const selfReachable = await canReachTcpWithRetries(localIp, port, 250, directProbeAttempts, "discover-local-self");
+    const selfReachable = await canReachTcpWithRetries(localIp, port, 500, directProbeAttempts, "discover-local-self");
     if (selfReachable) {
       return localIp;
     }
@@ -574,7 +574,7 @@ async function discoverRelayHostLocalOnly(localIps, port) {
 async function discoverRelayHost(localIps, port) {
   for (const localIp of localIps) {
     // eslint-disable-next-line no-await-in-loop
-    const selfReachable = await canReachTcpWithRetries(localIp, port, 250, directProbeAttempts, "discover-self");
+    const selfReachable = await canReachTcpWithRetries(localIp, port, 500, directProbeAttempts, "discover-self");
     if (selfReachable) {
       return localIp;
     }

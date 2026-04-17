@@ -19,7 +19,7 @@ const hostService = new HostRoomService();
 let isQuitting = false;
 
 const relayPort = 8787;
-const relayConnectTimeoutMs = 350;
+const relayConnectTimeoutMs = 750;
 const relayProbeAttempts = 2;
 const relayScanWorkers = 260;
 const relayScanMaxDurationMs = 90_000;
@@ -367,7 +367,7 @@ async function discoverRelayBootstrapHostInBackground(): Promise<string | null> 
   const cachedHost = readCachedRelayBootstrapHost();
 
   if (cachedHost) {
-    const cachedReachable = await canReachTcpWithRetries(cachedHost, relayPort, 250, relayProbeAttempts);
+    const cachedReachable = await canReachTcpWithRetries(cachedHost, relayPort, 500, relayProbeAttempts);
     if (cachedReachable) {
       return cachedHost;
     }
@@ -375,7 +375,7 @@ async function discoverRelayBootstrapHostInBackground(): Promise<string | null> 
 
   for (const localIp of localIps) {
     // eslint-disable-next-line no-await-in-loop
-    const selfReachable = await canReachTcpWithRetries(localIp, relayPort, 250, relayProbeAttempts);
+    const selfReachable = await canReachTcpWithRetries(localIp, relayPort, 500, relayProbeAttempts);
     if (selfReachable) {
       return localIp;
     }
