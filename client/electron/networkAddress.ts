@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import os from "node:os";
 
 export interface RankedIpv4Address {
@@ -57,20 +58,92 @@ function isRfc1918_172Ipv4(ip: string): boolean {
   return first === 172 && second >= 16 && second <= 31;
 }
 
-function scoreInterfaceName(name: string): number {
-  const lower = name.toLowerCase();
+// On Windows, os.networkInterfaces() returns the connection name (e.g. "Ethernet 7"),
+// NOT the adapter description (e.g. "PANGP Virtual Ethernet Adapter Secure"). We query
+// PowerShell once at module load to map connection name -> description so we can apply
+// VPN keyword detection against the real hardware description.
+let _windowsAdapterDescriptions: Map<string, string> | null = null;
 
-  if (
-    /(vpn|wireguard|nordlynx|proton|tailscale|zerotier|hamachi|openvpn|ipsec|ikev2|l2tp|pptp|sstp|ppp|utun|tun|tap|wg|anyconnect|fortinet|forticlient|globalprotect|pulse|juniper|zscaler|mullvad|surfshark|expressvpn|private internet access|\bpia\b|cloudflare|warp)/.test(lower)
-  ) {
+function getWindowsAdapterDescriptions(): Map<string, string> {
+  if (_windowsAdapterDescriptions !== null) {
+    return _windowsAdapterDescriptions;
+  }
+
+  _windowsAdapterDescriptions = new Map();
+
+  if (process.platform !== "win32") {
+    return _windowsAdapterDescriptions;
+  }
+
+  try {
+    // Get-NetAdapter outputs Name and InterfaceDescription columns.
+    const result = spawnSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Get-NetAdapter | Select-Object Name,InterfaceDescription | ConvertTo-Json -Compress",
+      ],
+      { encoding: "utf8", timeout: 3000, windowsHide: true },
+    );
+
+    if (result.status !== 0 || !result.stdout) {
+      return _windowsAdapterDescriptions;
+    }
+
+    const parsed = JSON.parse(result.stdout.trim()) as
+      | Array<{ Name: string; InterfaceDescription: string }>
+      | { Name: string; InterfaceDescription: string };
+
+    const entries = Array.isArray(parsed) ? parsed : [parsed];
+    for (const entry of entries) {
+      if (typeof entry.Name === "string" && typeof entry.InterfaceDescription === "string") {
+        _windowsAdapterDescriptions.set(entry.Name, entry.InterfaceDescription);
+      }
+    }
+  } catch {
+    // Best-effort — if PowerShell fails, fall back to connection-name-only scoring.
+  }
+
+  return _windowsAdapterDescriptions;
+}
+
+/** Returns true if the string (name or description) looks like a VPN adapter. */
+function looksLikeVpnLabel(label: string): boolean {
+  return /(vpn|wireguard|nordlynx|proton|tailscale|zerotier|hamachi|openvpn|ipsec|ikev2|l2tp|pptp|sstp|ppp|utun|tun|tap|wg|anyconnect|fortinet|forticlient|globalprotect|pangp|paloalto|palo.?alto|cisco|pulse|juniper|zscaler|mullvad|surfshark|expressvpn|private.?internet.?access|\bpia\b|cloudflare|warp)/.test(
+    label.toLowerCase(),
+  );
+}
+
+/** Returns true if the string looks like a plain Wi-Fi / wireless adapter. */
+function looksLikeWifiLabel(label: string): boolean {
+  return /(wi-?fi|wifi|wireless|wlan)/.test(label.toLowerCase());
+}
+
+/** Returns true if the string looks like a VM/container virtual adapter (not VPN). */
+function looksLikeVirtualLabel(label: string): boolean {
+  return /(vbox|vmware|hyper-v|vethernet|docker|podman|wsl|loopback|virbr|bridge)/.test(
+    label.toLowerCase(),
+  );
+}
+
+function scoreInterfaceName(name: string): number {
+  // On Windows, also check the real adapter description (e.g. "PANGP Virtual Ethernet
+  // Adapter Secure") which contains the VPN brand name that the connection name lacks.
+  const description = getWindowsAdapterDescriptions().get(name) ?? "";
+
+  // VPN check must come before the virtual-adapter check because VPN adapters like
+  // "PANGP Virtual Ethernet Adapter Secure" contain "virtual" in the description.
+  if (looksLikeVpnLabel(name) || looksLikeVpnLabel(description)) {
     return -40;
   }
 
-  if (/(wi-?fi|wifi|wireless|wlan)/.test(lower)) {
+  if (looksLikeWifiLabel(name) || looksLikeWifiLabel(description)) {
     return 8;
   }
 
-  if (/(virtual|vbox|vmware|hyper-v|vethernet|docker|podman|wsl|loopback|virbr|bridge)/.test(lower)) {
+  if (looksLikeVirtualLabel(name) || looksLikeVirtualLabel(description)) {
     return 20;
   }
 

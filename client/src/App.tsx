@@ -2021,15 +2021,21 @@ export default function App(): JSX.Element {
           return;
         }
 
-        try {
-          const networkInfo = await window.electronApi.getLocalNetworkInfo();
-          const preferredAddress = pickPreferredHostAddress([networkInfo.preferredAddress, ...networkInfo.addresses]);
-          if (preferredAddress) {
-            parsed.hostname = preferredAddress;
-            resolvedBootstrapUrl = parsed.toString();
+        // Only resolve the hostname from network info when the current URL is loopback.
+        // If dev-all.cjs already injected a real VPN/LAN IP via VITE_BOOTSTRAP_SIGNALING_URL
+        // (or the relay cache set it), keep it as-is. Replacing it here caused the
+        // "IP switches from VPN to Wi-Fi on Create Room" bug.
+        if (isLoopbackHost(parsed.hostname)) {
+          try {
+            const networkInfo = await window.electronApi.getLocalNetworkInfo();
+            const preferredAddress = pickPreferredHostAddress([networkInfo.preferredAddress, ...networkInfo.addresses]);
+            if (preferredAddress) {
+              parsed.hostname = preferredAddress;
+              resolvedBootstrapUrl = parsed.toString();
+            }
+          } catch {
+            // Fallback to manual prompt below.
           }
-        } catch {
-          // Fallback to manual prompt below.
         }
       } catch {
         addEvent("error: invalid bootstrap URL format");

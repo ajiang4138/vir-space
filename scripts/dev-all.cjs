@@ -121,6 +121,63 @@ function compareIPv4(left, right) {
   return 0;
 }
 
+// On Windows, os.networkInterfaces() returns generic connection names (e.g. "Ethernet 7")
+// rather than adapter descriptions (e.g. "PANGP Virtual Ethernet Adapter Secure").
+// Query PowerShell once to build a name->description map for accurate VPN detection.
+let _windowsAdapterDescriptions = null;
+
+function getWindowsAdapterDescriptions() {
+  if (_windowsAdapterDescriptions !== null) {
+    return _windowsAdapterDescriptions;
+  }
+
+  _windowsAdapterDescriptions = new Map();
+
+  if (process.platform !== "win32") {
+    return _windowsAdapterDescriptions;
+  }
+
+  try {
+    const powerShellPath = process.env.SystemRoot
+      ? path.join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+      : "powershell.exe";
+
+    const result = spawnSync(
+      powerShellPath,
+      ["-NoProfile", "-NonInteractive", "-Command",
+        "Get-NetAdapter | Select-Object Name,InterfaceDescription | ConvertTo-Json -Compress"],
+      { encoding: "utf8", timeout: 3000, windowsHide: true },
+    );
+
+    if (result.status !== 0 || !result.stdout) {
+      return _windowsAdapterDescriptions;
+    }
+
+    const parsed = JSON.parse(result.stdout.trim());
+    const entries = Array.isArray(parsed) ? parsed : [parsed];
+    for (const entry of entries) {
+      if (typeof entry.Name === "string" && typeof entry.InterfaceDescription === "string") {
+        _windowsAdapterDescriptions.set(entry.Name, entry.InterfaceDescription);
+      }
+    }
+  } catch {
+    // Best-effort — fall back to connection-name-only matching if PowerShell fails.
+  }
+
+  return _windowsAdapterDescriptions;
+}
+
+function looksLikeVpnLabel(label) {
+  return /(vpn|wireguard|nordlynx|proton|tailscale|zerotier|hamachi|openvpn|ipsec|ikev2|l2tp|pptp|sstp|ppp|utun|tun|tap|wg|anyconnect|fortinet|forticlient|globalprotect|pangp|paloalto|palo.?alto|cisco|pulse|juniper|zscaler|mullvad|surfshark|expressvpn|private.?internet.?access|\bpia\b|cloudflare|warp)/.test(
+    label.toLowerCase(),
+  );
+}
+
+function isVpnAdapterName(name) {
+  const description = getWindowsAdapterDescriptions().get(name) ?? "";
+  return looksLikeVpnLabel(name) || looksLikeVpnLabel(description);
+}
+
 function getLocalIPv4Addresses() {
   const entries = [];
   for (const [name, interfaces] of Object.entries(os.networkInterfaces())) {
@@ -129,12 +186,21 @@ function getLocalIPv4Addresses() {
     }
 
     const lowerName = name.toLowerCase();
-    if (
-      lowerName.includes("virtual") ||
-      lowerName.includes("vbox") ||
-      lowerName.includes("wsl") ||
-      lowerName.includes("loopback")
-    ) {
+
+    // Skip VM/emulation adapters that are NOT VPN adapters.
+    // We also check the Windows adapter description (via PowerShell query) because
+    // VPN adapters may have generic connection names like "Ethernet 7".
+    const isKnownVpn = isVpnAdapterName(name);
+    const description = (getWindowsAdapterDescriptions().get(name) ?? "").toLowerCase();
+    const isKnownVirtual =
+      lowerName.includes("vbox") || description.includes("vbox") ||
+      lowerName.includes("vmware") || description.includes("vmware") ||
+      lowerName.includes("wsl") || description.includes("wsl") ||
+      lowerName.includes("loopback") || description.includes("loopback") ||
+      lowerName.includes("docker") || description.includes("docker") ||
+      lowerName.includes("podman") || description.includes("podman");
+
+    if (!isKnownVpn && isKnownVirtual) {
       continue;
     }
 
@@ -143,12 +209,12 @@ function getLocalIPv4Addresses() {
         continue;
       }
 
-      // Exclude known virtual/link-local IP ranges
+      // Exclude known virtual/link-local IP ranges regardless of adapter name.
       if (detail.address.startsWith("169.254.") || detail.address.startsWith("192.168.56.")) {
         continue;
       }
 
-      entries.push({ ip: detail.address, ifaceName: name });
+      entries.push({ ip: detail.address, ifaceName: name, isVpn: isKnownVpn });
     }
   }
 
@@ -171,11 +237,12 @@ function getLocalIPv4Addresses() {
       return 5;
     };
 
-    // Ethernet/VPN adapters get priority over Wi-Fi.
-    const ifaceScore = (ifaceName) => {
-      const lower = ifaceName.toLowerCase();
-      if (lower.includes("wi-fi") || lower.includes("wifi") || lower.includes("wireless") || lower.includes("wlan")) return 1;
-      return 0;
+    // VPN adapters sort before Ethernet, Ethernet before Wi-Fi, for the same IP class.
+    const ifaceScore = (entry) => {
+      if (entry.isVpn) return 0;
+      const lower = entry.ifaceName.toLowerCase();
+      if (lower.includes("wi-fi") || lower.includes("wifi") || lower.includes("wireless") || lower.includes("wlan")) return 2;
+      return 1;
     };
 
     const scoreDelta = ipScore(left.ip) - ipScore(right.ip);
@@ -183,7 +250,7 @@ function getLocalIPv4Addresses() {
       return scoreDelta;
     }
 
-    const ifaceDelta = ifaceScore(left.ifaceName) - ifaceScore(right.ifaceName);
+    const ifaceDelta = ifaceScore(left) - ifaceScore(right);
     if (ifaceDelta !== 0) {
       return ifaceDelta;
     }
@@ -193,6 +260,7 @@ function getLocalIPv4Addresses() {
 
   return unique.map((entry) => entry.ip);
 }
+
 function readRelayHostCache() {
   try {
     if (!fs.existsSync(relayCacheFilePath)) {
