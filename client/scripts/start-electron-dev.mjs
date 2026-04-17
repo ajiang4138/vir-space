@@ -1,6 +1,10 @@
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
+const require = createRequire(import.meta.url);
+const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const basePort = Number.parseInt(process.env.VITE_DEV_PORT_BASE ?? "5173", 10);
 const portSpan = Number.parseInt(process.env.VITE_DEV_PORT_SPAN ?? "20", 10);
 const waitTimeoutMs = Number.parseInt(process.env.VITE_DEV_WAIT_TIMEOUT_MS ?? "120000", 10);
@@ -54,11 +58,7 @@ async function findVitePort() {
 }
 
 function resolveElectronBinary() {
-  return path.resolve(
-    "node_modules",
-    ".bin",
-    process.platform === "win32" ? "electron.cmd" : "electron",
-  );
+  return require("electron");
 }
 
 async function main() {
@@ -69,6 +69,7 @@ async function main() {
 
   const child = spawn(resolveElectronBinary(), ["dist-electron/electron/main.js"], {
     stdio: "inherit",
+    cwd: path.resolve(scriptDir, ".."),
     env: {
       ...process.env,
       VITE_DEV_SERVER_URL: viteDevServerUrl,
