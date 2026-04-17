@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useState } from "react";
 import type { DiscoveredRoomSummary } from "../types";
 import { DiscoverRoomsPanel } from "./DiscoverRoomsPanel";
 
-type SetupStep = "user-id" | "mode" | "create" | "join";
+type SetupStep = "mode" | "create" | "join";
 type RelayDiscoveryPhase = "idle" | "scanning" | "found" | "not-found" | "error";
 
 interface JoinFormProps {
@@ -16,11 +16,9 @@ interface JoinFormProps {
   roomActionDisabled: boolean;
   defaultBootstrapUrl: string;
   onUserIdDraftChange: (next: string) => void;
-  onSubmitUserId: () => void;
   onChooseCreate: () => void;
   onChooseJoin: () => void;
   onBackToMode: () => void;
-  onSwitchUser: () => void;
   onCreateRoom: (payload: { roomId: string; bootstrapUrl: string; roomPassword: string }) => void;
   onJoinRoom: (payload: { roomId: string; bootstrapUrl: string; roomPassword: string }) => void;
 }
@@ -50,7 +48,6 @@ function buildBootstrapUrl(hostIp: string): string {
 
 export function JoinForm({
   step,
-  userIdDraft,
   currentUserId,
   discoveredRooms,
   relayConnected,
@@ -58,12 +55,9 @@ export function JoinForm({
   relayDiscoveryHost,
   roomActionDisabled,
   defaultBootstrapUrl,
-  onUserIdDraftChange,
-  onSubmitUserId,
   onChooseCreate,
   onChooseJoin,
   onBackToMode,
-  onSwitchUser,
   onCreateRoom,
   onJoinRoom,
 }: JoinFormProps): JSX.Element {
@@ -74,16 +68,12 @@ export function JoinForm({
   const [joinRoomId, setJoinRoomId] = useState("");
   const [joinBootstrapUrl, setJoinBootstrapUrl] = useState(defaultBootstrapUrl);
   const [joinRoomPassword, setJoinRoomPassword] = useState("");
+  const [activeTab, setActiveTab] = useState<'create' | 'join'>('create');
 
   useEffect(() => {
     setCreateHostIp(defaultHostIp);
     setJoinBootstrapUrl(defaultBootstrapUrl);
   }, [defaultBootstrapUrl]);
-
-  const submitUserId = (event: FormEvent): void => {
-    event.preventDefault();
-    onSubmitUserId();
-  };
 
   const submitCreate = (event: FormEvent): void => {
     event.preventDefault();
@@ -108,54 +98,155 @@ export function JoinForm({
     setJoinBootstrapUrl(`ws://${room.hostIp}:${room.hostPort}`);
   };
 
-  if (step === "user-id") {
-    return (
-      <section className="card form room-launcher setup-screen">
-        <h2>Welcome to VIR!</h2>
-        <p className="setup-copy">Please enter a User ID.</p>
-        <form className="subform" onSubmit={submitUserId}>
-          <label>
-            User ID
-            <input
-              value={userIdDraft}
-              onChange={(event) => onUserIdDraftChange(event.target.value)}
-              placeholder="username"
-              required
-              disabled={roomActionDisabled}
-            />
-          </label>
-          <button type="submit" disabled={roomActionDisabled}>
-            Continue
-          </button>
-        </form>
-      </section>
-    );
-  }
-
   if (step === "mode") {
     return (
       <section className="card form room-launcher setup-screen">
-        <h2>Choose an action</h2>
-        <p className="setup-copy">
-          Signed in as <strong>{currentUserId}</strong>
-        </p>
-        <div className="setup-actions">
-          <button type="button" disabled={roomActionDisabled} onClick={onChooseCreate}>
+        <div className="room-tabs">
+          <button 
+            className={`room-tab ${activeTab === 'create' ? 'active' : ''}`}
+            onClick={() => setActiveTab('create')}
+            disabled={roomActionDisabled}
+          >
             Create Room
           </button>
-          <button type="button" disabled={roomActionDisabled} onClick={onChooseJoin}>
+          <button 
+            className={`room-tab ${activeTab === 'join' ? 'active' : ''}`}
+            onClick={() => setActiveTab('join')}
+            disabled={roomActionDisabled}
+          >
             Join Room
           </button>
         </div>
-        <button
-          type="button"
-          className="ghost"
-          style={{ color: "var(--ui-text-primary)" }}
-          disabled={roomActionDisabled}
-          onClick={onSwitchUser}
-        >
-          Change User ID
-        </button>
+
+        {activeTab === 'create' ? (
+          <form className="subform" onSubmit={submitCreate}>
+            <div className="setup-copy">
+              <p>Before creating a room, provide:</p>
+              <ul>
+                <li>Host IPv4 Address: host device LAN IP only (for example, 192.168.1.42).</li>
+                <li>Room ID: a unique room name to share with participants.</li>
+                <li>Room Password: at least 4 characters.</li>
+              </ul>
+            </div>
+
+            <label>
+              Host IPv4 Address
+              <input
+                value={createHostIp}
+                onChange={(event) => setCreateHostIp(event.target.value)}
+                placeholder="192.168.1.42"
+                required
+                disabled={roomActionDisabled}
+              />
+            </label>
+
+            <label>
+              Room ID
+              <div className="inline-row">
+                <input
+                  value={createRoomId}
+                  onChange={(event) => setCreateRoomId(event.target.value)}
+                  placeholder="room-1"
+                  required
+                  disabled={roomActionDisabled}
+                />
+                <button
+                  type="button"
+                  className="ghost"
+                  disabled={roomActionDisabled}
+                  onClick={() => setCreateRoomId(generateRoomId())}
+                >
+                  Randomize
+                </button>
+              </div>
+            </label>
+
+            <label>
+              Room Password
+              <input
+                type="password"
+                value={createRoomPassword}
+                onChange={(event) => setCreateRoomPassword(event.target.value)}
+                placeholder="Set a room password"
+                minLength={minimumRoomPasswordLength}
+                required
+                disabled={roomActionDisabled}
+              />
+            </label>
+
+            <div className="setup-actions">
+              <button type="submit" disabled={roomActionDisabled}>
+                Create Room
+              </button>
+            </div>
+          </form>
+        ) : (
+          <section>
+            <div className="setup-copy">
+              <p>Before joining a room, provide:</p>
+              <ul>
+                <li>Bootstrap Signaling URL: the exact URL or LAN IP of the host.</li>
+                <li>Room ID: the exact room ID shared by the host.</li>
+                <li>Room Password: the same password set by the host.</li>
+              </ul>
+            </div>
+            <section className="join-room-layout">
+              <DiscoverRoomsPanel
+                rooms={discoveredRooms}
+                relayConnected={relayConnected}
+                relayDiscoveryPhase={relayDiscoveryPhase}
+                relayDiscoveryHost={relayDiscoveryHost}
+                disabled={roomActionDisabled}
+                onUseRoom={useDiscoveredRoom}
+              />
+
+              <form className="subform join-manual-form" onSubmit={submitJoin}>
+                <h3>Manual Join</h3>
+
+                <label>
+                  Bootstrap Signaling URL
+                  <input
+                    value={joinBootstrapUrl}
+                    onChange={(event) => setJoinBootstrapUrl(event.target.value)}
+                    placeholder="ws://192.168.1.42:8787"
+                    required
+                    disabled={roomActionDisabled}
+                  />
+                </label>
+
+                <label>
+                  Room ID
+                  <input
+                    value={joinRoomId}
+                    onChange={(event) => setJoinRoomId(event.target.value)}
+                    placeholder="room-1"
+                    required
+                    disabled={roomActionDisabled}
+                  />
+                </label>
+
+                <label>
+                  Room Password
+                  <input
+                    type="password"
+                    value={joinRoomPassword}
+                    onChange={(event) => setJoinRoomPassword(event.target.value)}
+                    placeholder="Enter room password"
+                    minLength={minimumRoomPasswordLength}
+                    required
+                    disabled={roomActionDisabled}
+                  />
+                </label>
+
+                <div className="setup-actions">
+                  <button type="submit" disabled={roomActionDisabled}>
+                    Join Room
+                  </button>
+                </div>
+              </form>
+            </section>
+          </section>
+        )}
       </section>
     );
   }

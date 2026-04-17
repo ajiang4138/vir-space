@@ -321,6 +321,7 @@ export function DebugWindow({ events, routeBadges, relayConnection, onReconnect 
     };
   }, [relayConnection.connectedAtMs, relayConnection.state]);
 
+  // Initialize debug window only once
   useEffect(() => {
     const debugWindow = ensureDebugWindow(debugWindowRef.current);
     if (!debugWindow) {
@@ -328,6 +329,15 @@ export function DebugWindow({ events, routeBadges, relayConnection, onReconnect 
     }
 
     debugWindowRef.current = debugWindow;
+  }, []);
+
+  // Update window content whenever data changes
+  useEffect(() => {
+    const debugWindow = debugWindowRef.current;
+    if (!debugWindow || debugWindow.closed) {
+      return;
+    }
+
     renderRouteBadges(debugWindow, routeBadges);
     renderEvents(debugWindow, events);
     renderRelayConnection(debugWindow, relayConnection, onReconnect, nowMs);

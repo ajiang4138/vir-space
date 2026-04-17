@@ -10,30 +10,31 @@ import { RoomInfo } from "./components/RoomInfo";
 import { TextEditorPanel } from "./components/TextEditorPanel";
 import { TransferBeforeExitModal } from "./components/TransferBeforeExitModal";
 import { UserKickedModal } from "./components/UserKickedModal";
+import { UsernamePanel } from "./components/UsernamePanel";
 import { WhiteboardPanel } from "./components/WhiteboardPanel";
 import { EditorCrdtManager } from "./lib/editorCrdt";
 import { SignalingClient } from "./lib/signalingClient";
 import {
-  FileTransferManager,
-  type FileTransferTransport,
-  type PreparedLocalShare
+    FileTransferManager,
+    type FileTransferTransport,
+    type PreparedLocalShare
 } from "./lib/swarm/swarmManager";
 import { getUserHash } from "./lib/userHash";
 import {
-  WebRtcPeerManager,
-  type WebRtcConnectionRoute,
-  type WebRtcStatus,
+    WebRtcPeerManager,
+    type WebRtcConnectionRoute,
+    type WebRtcStatus,
 } from "./lib/webrtc";
 import type {
-  ChatMessage,
-  ConnectionStatus,
-  DiscoveredRoomSummary,
-  ParticipantRole,
-  ParticipantSummary,
-  RelayDiscoveryStatus,
-  RelayRoomListing,
-  RelayRoomListingInput,
-  RoomStatePayload,
+    ChatMessage,
+    ConnectionStatus,
+    DiscoveredRoomSummary,
+    ParticipantRole,
+    ParticipantSummary,
+    RelayDiscoveryStatus,
+    RelayRoomListing,
+    RelayRoomListingInput,
+    RoomStatePayload,
 } from "./types";
 import type { FileTransferViewState } from "./types/fileTransfer";
 
@@ -253,7 +254,7 @@ export default function App(): JSX.Element {
   });
   const [whiteboardHistory, setWhiteboardHistory] = useState<Array<{ action: string; data: string; senderPeerId: string; senderDisplayName: string }>>([]);
   const [editorText, setEditorText] = useState("");
-  const [setupStep, setSetupStep] = useState<SetupStep>("user-id");
+  const [setupStep, setSetupStep] = useState<SetupStep>("mode");
   const [userIdDraft, setUserIdDraft] = useState("");
   const [currentUserId, setCurrentUserId] = useState("");
   const [bootstrapUrl, setBootstrapUrl] = useState(defaultBootstrapUrl);
@@ -275,8 +276,9 @@ export default function App(): JSX.Element {
   const [roomClosedReason, setRoomClosedReason] = useState<"host-ended" | "host-disconnected" | null>(null);
   const [wasUserKicked, setWasUserKicked] = useState(false);
   const [isTransferBeforeExitModalOpen, setIsTransferBeforeExitModalOpen] = useState(false);
+  const [isDebugPanelOpen, setIsDebugPanelOpen] = useState(false);
 
-  const setupStepRef = useRef<SetupStep>("user-id");
+  const setupStepRef = useRef<SetupStep>("mode");
   const signalingStateRef = useRef<SignalingConnectionState>("disconnected");
   const activeRoomRef = useRef<ActiveRoom | null>(null);
   const handoverReconnectInProgressRef = useRef(false);
@@ -925,7 +927,7 @@ export default function App(): JSX.Element {
     editorCrdtRef.current.dispose();
     setEditorText("");
     setSessionState(nextStatus);
-    setSetupStep(currentUserIdRef.current ? "mode" : "user-id");
+    setSetupStep("mode");
     void refreshLocalBootstrapUrl(parsePortFromWsUrl(bootstrapUrlRef.current));
   };
 
@@ -2062,22 +2064,23 @@ export default function App(): JSX.Element {
     void startRoomFlow("join", payload);
   };
 
-  const submitUserId = (): void => {
+  const submitUsername = (): void => {
     const normalized = userIdDraft.trim();
     if (!normalized) {
-      addEvent("error: display name is required");
+      addEvent("error: username is required");
       return;
     }
 
     setCurrentUserId(normalized);
     setUserIdDraft(normalized);
-    setSetupStep("mode");
     setSessionState("idle");
     addEvent(`ready as ${normalized}`);
   };
 
-  const switchUser = (): void => {
-    setSetupStep("user-id");
+  const changeUsername = (): void => {
+    setUserIdDraft("");
+    setCurrentUserId("");
+    addEvent("username cleared");
   };
 
   const chooseJoinMode = (): void => {
@@ -2320,7 +2323,18 @@ export default function App(): JSX.Element {
       {!inRoom ? (
         <section className="setup-page">
           <header className="app-header card">
-            <h1>VIR</h1>
+            <div className="app-header-content">
+              <h1>VIR</h1>
+              <button
+                type="button"
+                className="debug-toggle-button"
+                onClick={() => setIsDebugPanelOpen((prev) => !prev)}
+                aria-label={isDebugPanelOpen ? "Close Debug Panel" : "Open Debug Panel"}
+                title={isDebugPanelOpen ? "Close Debug Panel" : "Open Debug Panel"}
+              >
+                Debug
+              </button>
+            </div>
           </header>
 
           <div className="setup-page-content">
@@ -2333,22 +2347,40 @@ export default function App(): JSX.Element {
                 relayConnected={signalingState === "connected"}
                 relayDiscoveryPhase={relayDiscoveryStatus?.phase ?? "idle"}
                 relayDiscoveryHost={relayDiscoveryStatus?.host ?? null}
-                roomActionDisabled={Boolean(activeRoom)}
+                roomActionDisabled={Boolean(activeRoom) || !currentUserId}
                 defaultBootstrapUrl={bootstrapUrlRef.current}
                 onUserIdDraftChange={setUserIdDraft}
-                onSubmitUserId={submitUserId}
                 onChooseCreate={() => setSetupStep("create")}
                 onChooseJoin={chooseJoinMode}
                 onBackToMode={() => setSetupStep("mode")}
-                onSwitchUser={switchUser}
                 onCreateRoom={createRoom}
                 onJoinRoom={joinRoom}
               />
             </div>
-            <div className="setup-debug">
-              <DebugLog events={events} />
-            </div>
+            <UsernamePanel
+              usernameDraft={userIdDraft}
+              currentUsername={currentUserId}
+              onUsernameDraftChange={setUserIdDraft}
+              onSaveUsername={submitUsername}
+              onChangeUsername={changeUsername}
+            />
           </div>
+          {isDebugPanelOpen && (
+            <div className="setup-debug-modal">
+              <DebugWindow
+                events={events}
+                routeBadges={debugRouteBadges}
+                relayConnection={{
+                  url: connectedRelayUrl,
+                  state: signalingState,
+                  connectedAtMs: relayConnectedAtMs,
+                  serverStartedAtMs: relayServerStartedAtMs,
+                  serverLastSeenAtMs: relayServerLastSeenAtMs,
+                }}
+                onReconnect={reconnectRelay}
+              />
+            </div>
+          )}
         </section>
       ) : (
         <section className="chatroom-page" style={chatroomLaneStyle}>
