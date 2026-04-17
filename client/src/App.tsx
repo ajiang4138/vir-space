@@ -142,6 +142,15 @@ function pickPreferredHostAddress(addresses: string[]): string | null {
   return nonLoopback[0] ?? null;
 }
 
+async function resolvePreferredLocalHostAddress(): Promise<string | null> {
+  try {
+    const networkInfo = await window.electronApi.getLocalNetworkInfo();
+    return pickPreferredHostAddress([networkInfo.preferredAddress, ...networkInfo.addresses]);
+  } catch {
+    return null;
+  }
+}
+
 function isWsProtocol(protocol: string): boolean {
   return protocol === "ws:" || protocol === "wss:";
 }
@@ -1113,6 +1122,16 @@ export default function App(): JSX.Element {
       }
 
       try {
+        const preferredAddress = await resolvePreferredLocalHostAddress();
+        if (!cancelled && preferredAddress) {
+          setBootstrapUrl(`ws://${preferredAddress}:${defaultHostPort}`);
+          return;
+        }
+      } catch {
+        // Continue with cache fallback.
+      }
+
+      try {
         const cachedRelayHost = await window.electronApi.getCachedRelayBootstrapHost();
         if (
           !cancelled
@@ -1121,21 +1140,6 @@ export default function App(): JSX.Element {
           && !isLikelyVirtualAdapterHost(cachedRelayHost)
         ) {
           setBootstrapUrl(`ws://${cachedRelayHost}:${defaultHostPort}`);
-          return;
-        }
-      } catch {
-        // Continue with local network probe fallback.
-      }
-
-      try {
-        const networkInfo = await window.electronApi.getLocalNetworkInfo();
-        if (cancelled) {
-          return;
-        }
-
-        const preferredAddress = pickPreferredHostAddress([networkInfo.preferredAddress, ...networkInfo.addresses]);
-        if (preferredAddress) {
-          setBootstrapUrl(`ws://${preferredAddress}:${defaultHostPort}`);
         }
       } catch {
         // Leave the current field value and rely on explicit prompt later.
@@ -1366,9 +1370,8 @@ export default function App(): JSX.Element {
 
   const refreshLocalBootstrapUrl = async (port = defaultHostPort): Promise<void> => {
     try {
-      const networkInfo = await window.electronApi.getLocalNetworkInfo();
-      const preferredAddress = networkInfo.preferredAddress;
-      if (preferredAddress && !isLoopbackHost(preferredAddress)) {
+      const preferredAddress = await resolvePreferredLocalHostAddress();
+      if (preferredAddress) {
         setBootstrapUrl(`ws://${preferredAddress}:${port}`);
       }
     } catch {
@@ -1378,9 +1381,8 @@ export default function App(): JSX.Element {
 
   const resolveHostCandidateBootstrapUrl = async (port: number): Promise<string | undefined> => {
     try {
-      const networkInfo = await window.electronApi.getLocalNetworkInfo();
-      const preferredAddress = networkInfo.preferredAddress;
-      if (!preferredAddress || isLoopbackHost(preferredAddress)) {
+      const preferredAddress = await resolvePreferredLocalHostAddress();
+      if (!preferredAddress) {
         return undefined;
       }
 
