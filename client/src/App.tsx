@@ -1173,11 +1173,14 @@ export default function App(): JSX.Element {
           return;
         }
 
+        if (setupStepRef.current !== "join") {
+          return;
+        }
+
         lastDiscoveredRelayHostRef.current = statusSnapshot.host;
         const discoveredUrl = `ws://${statusSnapshot.host}:${defaultHostPort}`;
 
-        // Always update bootstrap URL so future reconnects use the right host,
-        // but only log and attempt connection when not already connected.
+        // Join flow can adopt discovered relay bootstrap hosts automatically.
         setBootstrapUrl(discoveredUrl);
 
         if (signalingStateRef.current === "connected") {
@@ -1185,10 +1188,6 @@ export default function App(): JSX.Element {
         }
 
         addEvent(`relay discovery found bootstrap server: ${discoveredUrl}`);
-
-        if (setupStepRef.current !== "join") {
-          return;
-        }
 
         if (activeRoomRef.current || pendingActionRef.current || signalingStateRef.current !== "disconnected") {
           return;
