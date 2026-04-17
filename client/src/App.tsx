@@ -2159,6 +2159,12 @@ export default function App(): JSX.Element {
       return;
     }
 
+    const hostIsAlone = room.participants.length <= 1;
+    if (hostIsAlone) {
+      performEndRoom();
+      return;
+    }
+
     setIsTransferBeforeExitModalOpen(true);
   };
 
