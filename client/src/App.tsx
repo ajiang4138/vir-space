@@ -2401,8 +2401,15 @@ export default function App(): JSX.Element {
     <main className="app-shell">
       {!inRoom ? (
         <section className="setup-page">
-          <header className="app-header card">
+          <header className="app-header card" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <h1>VIR</h1>
+            <button
+              type="button"
+              className="ghost debug-panel-button"
+              onClick={() => setIsDebugWindowOpen((value) => !value)}
+            >
+              {isDebugWindowOpen ? "Close Debug Panel" : "Open Debug Panel"}
+            </button>
           </header>
 
           <div className="setup-page-content">
