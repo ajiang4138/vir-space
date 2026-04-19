@@ -13,8 +13,10 @@ import {
   writeReceiverPiece,
 } from "./fileTransfer.js";
 import { HostRoomService } from "./hostServer.js";
+import { advertiseRelay, discoverRelays } from "./relayMdns";
 
 const hostService = new HostRoomService();
+let mdnsAdvertiser = null;
 let isQuitting = false;
 let mainWindow: BrowserWindow | null = null;
 let splashWindow: BrowserWindow | null = null;
@@ -631,41 +633,41 @@ ipcMain.handle("file-transfer:cancel-receiver", async (_event, transferId: strin
 function createWindow(): void {
   const win = new BrowserWindow({
     width: 1024,
-    height: 720,
-    show: false,
-    webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  });
+    try {
+      // Try mDNS discovery first
+      const mdnsRelays = await discoverRelays(1000);
+      if (mdnsRelays.length > 0) {
+        // Pick the first discovered relay
+        return updateRelayDiscoveryStatus({
+          phase: "found",
+          host: mdnsRelays[0].host,
+          lastError: null,
+        });
+      }
 
-  mainWindow = win;
+      // Fallback to brute-force scan
+      const discoveredHost = await discoverRelayBootstrapHostInBackground();
+      if (discoveredHost) {
+        return updateRelayDiscoveryStatus({
+          phase: "found",
+          host: discoveredHost,
+          lastError: null,
+        });
+      }
 
-  win.once("ready-to-show", () => {
-    win.maximize();
-    win.show();
-    closeSplashWindow();
-  });
-
-  win.webContents.once("did-fail-load", () => {
-    closeSplashWindow();
-  });
-
-  win.on("closed", () => {
-    if (mainWindow === win) {
-      mainWindow = null;
+      return updateRelayDiscoveryStatus({
+        phase: "not-found",
+        host: null,
+        lastError: null,
+      });
+    } catch (error) {
+      const lastError = error instanceof Error ? error.message : "relay discovery failed";
+      return updateRelayDiscoveryStatus({
+        phase: "error",
+        host: null,
+        lastError,
+      });
     }
-  });
-
-  const devServerUrl = process.env.VITE_DEV_SERVER_URL;
-  if (devServerUrl) {
-    void win.loadURL(devServerUrl);
-    return;
-  }
-
-  const indexPath = path.join(__dirname, "../../dist-renderer/index.html");
-  void win.loadFile(indexPath);
 }
 
 app.whenReady().then(() => {
@@ -673,16 +675,21 @@ app.whenReady().then(() => {
 
   const handleAppReady = () => {
     createWindow();
+    // Start relay discovery in the background after main window is shown
+    if (!process.env.VITE_BOOTSTRAP_SIGNALING_URL) {
+      setTimeout(() => {
+        void startRelayDiscoveryScan();
+      }, 100); // slight delay to ensure UI is responsive
+    }
+    // If this process is acting as a relay/host, advertise via mDNS
+    if (!mdnsAdvertiser) {
+      const hostname = os.hostname();
+      mdnsAdvertiser = advertiseRelay(hostname, relayPort);
+    }
   };
-
 
   // Always launch the main window immediately, then start relay discovery in the background
   handleAppReady();
-  if (!process.env.VITE_BOOTSTRAP_SIGNALING_URL) {
-    setTimeout(() => {
-      void startRelayDiscoveryScan();
-    }, 100); // slight delay to ensure UI is responsive
-  }
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
