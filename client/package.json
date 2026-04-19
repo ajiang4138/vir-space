@@ -21,7 +21,8 @@
     "react-sketch-canvas": "^6.2.0",
     "webtorrent": "^2.8.5",
     "ws": "^8.18.3",
-    "yjs": "^13.6.30"
+    "yjs": "^13.6.30",
+    "multicast-dns": "^7.2.5"
   },
   "devDependencies": {
     "@types/node": "^20.17.30",
