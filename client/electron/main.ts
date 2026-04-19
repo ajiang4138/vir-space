@@ -133,10 +133,11 @@ function createSplashWindow(): void {
 }
 
 const relayPort = 8787;
-const relayConnectTimeoutMs = 750;
+// Reduced timeouts for faster scanning
+const relayConnectTimeoutMs = 250;
 const relayProbeAttempts = 2;
 const relayScanWorkers = 1024;
-const relayScanMaxDurationMs = 45_000;
+const relayScanMaxDurationMs = 12_000;
 
 let relayDiscoveryTask: Promise<RelayDiscoveryStatus> | null = null;
 let relayDiscoveryStatus: RelayDiscoveryStatus = {
@@ -469,7 +470,7 @@ async function discoverRelayBootstrapHostInBackground(): Promise<string | null> 
 
   const fastFound = await scanHostList([...new Set(fastScanHosts)], relayPort, {
     workerCount: relayScanWorkers,
-    timeoutMs: 500, // Very aggressive for local subnet
+    timeoutMs: 200, // Even more aggressive for local subnet
     attemptsPerHost: 1,
   });
 
@@ -674,19 +675,23 @@ app.whenReady().then(() => {
     createWindow();
   };
 
-  if (process.env.VITE_BOOTSTRAP_SIGNALING_URL) {
-    handleAppReady();
-  } else {
-    startRelayDiscoveryScan().finally(handleAppReady);
+
+  // Always launch the main window immediately, then start relay discovery in the background
+  handleAppReady();
+  if (!process.env.VITE_BOOTSTRAP_SIGNALING_URL) {
+    setTimeout(() => {
+      void startRelayDiscoveryScan();
+    }, 100); // slight delay to ensure UI is responsive
   }
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createSplashWindow();
-      if (process.env.VITE_BOOTSTRAP_SIGNALING_URL) {
-        handleAppReady();
-      } else {
-        startRelayDiscoveryScan().finally(handleAppReady);
+      handleAppReady();
+      if (!process.env.VITE_BOOTSTRAP_SIGNALING_URL) {
+        setTimeout(() => {
+          void startRelayDiscoveryScan();
+        }, 100);
       }
     }
   });
