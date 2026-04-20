@@ -272,6 +272,7 @@ export default function App(): JSX.Element {
   const [isRightLaneCollapsed, setIsRightLaneCollapsed] = useState(false);
   const [remoteEditorCursors, setRemoteEditorCursors] = useState<RemoteEditorCursor[]>([]);
   const [debugRouteBadges, setDebugRouteBadges] = useState<DebugRouteBadge[]>([]);
+  const [showDebugWindow, setShowDebugWindow] = useState(false);
   const [roomClosedReason, setRoomClosedReason] = useState<"host-ended" | "host-disconnected" | null>(null);
   const [wasUserKicked, setWasUserKicked] = useState(false);
   const [isTransferBeforeExitModalOpen, setIsTransferBeforeExitModalOpen] = useState(false);
@@ -2331,7 +2332,11 @@ export default function App(): JSX.Element {
               />
             </div>
             <div className="setup-debug">
-              <DebugLog events={events} />
+              <DebugLog 
+                events={events} 
+                isWindowOpen={showDebugWindow} 
+                onToggleWindow={() => setShowDebugWindow(v => !v)} 
+              />
             </div>
           </div>
         </section>
@@ -2539,29 +2544,33 @@ export default function App(): JSX.Element {
                     </button>
                   )}
                 </section>
-                <details className="menu-section menu-section-collapsible" open>
-                  <summary className="menu-section-title">Debug Events</summary>
-                  <div className="setup-debug" style={{ margin: 0, border: "none", boxShadow: "none" }}>
-                    <DebugLog events={events} />
-                  </div>
-                </details>
+                <div className="setup-debug">
+                  <DebugLog 
+                    events={events} 
+                    isWindowOpen={showDebugWindow} 
+                    onToggleWindow={() => setShowDebugWindow(v => !v)} 
+                  />
+                </div>
               </div>
             ) : null}
           </aside>
         </section>
       )}
-      <DebugWindow
-        events={events}
-        routeBadges={debugRouteBadges}
-        relayConnection={{
-          url: connectedRelayUrl,
-          state: signalingState,
-          connectedAtMs: relayConnectedAtMs,
-          serverStartedAtMs: relayServerStartedAtMs,
-          serverLastSeenAtMs: relayServerLastSeenAtMs,
-        }}
-        onReconnect={reconnectRelay}
-      />
+      {showDebugWindow && (
+        <DebugWindow
+          events={events}
+          routeBadges={debugRouteBadges}
+          relayConnection={{
+            url: connectedRelayUrl,
+            state: signalingState,
+            connectedAtMs: relayConnectedAtMs,
+            serverStartedAtMs: relayServerStartedAtMs,
+            serverLastSeenAtMs: relayServerLastSeenAtMs,
+          }}
+          onReconnect={reconnectRelay}
+          onClose={() => setShowDebugWindow(false)}
+        />
+      )}
       {isTransferBeforeExitModalOpen && (
         <TransferBeforeExitModal
           canTransfer={Boolean(activeRoom?.participants.some((participant) => participant.peerId !== activeRoom.myPeerId))}

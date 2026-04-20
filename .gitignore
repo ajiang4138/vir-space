@@ -9,4 +9,8 @@ yarn-error.log*
 pnpm-debug.log*
 ROOM_DISCOVERY_PLAN.txt
 .relay-bootstrap-cache.json
+.relay-scan-attempts.logclient/dist-renderer/
+client/dist-electron/
+client/build/
 .relay-scan-attempts.log
+client/dist-renderer/

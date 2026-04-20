@@ -1,17 +1,21 @@
 interface DebugLogProps {
   events: string[];
+  isWindowOpen?: boolean;
+  onToggleWindow?: () => void;
 }
 
-export function DebugLog({ events }: DebugLogProps): JSX.Element {
+export function DebugLog({ isWindowOpen, onToggleWindow }: DebugLogProps): JSX.Element | null {
+  if (!onToggleWindow) return null;
+
   return (
-    <section className="card debug-log" style={{ margin: 0, border: "none", boxShadow: "none" }}>
-      <h2>Debug Events</h2>
-      <ul>
-        {events.length === 0 ? <li>Waiting for events...</li> : null}
-        {events.map((entry, index) => (
-          <li key={`${entry}-${index}`}>{entry}</li>
-        ))}
-      </ul>
+    <section className="menu-section debug-log-section">
+      <button 
+        type="button" 
+        onClick={onToggleWindow}
+        style={{ width: "100%" }}
+      >
+        {isWindowOpen ? "Hide Debug Panel" : "Show Debug Panel"}
+      </button>
     </section>
   );
 }

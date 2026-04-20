@@ -21,6 +21,7 @@ interface DebugWindowProps {
   routeBadges: DebugRouteBadge[];
   relayConnection: RelayConnectionProps;
   onReconnect: () => void;
+  onClose: () => void;
 }
 
 const debugWindowName = "vir-space-debug-window";
@@ -300,9 +301,14 @@ function renderRelayConnection(
   }
 }
 
-export function DebugWindow({ events, routeBadges, relayConnection, onReconnect }: DebugWindowProps): null {
+export function DebugWindow({ events, routeBadges, relayConnection, onReconnect, onClose }: DebugWindowProps): null {
   const debugWindowRef = useRef<Window | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
     if (
@@ -327,6 +333,13 @@ export function DebugWindow({ events, routeBadges, relayConnection, onReconnect 
       return;
     }
 
+    debugWindow.onpagehide = () => {
+      onCloseRef.current();
+    };
+    debugWindow.onbeforeunload = () => {
+      onCloseRef.current();
+    };
+
     debugWindowRef.current = debugWindow;
     renderRouteBadges(debugWindow, routeBadges);
     renderEvents(debugWindow, events);
@@ -335,8 +348,13 @@ export function DebugWindow({ events, routeBadges, relayConnection, onReconnect 
 
   useEffect(() => {
     return () => {
-      if (debugWindowRef.current && !debugWindowRef.current.closed) {
-        debugWindowRef.current.close();
+      if (debugWindowRef.current) {
+        debugWindowRef.current.onpagehide = null;
+        debugWindowRef.current.onbeforeunload = null;
+        if (!debugWindowRef.current.closed) {
+          debugWindowRef.current.close();
+        }
+        debugWindowRef.current = null;
       }
     };
   }, []);
