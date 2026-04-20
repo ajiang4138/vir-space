@@ -29,6 +29,7 @@ VIR is a desktop collaboration app for creating or joining shared rooms with rea
 - Collaboration: Yjs (CRDT)
 - Whiteboard: `react-sketch-canvas`
 - Tooling: npm, tsx, concurrently, wait-on, cross-env
+- Room Discovery: WebSocket, TypeScript, Node.js, http
 
 ## Installation Instructions
 ### Prerequisites
