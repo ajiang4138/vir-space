@@ -18,6 +18,7 @@ VIR is a desktop collaboration app for creating or joining shared rooms with rea
   - File sharing and transfer tracking
 - Participant list and room info panel
 - Embedded Electron host signaling service and optional standalone signaling server mode.
+- Relay server for room discovery on the same network
 
 ## Tech Stack
 - Language: TypeScript
@@ -45,29 +46,25 @@ cd vir-space
 2. Install all dependencies (client + server):
 
 ```bash
+cd vir-space
 npm run install:all
 ```
 
 ## Usage
+### Join a VPN
+Join the GT VPN for correct relay server discovery. Make sure you and your peers are on the same gateway (DC, Ni, ... etc)
+
 ### Run the desktop client
 
 ```bash
-cd client
+cd vir-space
 npm run dev
 ```
 
-### Run the standalone signaling server (optional)
+### Test the Build
 
 ```bash
-cd server
-npm run dev
-```
-
-Use `ws://localhost:8787` (or your configured URL) as the bootstrap signaling URL when joining/creating a room.
-
-### Build
-
-```bash
+cd vir-space
 npm run build
 ```
 
