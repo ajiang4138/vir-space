@@ -248,7 +248,7 @@ export function JoinForm({
       <div className="setup-copy">
         <p>Before joining a room, provide:</p>
         <ul>
-          <li>Host IPv4 Address: the LAN IP address of the host device (e.g., 192.168.1.42).</li>
+          <li>Host IPv4 Address <b>or</b> Bootstrap URL: e.g., <code>192.168.1.42</code> or <code>ws://192.168.1.42:8787</code></li>
           <li>Room ID: the exact room ID shared by the host.</li>
           <li>Room Password: the same password set by the host.</li>
         </ul>
@@ -267,11 +267,11 @@ export function JoinForm({
           <h3>Manual Join</h3>
 
           <label>
-            Host IPv4 Address
+            Host IPv4 Address or Bootstrap URL
             <input
-              value={joinBootstrapUrl.replace(/^ws:\/\//, '').replace(/:8787$/, '')}
+              value={joinBootstrapUrl}
               onChange={(event) => setJoinBootstrapUrl(event.target.value)}
-              placeholder="192.168.1.42"
+              placeholder="192.168.1.42 or ws://192.168.1.42:8787"
               required
               disabled={roomActionDisabled}
             />
