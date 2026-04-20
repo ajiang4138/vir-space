@@ -53,7 +53,7 @@ npm run install:all
 
 ## Usage
 ### Join a VPN
-Join the GT VPN for correct relay server discovery. Make sure you and your peers are on the same gateway (DC, Ni, ... etc)
+Join the GT VPN for correct relay server discovery. Make sure you and your peers are on the same gateway (DC, NI, ... etc)
 
 ### Run the desktop client
 
