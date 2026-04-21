@@ -162,9 +162,9 @@ function getLocalIPv4Addresses() {
   });
 
   const ipScore = (ip) => {
-    if (ip.startsWith("100.")) return 0; // Tailscale
-    if (ip.startsWith("25.")) return 1; // Hamachi
-    if (ip.startsWith("10.")) return 2;
+    if (ip.startsWith("10.")) return 0;
+    if (ip.startsWith("100.")) return 1; // Tailscale
+    if (ip.startsWith("25.")) return 2; // Hamachi
     if (ip.startsWith("172.")) return 3;
     if (ip.startsWith("192.168.")) return 4;
     return 5;
