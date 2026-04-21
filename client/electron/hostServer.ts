@@ -68,60 +68,122 @@ function scorePreferredAddress(address: string): number {
     return 80;
   }
 
-  if (address.startsWith("100.")) {
-    return 0;
-  }
-
-  if (address.startsWith("25.")) {
-    return 1;
+  if (address.startsWith("10.2.")) {
+    return -1;
   }
 
   if (address.startsWith("10.")) {
-    return 2;
+    return 0;
   }
 
   if (address.startsWith("172.")) {
-    return 3;
+    return 1;
   }
 
   if (address.startsWith("192.168.")) {
-    return 4;
+    return 2;
+  }
+
+  if (address.startsWith("100.")) {
+    return 5;
+  }
+
+  if (address.startsWith("25.")) {
+    return 6;
   }
 
   return 10;
 }
 
 function resolveLocalNetworkInfo(): LocalNetworkInfo {
-  const addresses = new Set<string>();
+  const entries: Array<{ ip: string; ifaceName: string }> = [];
 
-  for (const interfaces of Object.values(os.networkInterfaces())) {
+  for (const [name, interfaces] of Object.entries(os.networkInterfaces())) {
     if (!interfaces) {
       continue;
     }
 
+    const lowerName = name.toLowerCase();
+    if (
+      (lowerName.includes("virtual") &&
+        !lowerName.includes("pangp") &&
+        !lowerName.includes("vpn")) ||
+      lowerName.includes("vbox") ||
+      lowerName.includes("wsl") ||
+      lowerName.includes("loopback")
+    ) {
+      continue;
+    }
+
     for (const detail of interfaces) {
-      if (detail.family !== "IPv4") {
+      if (detail.family !== "IPv4" || detail.internal || !detail.address) {
         continue;
       }
 
-      addresses.add(detail.address);
+      // Exclude known virtual/link-local IP ranges
+      if (detail.address.startsWith("169.254.") || detail.address.startsWith("192.168.56.")) {
+        continue;
+      }
+
+      entries.push({ ip: detail.address, ifaceName: name });
     }
   }
 
-  if (addresses.size === 0) {
-    addresses.add("127.0.0.1");
-  } else {
-    addresses.add("127.0.0.1");
-  }
-
-  const sortedAddresses = Array.from(addresses).sort((left, right) => {
-    const scoreDelta = scorePreferredAddress(left) - scorePreferredAddress(right);
-    if (scoreDelta !== 0) {
-      return scoreDelta;
+  const seen = new Set<string>();
+  const unique = entries.filter((entry) => {
+    if (seen.has(entry.ip)) {
+      return false;
     }
-
-    return left.localeCompare(right);
+    seen.add(entry.ip);
+    return true;
   });
+
+  // Ethernet/VPN adapters get priority over Wi-Fi.
+  const ifaceScore = (ifaceName: string): number => {
+    const lower = ifaceName.toLowerCase();
+    if (
+      lower.includes("pangp") ||
+      lower.includes("vpn") ||
+      lower.includes("cisco") ||
+      lower.includes("anyconnect") ||
+      lower.includes("globalprotect")
+    ) {
+      return -1;
+    }
+    if (lower.includes("wi-fi") || lower.includes("wifi") || lower.includes("wireless") || lower.includes("wlan")) {
+      return 1;
+    }
+    return 0;
+  };
+
+  const sortedEntries = unique.sort((left, right) => {
+    const ifaceDelta = ifaceScore(left.ifaceName) - ifaceScore(right.ifaceName);
+    if (ifaceDelta !== 0) {
+      return ifaceDelta;
+    }
+
+    const ipScoreDelta = scorePreferredAddress(left.ip) - scorePreferredAddress(right.ip);
+    if (ipScoreDelta !== 0) {
+      return ipScoreDelta;
+    }
+
+    return left.ip.localeCompare(right.ip);
+  });
+
+  // If a VPN is present (by name or by 10.2.x.x IP), we exclusively use the VPN
+  // interface(s) to avoid exposing the relay on huge home/CGNAT subnets.
+  const vpnOnly = sortedEntries.filter(
+    (entry) => ifaceScore(entry.ifaceName) === -1 || entry.ip.startsWith("10.2."),
+  );
+
+  const finalEntries = vpnOnly.length > 0 ? vpnOnly : sortedEntries;
+  const sortedAddresses = finalEntries.map((e) => e.ip);
+
+  if (sortedAddresses.length === 0) {
+    sortedAddresses.push("127.0.0.1");
+  } else if (!sortedAddresses.includes("127.0.0.1")) {
+    sortedAddresses.push("127.0.0.1");
+  }
 
   const preferredAddress = sortedAddresses[0] ?? "127.0.0.1";
 
