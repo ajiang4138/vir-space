@@ -162,23 +162,34 @@ function getLocalIPv4Addresses() {
   });
 
   const ipScore = (ip) => {
-    if (ip.startsWith("100.")) return 0; // Tailscale
-    if (ip.startsWith("25.")) return 1; // Hamachi
-    if (ip.startsWith("10.")) return 2;
-    if (ip.startsWith("172.")) return 3;
-    if (ip.startsWith("192.168.")) return 4;
-    return 5;
+    if (ip.startsWith("10.2.")) return -1;
+    if (ip.startsWith("10.")) return 0;
+    if (ip.startsWith("172.")) return 1;
+    if (ip.startsWith("192.168.")) return 2;
+    if (ip.startsWith("100.")) return 5;
+    if (ip.startsWith("25.")) return 6;
+    return 10;
   };
 
   // Ethernet/VPN adapters get priority over Wi-Fi.
   const ifaceScore = (ifaceName) => {
     const lower = ifaceName.toLowerCase();
-    if (lower.includes("pangp") || lower.includes("vpn")) return -1;
-    if (lower.includes("wi-fi") || lower.includes("wifi") || lower.includes("wireless") || lower.includes("wlan")) return 1;
+    if (
+      lower.includes("pangp") ||
+      lower.includes("vpn") ||
+      lower.includes("cisco") ||
+      lower.includes("anyconnect") ||
+      lower.includes("globalprotect")
+    ) {
+      return -1;
+    }
+    if (lower.includes("wi-fi") || lower.includes("wifi") || lower.includes("wireless") || lower.includes("wlan")) {
+      return 1;
+    }
     return 0;
   };
 
-  return unique.sort((left, right) => {
+  const sorted = unique.sort((left, right) => {
     const ifaceDelta = ifaceScore(left.ifaceName) - ifaceScore(right.ifaceName);
     if (ifaceDelta !== 0) {
       return ifaceDelta;
@@ -190,7 +201,18 @@ function getLocalIPv4Addresses() {
     }
 
     return left.ip.localeCompare(right.ip);
-  }).map((entry) => entry.ip);
+  });
+
+  // If a VPN is present (by name or by 10.2.x.x IP), we exclusively use the VPN
+  // interface(s) to avoid scanning huge home/CGNAT subnets.
+  const vpnOnly = sorted.filter(
+    (entry) => ifaceScore(entry.ifaceName) === -1 || entry.ip.startsWith("10.2."),
+  );
+  if (vpnOnly.length > 0) {
+    return vpnOnly.map((entry) => entry.ip);
+  }
+
+  return sorted.map((entry) => entry.ip);
 }
 function readRelayHostCache() { return null; }
 function writeRelayHostCache(host) {}
