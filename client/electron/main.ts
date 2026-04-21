@@ -176,24 +176,28 @@ function scorePreferredAddress(address: string): number {
     return 80;
   }
 
-  if (address.startsWith("100.")) {
-    return 0;
-  }
-
-  if (address.startsWith("25.")) {
-    return 1;
+  if (address.startsWith("10.2.")) {
+    return -1;
   }
 
   if (address.startsWith("10.")) {
-    return 2;
+    return 0;
   }
 
   if (address.startsWith("172.")) {
-    return 3;
+    return 1;
   }
 
   if (address.startsWith("192.168.")) {
-    return 4;
+    return 2;
+  }
+
+  if (address.startsWith("100.")) {
+    return 5;
+  }
+
+  if (address.startsWith("25.")) {
+    return 6;
   }
 
   return 10;
@@ -412,12 +416,22 @@ function getLocalNonLoopbackIPv4Addresses(): string[] {
   // Ethernet/VPN adapters get priority over Wi-Fi.
   const ifaceScore = (ifaceName: string): number => {
     const lower = ifaceName.toLowerCase();
-    if (lower.includes("pangp") || lower.includes("vpn")) return -1;
-    if (lower.includes("wi-fi") || lower.includes("wifi") || lower.includes("wireless") || lower.includes("wlan")) return 1;
+    if (
+      lower.includes("pangp") ||
+      lower.includes("vpn") ||
+      lower.includes("cisco") ||
+      lower.includes("anyconnect") ||
+      lower.includes("globalprotect")
+    ) {
+      return -1;
+    }
+    if (lower.includes("wi-fi") || lower.includes("wifi") || lower.includes("wireless") || lower.includes("wlan")) {
+      return 1;
+    }
     return 0;
   };
 
-  return unique.sort((left, right) => {
+  const sorted = unique.sort((left, right) => {
     const ifaceDelta = ifaceScore(left.ifaceName) - ifaceScore(right.ifaceName);
     if (ifaceDelta !== 0) {
       return ifaceDelta;
@@ -429,7 +443,18 @@ function getLocalNonLoopbackIPv4Addresses(): string[] {
     }
 
     return left.ip.localeCompare(right.ip);
-  }).map((entry) => entry.ip);
+  });
+
+  // If a VPN is present (by name or by 10.2.x.x IP), we exclusively use the VPN
+  // interface(s) to avoid scanning huge home/CGNAT subnets.
+  const vpnOnly = sorted.filter(
+    (entry) => ifaceScore(entry.ifaceName) === -1 || entry.ip.startsWith("10.2."),
+  );
+  if (vpnOnly.length > 0) {
+    return vpnOnly.map((entry) => entry.ip);
+  }
+
+  return sorted.map((entry) => entry.ip);
 }
 
 async function discoverRelayBootstrapHostInBackground(): Promise<string | null> {
@@ -448,9 +473,10 @@ async function discoverRelayBootstrapHostInBackground(): Promise<string | null> 
   // each other's relays.
   const seenPrefixes = new Set<string>();
   const prefixes: string[] = [];
-  if (localIps.length > 0) {
-    const prefix = getClassBPrefixFromIp(localIps[0]);
-    if (prefix) {
+  for (const ip of localIps) {
+    const prefix = getClassBPrefixFromIp(ip);
+    if (prefix && !seenPrefixes.has(prefix)) {
+      seenPrefixes.add(prefix);
       prefixes.push(prefix);
     }
   }
