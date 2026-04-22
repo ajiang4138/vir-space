@@ -47,9 +47,9 @@ cd vir-space
 2. Install all dependencies (client + server):
 
 ```bash
-cd vir-space
 npm run install:all
 ```
+*Note:* The `start.sh` script will run this as well.
 
 ## Usage
 ### Join a VPN
@@ -57,20 +57,24 @@ Join the GT VPN for correct relay server discovery. Make sure you and your peers
 
 ### Run the desktop client
 
+To run:
+
 ```bash
-cd vir-space
+bash ./start.sh
+```
+*Note*: Please give the application a few minutes to start while it scans for relay servers.
+
+Or run it manually in your terminal:
+
+```bash
 npm run dev
 ```
 
 ### Test the Build
 
 ```bash
-cd vir-space
 npm run build
 ```
-
-## Demo
-Pending!
 
 ## Authors
 - Author: Allen Jiang, Jonathan Liang, Alyn Kosasi, Calvin Cheah, Yu Lin Lu, Zi Hang Lin
