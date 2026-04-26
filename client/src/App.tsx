@@ -944,6 +944,16 @@ export default function App(): JSX.Element {
       signalingRef.current?.removeRelayRoom(listedRoomId);
       relayListedRoomIdRef.current = null;
       relayListingSignatureRef.current = null;
+      // Immediately remove it from the local discovered-rooms map so the
+      // host's own UI clears instantly. The map key is compound
+      // (hostIp|hostPort|roomId) so we find the entry by roomId.
+      for (const [key, entry] of discoveredRoomsByKeyRef.current.entries()) {
+        if (entry.roomId === listedRoomId) {
+          discoveredRoomsByKeyRef.current.delete(key);
+          break;
+        }
+      }
+      publishDiscoveredRooms();
     }
 
     handoverReconnectInProgressRef.current = false;
@@ -1972,18 +1982,9 @@ export default function App(): JSX.Element {
         return;
       }
 
-      if (intent === "create") {
-        try {
-          const networkInfo = await window.electronApi.getLocalNetworkInfo();
-          const preferredAddress = pickPreferredHostAddress([networkInfo.preferredAddress, ...networkInfo.addresses]);
-          if (preferredAddress) {
-            parsed.hostname = preferredAddress;
-            resolvedBootstrapUrl = parsed.toString();
-          }
-        } catch {
-          // Fallback to manual prompt below.
-        }
-      }
+      // For "create" intent, the signaling relay URL stays unchanged.
+      // The creator's own LAN IP is passed separately as hostCandidateBootstrapUrl
+      // (used only as WebRTC metadata), and must never replace the relay's address.
     } catch {
       addEvent("error: invalid bootstrap URL format");
       setSessionState("signaling disconnected");
@@ -2160,9 +2161,11 @@ export default function App(): JSX.Element {
     signalingRef.current?.endRoom(room.roomId);
 
     if (hostIsAlone) {
-      signalingRef.current?.disconnect();
-      void stopLocalHostService();
+      // clearRoomState must come BEFORE disconnect so that removeRelayRoom
+      // is sent while the WebSocket is still open.
       clearRoomState("room closed by host");
+      void stopLocalHostService();
+      signalingRef.current?.disconnect();
       addEvent("host ended room (solo host)");
       return;
     }
