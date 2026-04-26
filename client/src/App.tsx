@@ -81,7 +81,7 @@ const defaultHostPort = 8787;
 const minimumRoomPasswordLength = 4;
 const maximumRoomParticipants = 6;
 const relayDiscoveredRoomsMaxEntries = 200;
-const relayDiscoveredRoomsStaleMs = 120_000;
+const relayDiscoveredRoomsStaleMs = 25_000;
 const relayDiscoveredRoomsCleanupIntervalMs = 5_000;
 const relayHostListingHeartbeatIntervalMs = 8_000;
 const relayReconnectBaseDelayMs = 1_500;
@@ -937,6 +937,15 @@ export default function App(): JSX.Element {
   };
 
   const clearRoomState = (nextStatus: ConnectionStatus): void => {
+    // Eagerly remove the relay listing BEFORE any state is cleared,
+    // while the signaling connection is still active.
+    const listedRoomId = relayListedRoomIdRef.current;
+    if (listedRoomId) {
+      signalingRef.current?.removeRelayRoom(listedRoomId);
+      relayListedRoomIdRef.current = null;
+      relayListingSignatureRef.current = null;
+    }
+
     handoverReconnectInProgressRef.current = false;
     handoverReconnectAttemptsRef.current = 0;
     leaveAfterOwnershipTransferRef.current = false;
@@ -1502,11 +1511,11 @@ export default function App(): JSX.Element {
           relayReconnectTimerRef.current = null;
         }
 
-        const pending = pendingActionRef.current;
-        if (setupStep === "join" || pending?.intent === "join") {
-          signalingRef.current?.subscribeRelayRooms();
-        }
+        // Always subscribe so every connected client sees rooms created by any peer,
+        // regardless of whether they are in "join" or "create" mode.
+        signalingRef.current?.subscribeRelayRooms();
 
+        const pending = pendingActionRef.current;
         if (!pending) {
           return;
         }
@@ -2095,7 +2104,6 @@ export default function App(): JSX.Element {
   const chooseJoinMode = (): void => {
     setSetupStep("join");
     relayReconnectAttemptsRef.current = 0;
-    void window.electronApi.startRelayDiscoveryScan().catch(() => undefined);
 
     if (activeRoomRef.current) {
       return;
@@ -2175,8 +2183,13 @@ export default function App(): JSX.Element {
   const reconnectRelay = (): void => {
     addEvent("manual relay reconnect requested");
     relayReconnectAttemptsRef.current = 0;
-    signalingRef.current?.disconnect();
-    void window.electronApi.startRelayDiscoveryScan().catch(() => undefined);
+    const url = bootstrapUrlRef.current.trim();
+    if (url) {
+      setSignalingState("connecting");
+      setSessionState("connecting to bootstrap server");
+      setConnectedRelayUrl(url);
+      signalingRef.current?.connect(url);
+    }
   };
 
   const transferRoomOwnership = (mode: OwnershipTransferMode = "stay-in-room"): void => {

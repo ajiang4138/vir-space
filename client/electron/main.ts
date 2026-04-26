@@ -583,28 +583,39 @@ async function waitForLocalRelay(host: string, port: number, totalWaitMs = 5000)
   return false;
 }
 
+// True only if THIS Electron process was the one that spawned the background relay.
+// Clients that found a relay via network scan must never spawn their own.
+let localRelaySpawnedByUs = false;
+
 async function performOrchestratedStartup(): Promise<RelayDiscoveryStatus> {
   const status = await runRelayDiscoveryScan();
-  
-  if (status.phase === "not-found") {
+
+  // Only spawn a relay if:
+  //   1. No relay was found anywhere on the network, AND
+  //   2. This process either hasn't spawned one yet, or was the original spawner
+  //      (so it can restart one if its own relay died).
+  if (status.phase === "not-found" && !localRelaySpawnedByUs) {
+    // Do one final self-check: maybe our own relay just came up.
+    const localIp = getLocalNonLoopbackIPv4Addresses()[0] || "127.0.0.1";
+    const alreadyRunning = await waitForLocalRelay(localIp, 8787, 1500);
+    if (alreadyRunning) {
+      // A relay is already running on this machine — don't spawn a second one.
+      return updateRelayDiscoveryStatus({ phase: "found", host: localIp, lastError: null });
+    }
+
     try {
       spawnDetachedRelayServer();
-      
-      const localIp = getLocalNonLoopbackIPv4Addresses()[0] || "127.0.0.1";
+      localRelaySpawnedByUs = true;
+
       const reachable = await waitForLocalRelay(localIp, 8787, 5000);
-      
       if (reachable) {
-        return updateRelayDiscoveryStatus({
-          phase: "found",
-          host: localIp,
-          lastError: null,
-        });
+        return updateRelayDiscoveryStatus({ phase: "found", host: localIp, lastError: null });
       }
-    } catch (error) {
-      // Ignore spawning errors
+    } catch {
+      // Spawn failed; will fall through to not-found
     }
   }
-  
+
   return getRelayDiscoveryStatusSnapshot();
 }
 
