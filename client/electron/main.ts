@@ -590,17 +590,20 @@ let localRelaySpawnedByUs = false;
 async function performOrchestratedStartup(): Promise<RelayDiscoveryStatus> {
   const status = await runRelayDiscoveryScan();
 
-  // Only spawn a relay if:
-  //   1. No relay was found anywhere on the network, AND
-  //   2. This process either hasn't spawned one yet, or was the original spawner
-  //      (so it can restart one if its own relay died).
-  if (status.phase === "not-found" && !localRelaySpawnedByUs) {
-    // Do one final self-check: maybe our own relay just came up.
+  // Spawn (or respawn) a relay if none was found on the network.
+  // - First-time spawn: do a final self-check before claiming the spawner role,
+  //   in case the relay just came up between the scan and now.
+  // - Respawn: our previously-spawned relay may have exited (e.g. idle timeout);
+  //   skip the self-check since the scan already confirmed it's unreachable.
+  if (status.phase === "not-found") {
     const localIp = getLocalNonLoopbackIPv4Addresses()[0] || "127.0.0.1";
-    const alreadyRunning = await waitForLocalRelay(localIp, 8787, 1500);
-    if (alreadyRunning) {
-      // A relay is already running on this machine — don't spawn a second one.
-      return updateRelayDiscoveryStatus({ phase: "found", host: localIp, lastError: null });
+
+    if (!localRelaySpawnedByUs) {
+      // First-time: check if a relay appeared since the scan finished.
+      const alreadyRunning = await waitForLocalRelay(localIp, 8787, 1500);
+      if (alreadyRunning) {
+        return updateRelayDiscoveryStatus({ phase: "found", host: localIp, lastError: null });
+      }
     }
 
     try {

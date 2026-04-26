@@ -16,3 +16,4 @@ client/build/
 client/dist-renderer/
 client/release/
 client/dist-server/
+.metrics/

@@ -308,6 +308,7 @@ export default function App(): JSX.Element {
   const activeRoomRef = useRef<ActiveRoom | null>(null);
   const handoverReconnectInProgressRef = useRef(false);
   const handoverReconnectAttemptsRef = useRef(0);
+  const handoverConnectionWasOpenRef = useRef(false);
   const roomPasswordRef = useRef("");
   const leaveAfterOwnershipTransferRef = useRef(false);
   const currentUserIdRef = useRef("");
@@ -1176,6 +1177,7 @@ export default function App(): JSX.Element {
           return;
         }
 
+        relayReconnectAttemptsRef.current = 0;
         setSignalingState("connecting");
         setSessionState("connecting to bootstrap server");
         setConnectedRelayUrl(discoveredUrl);
@@ -1390,6 +1392,7 @@ export default function App(): JSX.Element {
 
     handoverReconnectInProgressRef.current = true;
     handoverReconnectAttemptsRef.current = 0;
+    handoverConnectionWasOpenRef.current = false;
     setBootstrapUrl(nextBootstrapUrl);
     pendingActionRef.current = {
       intent,
@@ -1492,6 +1495,7 @@ export default function App(): JSX.Element {
   useEffect(() => {
     signalingRef.current = new SignalingClient({
       onOpen: () => {
+        handoverConnectionWasOpenRef.current = true;
         setSignalingState("connected");
         setSessionState("connected to bootstrap server");
         addEvent(`connected to bootstrap signaling server: ${bootstrapUrlRef.current}`);
@@ -1544,7 +1548,29 @@ export default function App(): JSX.Element {
           relayServerStatusPollTimerRef.current = null;
         }
         if (handoverReconnectInProgressRef.current) {
-          addEvent("signaling reconnecting for host handover");
+          if (!handoverConnectionWasOpenRef.current && handoverReconnectAttemptsRef.current < 8) {
+            handoverReconnectAttemptsRef.current += 1;
+            const attempt = handoverReconnectAttemptsRef.current;
+            const retryDelayMs = Math.min(1500, 200 * attempt);
+            const bootstrapUrl = pendingActionRef.current?.bootstrapUrl;
+            addEvent(`handover connection retry ${attempt}/8 in ${retryDelayMs}ms`);
+            if (bootstrapUrl) {
+              window.setTimeout(() => {
+                if (!handoverReconnectInProgressRef.current) {
+                  return;
+                }
+                handoverConnectionWasOpenRef.current = false;
+                signalingRef.current?.connect(bootstrapUrl);
+              }, retryDelayMs);
+            }
+          } else if (handoverReconnectAttemptsRef.current >= 8) {
+            handoverReconnectInProgressRef.current = false;
+            handoverReconnectAttemptsRef.current = 0;
+            setSignalingState("disconnected");
+            addEvent("handover failed: max retries exceeded");
+          } else {
+            addEvent("signaling reconnecting for host handover");
+          }
           return;
         }
         setSignalingState("disconnected");
@@ -1902,6 +1928,9 @@ export default function App(): JSX.Element {
       }
 
       relayReconnectAttemptsRef.current += 1;
+      if (relayReconnectAttemptsRef.current > 0 && relayReconnectAttemptsRef.current % 5 === 0) {
+        void window.electronApi.startRelayDiscoveryScan().catch(() => undefined);
+      }
       setSignalingState("connecting");
       setSessionState("connecting to bootstrap server");
       addEvent(isFirstAttempt ? `connecting to bootstrap signaling server: ${url}` : `reconnecting to bootstrap signaling server: ${url}`);
@@ -1973,7 +2002,7 @@ export default function App(): JSX.Element {
         return;
       }
 
-      if (intent === "create") {
+      if (intent === "create" && isLoopbackHost(parsed.hostname)) {
         try {
           const networkInfo = await window.electronApi.getLocalNetworkInfo();
           const preferredAddress = pickPreferredHostAddress([networkInfo.preferredAddress, ...networkInfo.addresses]);
@@ -2068,7 +2097,7 @@ export default function App(): JSX.Element {
         }
       }
 
-      pendingActionRef.current = { intent, roomId, bootstrapUrl: resolvedBootstrapUrl, displayName, roomPassword };
+      pendingActionRef.current = { intent, roomId, bootstrapUrl: resolvedBootstrapUrl, displayName, roomPassword, hostCandidateBootstrapUrl };
       setBootstrapUrl(resolvedBootstrapUrl);
     }
 

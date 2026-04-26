@@ -36,7 +36,6 @@ interface ActiveRoom {
 
 const minimumRoomPasswordLength = 4;
 const maximumRoomParticipants = 6;
-const maxPortFallbackAttempts = 30;
 
 function normalizeRequestedPort(requestedPort: number): number {
   if (!Number.isInteger(requestedPort) || requestedPort < 1 || requestedPort > 65535) {
