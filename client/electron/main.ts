@@ -134,10 +134,10 @@ function createSplashWindow(): void {
 }
 
 const relayPort = 8787;
-const relayConnectTimeoutMs = 750;
-const relayProbeAttempts = 2;
+const relayConnectTimeoutMs = 500;
+const relayProbeAttempts = 1;
 const relayScanWorkers = 1024;
-const relayScanMaxDurationMs = 45_000;
+const relayScanMaxDurationMs = 60_000;
 
 let relayDiscoveryTask: Promise<RelayDiscoveryStatus> | null = null;
 let relayDiscoveryStatus: RelayDiscoveryStatus = {
@@ -509,9 +509,9 @@ async function discoverRelayBootstrapHostInBackground(): Promise<string | null> 
     // eslint-disable-next-line no-await-in-loop
     const found = await scanHostList(hosts, relayPort, {
       workerCount: relayScanWorkers,
-      timeoutMs: relayConnectTimeoutMs,
+      timeoutMs: 500,
       maxDurationMs: relayScanMaxDurationMs,
-      attemptsPerHost: relayProbeAttempts,
+      attemptsPerHost: 1,
     });
     if (found) {
       return found;

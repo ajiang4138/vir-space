@@ -239,6 +239,32 @@ function buildActiveRoom(
   };
 }
 
+function RelayStatusBadge({
+  signalingState,
+  relayDiscoveryPhase,
+}: {
+  signalingState: SignalingConnectionState;
+  relayDiscoveryPhase: string;
+}): JSX.Element {
+  const isConnected = signalingState === "connected";
+  const isScanning = relayDiscoveryPhase === "scanning" && signalingState === "disconnected";
+  const label = isConnected ? "Relay Connected" : isScanning ? "Scanning…" : "Connecting…";
+  const badgeClass = `relay-status-badge relay-status-badge--${isConnected ? "connected" : "pending"}`;
+  return (
+    <span className="relay-status-badge-wrap">
+      <span className={badgeClass} aria-live="polite" aria-label={label}>
+        <span className="relay-status-badge__dot" aria-hidden="true" />
+        {label}
+      </span>
+      {!isConnected && (
+        <span className="relay-status-badge__hint">
+          May take up to 1 minute
+        </span>
+      )}
+    </span>
+  );
+}
+
 export default function App(): JSX.Element {
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -2307,6 +2333,7 @@ export default function App(): JSX.Element {
         <section className="setup-page">
           <header className="app-header card">
             <h1>VIR</h1>
+            <RelayStatusBadge signalingState={signalingState} relayDiscoveryPhase={relayDiscoveryStatus?.phase ?? "idle"} />
           </header>
 
           <div className="setup-page-content">
@@ -2361,7 +2388,9 @@ export default function App(): JSX.Element {
                 </button>
               </div>
               {!isLeftLaneCollapsed ? (
-                <nav className="left-lane-tabs" aria-label="Workspace tabs">
+                <>
+                  <RelayStatusBadge signalingState={signalingState} relayDiscoveryPhase={relayDiscoveryStatus?.phase ?? "idle"} />
+                  <nav className="left-lane-tabs" aria-label="Workspace tabs">
                   <button
                     type="button"
                     className={`lane-tab${activeWorkspace === "chatroom" ? " active" : ""}`}
@@ -2391,6 +2420,7 @@ export default function App(): JSX.Element {
                     File Sharing
                   </button>
                 </nav>
+                </>
               ) : null}
             </div>
           </aside>
