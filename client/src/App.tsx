@@ -962,7 +962,6 @@ export default function App(): JSX.Element {
     setEditorText("");
     setSessionState(nextStatus);
     setSetupStep(currentUserIdRef.current ? "mode" : "user-id");
-    void refreshLocalBootstrapUrl(parsePortFromWsUrl(bootstrapUrlRef.current));
   };
 
   const stopLocalHostService = async (): Promise<void> => {
