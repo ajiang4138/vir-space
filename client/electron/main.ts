@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain } from "electron";
+import { spawn } from "node:child_process";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -119,7 +120,7 @@ function createSplashWindow(): void {
   <body>
     <div class="wrap">
       <h1>VIR is starting</h1>
-      <p>Discovering network relays...</p>
+      <p>Discovering network relays... (This may take up to 2.5 minutes)</p>
       <div class="bar"></div>
     </div>
   </body>
@@ -553,12 +554,66 @@ async function runRelayDiscoveryScan(): Promise<RelayDiscoveryStatus> {
   }
 }
 
+function spawnDetachedRelayServer(): void {
+  const serverScript = path.join(__dirname, "../../dist-server/index.js");
+
+  const child = spawn(process.execPath, [serverScript], {
+    detached: true,
+    env: {
+      ...process.env,
+      ELECTRON_RUN_AS_NODE: "1",
+      RELAY_IDLE_SHUTDOWN_MS: "60000",
+    },
+    stdio: "ignore",
+    windowsHide: true,
+  });
+
+  child.unref();
+}
+
+async function waitForLocalRelay(host: string, port: number, totalWaitMs = 5000): Promise<boolean> {
+  const deadline = Date.now() + totalWaitMs;
+  while (Date.now() < deadline) {
+    const reachable = await canReachTcpWithRetries(host, port, 250, 1);
+    if (reachable) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return false;
+}
+
+async function performOrchestratedStartup(): Promise<RelayDiscoveryStatus> {
+  const status = await runRelayDiscoveryScan();
+  
+  if (status.phase === "not-found") {
+    try {
+      spawnDetachedRelayServer();
+      
+      const localIp = getLocalNonLoopbackIPv4Addresses()[0] || "127.0.0.1";
+      const reachable = await waitForLocalRelay(localIp, 8787, 5000);
+      
+      if (reachable) {
+        return updateRelayDiscoveryStatus({
+          phase: "found",
+          host: localIp,
+          lastError: null,
+        });
+      }
+    } catch (error) {
+      // Ignore spawning errors
+    }
+  }
+  
+  return getRelayDiscoveryStatusSnapshot();
+}
+
 function startRelayDiscoveryScan(): Promise<RelayDiscoveryStatus> {
   if (relayDiscoveryTask) {
     return relayDiscoveryTask;
   }
 
-  relayDiscoveryTask = runRelayDiscoveryScan().finally(() => {
+  relayDiscoveryTask = performOrchestratedStartup().finally(() => {
     relayDiscoveryTask = null;
   });
 

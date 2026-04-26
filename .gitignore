@@ -14,3 +14,5 @@ client/dist-electron/
 client/build/
 .relay-scan-attempts.log
 client/dist-renderer/
+client/release/
+client/dist-server/

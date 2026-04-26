@@ -8,6 +8,8 @@
     "dev:relay:ensure": "node scripts/ensure-relay-server.cjs",
     "dev:client": "npm run dev --prefix client",
     "dev:server": "npm run dev --prefix server",
-    "build": "npm run build --prefix client"
+    "build": "npm run build --prefix server && npm run build --prefix client",
+    "pack": "npm run build && npm run pack --prefix client",
+    "dist": "npm run build && npm run dist --prefix client"
   }
 }
