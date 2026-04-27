@@ -283,13 +283,6 @@ export default function App(): JSX.Element {
   const [userIdDraft, setUserIdDraft] = useState("");
   const [currentUserId, setCurrentUserId] = useState("");
 
-  const useDiscoveredRoom = (room: DiscoveredRoomSummary): void => {
-    setJoinRoomId(room.roomId);
-    // Connect directly to the room creator's own server (Option B peer-hosted).
-    // The relay is only for discovery; the room itself lives on the creator's machine.
-    setJoinBootstrapUrl(`ws://${room.hostIp}:${room.hostPort}`);
-  };
-
   const [bootstrapUrl, setBootstrapUrl] = useState(defaultBootstrapUrl);
   const [signalingState, setSignalingState] = useState<SignalingConnectionState>("disconnected");
   const [webRtcStatus, setWebRtcStatus] = useState<WebRtcStatus>("idle");
@@ -1931,6 +1924,7 @@ export default function App(): JSX.Element {
   }, []);
 
   useEffect(() => {
+    if (activeRoom || signalingState !== "disconnected") {
       if (relayReconnectTimerRef.current !== null) {
         window.clearTimeout(relayReconnectTimerRef.current);
         relayReconnectTimerRef.current = null;
