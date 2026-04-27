@@ -110,7 +110,10 @@ export function JoinForm({
 
   const useDiscoveredRoom = (room: DiscoveredRoomSummary): void => {
     setJoinRoomId(room.roomId);
-    setJoinBootstrapUrl(`ws://${room.hostIp}:${room.hostPort}`);
+    // Keep the relay URL for signaling — do NOT overwrite it with the room
+    // creator's hostIp. The relay already knows the room; the joiner only
+    // needs to send the roomId to the relay, not connect to the creator directly.
+    setJoinBootstrapUrl(defaultBootstrapUrl);
   };
 
   if (step === "user-id") {
@@ -267,11 +270,11 @@ export function JoinForm({
           <h3>Manual Join</h3>
 
           <label>
-            Host IPv4 Address or Bootstrap URL
+            Relay Bootstrap URL
             <input
               value={joinBootstrapUrl}
               onChange={(event) => setJoinBootstrapUrl(event.target.value)}
-              placeholder="192.168.1.42 or ws://192.168.1.42:8787"
+              placeholder="ws://10.2.x.x:8787"
               required
               disabled={roomActionDisabled}
             />
