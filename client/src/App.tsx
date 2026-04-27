@@ -282,6 +282,14 @@ export default function App(): JSX.Element {
   const [setupStep, setSetupStep] = useState<SetupStep>("user-id");
   const [userIdDraft, setUserIdDraft] = useState("");
   const [currentUserId, setCurrentUserId] = useState("");
+
+  const useDiscoveredRoom = (room: DiscoveredRoomSummary): void => {
+    setJoinRoomId(room.roomId);
+    // Connect directly to the room creator's own server (Option B peer-hosted).
+    // The relay is only for discovery; the room itself lives on the creator's machine.
+    setJoinBootstrapUrl(`ws://${room.hostIp}:${room.hostPort}`);
+  };
+
   const [bootstrapUrl, setBootstrapUrl] = useState(defaultBootstrapUrl);
   const [signalingState, setSignalingState] = useState<SignalingConnectionState>("disconnected");
   const [webRtcStatus, setWebRtcStatus] = useState<WebRtcStatus>("idle");
@@ -292,6 +300,8 @@ export default function App(): JSX.Element {
   const [relayServerConnectedClients, setRelayServerConnectedClients] = useState<number | null>(null);
   const [relayServerListings, setRelayServerListings] = useState<number | null>(null);
   const [relayDiscoveryStatus, setRelayDiscoveryStatus] = useState<RelayDiscoveryStatus | null>(null);
+  // Tracks whether the relay-listing-only connection (relaySignalingRef) is up.
+  const [relayListingConnected, setRelayListingConnected] = useState(false);
 
   const [activeWorkspace, setActiveWorkspace] = useState<CenterWorkspace>("chatroom");
   const [isLeftLaneCollapsed, setIsLeftLaneCollapsed] = useState(false);
@@ -316,6 +326,11 @@ export default function App(): JSX.Element {
   const negotiatedPeersRef = useRef<Set<string>>(new Set());
 
   const signalingRef = useRef<SignalingClient | null>(null);
+  // Separate SignalingClient used ONLY for relay-room listing operations.
+  // It stays connected to the relay regardless of where signalingRef goes.
+  const relaySignalingRef = useRef<SignalingClient | null>(null);
+  const relayUrlRef = useRef<string>("");
+  const relayListingReconnectTimerRef = useRef<number | null>(null);
   const peerWebRtcManagersRef = useRef<Map<string, WebRtcPeerManager>>(new Map());
   const peerFileManagersRef = useRef<Map<string, FileTransferManager>>(new Map());
   const relayListingSignatureRef = useRef<string | null>(null);
@@ -941,7 +956,7 @@ export default function App(): JSX.Element {
     // while the signaling connection is still active.
     const listedRoomId = relayListedRoomIdRef.current;
     if (listedRoomId) {
-      signalingRef.current?.removeRelayRoom(listedRoomId);
+      relaySignalingRef.current?.removeRelayRoom(listedRoomId);
       relayListedRoomIdRef.current = null;
       relayListingSignatureRef.current = null;
       // Immediately remove it from the local discovered-rooms map so the
@@ -1167,9 +1182,13 @@ export default function App(): JSX.Element {
         lastDiscoveredRelayHostRef.current = statusSnapshot.host;
         const discoveredUrl = `ws://${statusSnapshot.host}:${defaultHostPort}`;
 
-        // Always update bootstrap URL so future reconnects use the right host,
-        // but only log and attempt connection when not already connected.
+        // Always update bootstrap URL so future reconnects use the right host.
         setBootstrapUrl(discoveredUrl);
+
+        // Connect the relay-listing client to the relay URL.
+        // This is the persistent connection that stays on the relay.
+        relayUrlRef.current = discoveredUrl;
+        relaySignalingRef.current?.connect(discoveredUrl);
 
         if (signalingStateRef.current === "connected") {
           return;
@@ -1221,8 +1240,8 @@ export default function App(): JSX.Element {
     let cancelled = false;
 
     const syncRelayHostListing = async (): Promise<void> => {
-      const signaling = signalingRef.current;
-      if (!signaling || signalingState !== "connected") {
+      const signaling = relaySignalingRef.current;
+      if (!signaling || !relayListingConnected) {
         return;
       }
 
@@ -1309,29 +1328,29 @@ export default function App(): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [activeRoom, signalingState]);
+  }, [activeRoom, relayListingConnected]);
 
   useEffect(() => {
     const room = activeRoom;
-    if (!room || room.myRole !== "host" || room.roomStatus !== "open" || signalingState !== "connected") {
+    if (!room || room.myRole !== "host" || room.roomStatus !== "open" || !relayListingConnected) {
       return;
     }
 
     const timer = window.setInterval(async () => {
-      const signaling = signalingRef.current;
+      const signaling = relaySignalingRef.current;
       const active = activeRoomRef.current;
       if (!signaling || !active || active.myRole !== "host" || active.roomStatus !== "open") {
         return;
       }
 
-      let hostIp = parseHostnameFromWsUrl(bootstrapUrlRef.current) ?? "";
-      if (!hostIp || isLoopbackHost(hostIp)) {
-        try {
-          const networkInfo = await window.electronApi.getLocalNetworkInfo();
-          hostIp = pickPreferredHostAddress([networkInfo.preferredAddress, ...networkInfo.addresses]) ?? "";
-        } catch {
-          return;
-        }
+      // Always use this machine's own IP for the heartbeat listing,
+      // not the bootstrapUrl (which now points to the room server).
+      let hostIp = "";
+      try {
+        const networkInfo = await window.electronApi.getLocalNetworkInfo();
+        hostIp = pickPreferredHostAddress([networkInfo.preferredAddress, ...networkInfo.addresses]) ?? "";
+      } catch {
+        return;
       }
 
       if (!hostIp || isLoopbackHost(hostIp)) {
@@ -1342,7 +1361,7 @@ export default function App(): JSX.Element {
         roomId: active.roomId,
         hostDisplayName: active.myDisplayName,
         hostIp,
-        hostPort: parsePortFromWsUrl(bootstrapUrlRef.current),
+        hostPort: defaultHostPort,
         participantCount: active.participants.length,
         maxParticipants: maximumRoomParticipants,
         isJoinable: active.participants.length < maximumRoomParticipants,
@@ -1355,7 +1374,7 @@ export default function App(): JSX.Element {
     return () => {
       window.clearInterval(timer);
     };
-  }, [activeRoom, signalingState]);
+  }, [activeRoom, relayListingConnected]);
 
   useEffect(() => {
     bootstrapUrlRef.current = bootstrapUrl;
@@ -1522,9 +1541,8 @@ export default function App(): JSX.Element {
           relayReconnectTimerRef.current = null;
         }
 
-        // Always subscribe so every connected client sees rooms created by any peer,
-        // regardless of whether they are in "join" or "create" mode.
-        signalingRef.current?.subscribeRelayRooms();
+        // relaySignalingRef subscribes to relay rooms on its own onOpen;
+        // do not subscribe here or signalingRef will compete with it.
 
         const pending = pendingActionRef.current;
         if (!pending) {
@@ -1830,19 +1848,9 @@ export default function App(): JSX.Element {
 
         pendingActionRef.current = null;
       },
-      onRelayRoomUpserted: (message) => {
-        upsertRelayDiscoveredRoom(message.listing);
-      },
-      onRelayRoomRemoved: (message) => {
-        removeRelayDiscoveredRoom({
-          roomId: message.roomId,
-          hostIp: message.hostIp,
-          hostPort: message.hostPort,
-        });
-      },
-      onRelayRoomSnapshot: (message) => {
-        applyRelaySnapshot(message.listings);
-      },
+      onRelayRoomUpserted: (_message) => { /* handled by relaySignalingRef */ },
+      onRelayRoomRemoved: (_message) => { /* handled by relaySignalingRef */ },
+      onRelayRoomSnapshot: (_message) => { /* handled by relaySignalingRef */ },
       onRelayServerStatus: (message) => {
         setRelayServerStartedAtMs(message.serverStartedAt);
         setRelayServerLastSeenAtMs(Date.now());
@@ -1860,16 +1868,69 @@ export default function App(): JSX.Element {
         window.clearTimeout(relayReconnectTimerRef.current);
         relayReconnectTimerRef.current = null;
       }
+      if (relayListingReconnectTimerRef.current !== null) {
+        window.clearTimeout(relayListingReconnectTimerRef.current);
+        relayListingReconnectTimerRef.current = null;
+      }
       pendingActionRef.current = null;
       cleanupPeerConnection("application shutdown");
       editorCrdtRef.current.dispose();
       signalingRef.current?.disconnect();
+      relaySignalingRef.current?.disconnect();
       void stopLocalHostService();
     };
   }, []);
 
+  // ── Relay-listing-only connection ─────────────────────────────────────────
+  // This second SignalingClient stays permanently connected to the relay URL
+  // so relay room subscribe/register/remove messages always reach the relay,
+  // even when signalingRef is pointing at a room-host's server.
   useEffect(() => {
-    if (activeRoom || signalingState !== "disconnected") {
+    const connectRelayListing = (): void => {
+      const url = relayUrlRef.current;
+      if (!url) return;
+      relaySignalingRef.current?.connect(url);
+    };
+
+    relaySignalingRef.current = new SignalingClient({
+      onOpen: () => {
+        setRelayListingConnected(true);
+        if (relayListingReconnectTimerRef.current !== null) {
+          window.clearTimeout(relayListingReconnectTimerRef.current);
+          relayListingReconnectTimerRef.current = null;
+        }
+        relaySignalingRef.current?.subscribeRelayRooms();
+      },
+      onClose: () => {
+        setRelayListingConnected(false);
+        if (relayUrlRef.current) {
+          relayListingReconnectTimerRef.current = window.setTimeout(() => {
+            connectRelayListing();
+          }, 3000);
+        }
+      },
+      onError: () => { /* ignore transient errors on listing connection */ },
+      onRelayRoomUpserted: (message) => { upsertRelayDiscoveredRoom(message.listing); },
+      onRelayRoomRemoved: (message) => {
+        removeRelayDiscoveredRoom({
+          roomId: message.roomId,
+          hostIp: message.hostIp,
+          hostPort: message.hostPort,
+        });
+      },
+      onRelayRoomSnapshot: (message) => { applyRelaySnapshot(message.listings); },
+    });
+
+    return () => {
+      if (relayListingReconnectTimerRef.current !== null) {
+        window.clearTimeout(relayListingReconnectTimerRef.current);
+        relayListingReconnectTimerRef.current = null;
+      }
+      relaySignalingRef.current?.disconnect();
+    };
+  }, []);
+
+  useEffect(() => {
       if (relayReconnectTimerRef.current !== null) {
         window.clearTimeout(relayReconnectTimerRef.current);
         relayReconnectTimerRef.current = null;
@@ -1984,9 +2045,20 @@ export default function App(): JSX.Element {
         return;
       }
 
-      // For "create" intent, the signaling relay URL stays unchanged.
-      // The creator's own LAN IP is passed separately as hostCandidateBootstrapUrl
-      // (used only as WebRTC metadata), and must never replace the relay's address.
+      // For "create" intent, resolve the creator's own network IP so the room
+      // is hosted on the creator's own machine, not the relay.
+      if (intent === "create") {
+        try {
+          const networkInfo = await window.electronApi.getLocalNetworkInfo();
+          const preferredAddress = pickPreferredHostAddress([networkInfo.preferredAddress, ...networkInfo.addresses]);
+          if (preferredAddress) {
+            parsed.hostname = preferredAddress;
+            resolvedBootstrapUrl = parsed.toString();
+          }
+        } catch {
+          // Fall through — loopback check below will prompt if needed.
+        }
+      }
     } catch {
       addEvent("error: invalid bootstrap URL format");
       setSessionState("signaling disconnected");
@@ -2112,8 +2184,8 @@ export default function App(): JSX.Element {
     }
 
     if (signalingState === "connected") {
-      signalingRef.current?.subscribeRelayRooms();
-      signalingRef.current?.requestRelayRoomList();
+      relaySignalingRef.current?.subscribeRelayRooms();
+      relaySignalingRef.current?.requestRelayRoomList();
       return;
     }
 

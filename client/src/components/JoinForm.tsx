@@ -110,10 +110,9 @@ export function JoinForm({
 
   const useDiscoveredRoom = (room: DiscoveredRoomSummary): void => {
     setJoinRoomId(room.roomId);
-    // Keep the relay URL for signaling — do NOT overwrite it with the room
-    // creator's hostIp. The relay already knows the room; the joiner only
-    // needs to send the roomId to the relay, not connect to the creator directly.
-    setJoinBootstrapUrl(defaultBootstrapUrl);
+    // Connect directly to the room creator's own server (Option B peer-hosted).
+    // The relay is only for discovery; the room itself lives on the creator's machine.
+    setJoinBootstrapUrl(`ws://${room.hostIp}:${room.hostPort}`);
   };
 
   if (step === "user-id") {
