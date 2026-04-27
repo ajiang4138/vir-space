@@ -1239,19 +1239,21 @@ export default function App(): JSX.Element {
         return;
       }
 
-      let hostIp = parseHostnameFromWsUrl(bootstrapUrlRef.current) ?? "";
-      if (!hostIp || isLoopbackHost(hostIp)) {
-        try {
-          const networkInfo = await window.electronApi.getLocalNetworkInfo();
-          if (cancelled) {
-            return;
-          }
-
-          hostIp = pickPreferredHostAddress([networkInfo.preferredAddress, ...networkInfo.addresses]) ?? "";
-        } catch {
-          addEvent("error: failed to resolve host IP for relay discovery listing");
+      // The hostIp in a room listing must always be THIS machine's own network
+      // IP so that peers can connect directly to the room creator via WebRTC.
+      // It must NEVER be derived from bootstrapUrlRef, which points to the
+      // relay server's IP (a different machine for non-spawning peers).
+      let hostIp = "";
+      try {
+        const networkInfo = await window.electronApi.getLocalNetworkInfo();
+        if (cancelled) {
           return;
         }
+
+        hostIp = pickPreferredHostAddress([networkInfo.preferredAddress, ...networkInfo.addresses]) ?? "";
+      } catch {
+        addEvent("error: failed to resolve host IP for relay discovery listing");
+        return;
       }
 
       if (!hostIp || isLoopbackHost(hostIp)) {
@@ -1263,7 +1265,7 @@ export default function App(): JSX.Element {
         roomId: room.roomId,
         hostDisplayName: room.myDisplayName,
         hostIp,
-        hostPort: parsePortFromWsUrl(bootstrapUrlRef.current),
+        hostPort: defaultHostPort,
         participantCount: room.participants.length,
         maxParticipants: maximumRoomParticipants,
         isJoinable: room.participants.length < maximumRoomParticipants,
