@@ -35,36 +35,45 @@ VIR is a desktop collaboration app for creating or joining shared rooms with rea
 ### Prerequisites
 - Node.js 20+
 - npm 10+
-
-### Steps
-1. Clone the repository:
-
-```bash
-git clone <your-repo-url>
-cd vir-space
-```
-
-2. Install all dependencies (client + server):
-
-```bash
-npm run install:all
-```
-*Note:* The `start.sh` script will run this as well.
+### Executable
+- Download either "VIR Space 0.1.0.exe" or "VIR Space Setup 0.1.0.exe"
+  - Either will work, but the setup executable will install application files to your disk
 
 ## Usage
 ### Join a VPN
 Join the GT VPN for correct relay server discovery. Make sure you and your peers are on the same gateway (DC, NI, ... etc)
 
-### Run the desktop client
+### Run the executable
 
 To run:
+Double-click on the downloaded executable
 
-```bash
-bash ./start.sh
-```
 *Note*: Please give the application a few minutes to start while it scans for relay servers.
 
-Or run it manually in your terminal:
+### Application Functions
+- Enter Name: your display name
+- Create Room: creates a room at your IP
+- Join Room: manually join a room through IP + Room ID + password, or check room discovery panel
+- Chatroom: send messages
+- Whiteboard: shared drawings
+- Shared Text Editor: collaborative text editor
+- File Transfer: send and receive files from peers in the same room
+- Transfer Ownership: changes the host of the room to another person
+
+## Run it manually in your terminal (dev mode):
+
+### Clone repo
+```bash
+git clone https://github.com/ajiang4138/vir-space.git
+```
+
+```bash
+cd vir-space
+```
+
+```bash
+npm run install:all
+```
 
 ```bash
 npm run dev
