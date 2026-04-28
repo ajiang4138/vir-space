@@ -282,6 +282,9 @@ export default function App(): JSX.Element {
   const [setupStep, setSetupStep] = useState<SetupStep>("user-id");
   const [userIdDraft, setUserIdDraft] = useState("");
   const [currentUserId, setCurrentUserId] = useState("");
+  // This machine's own preferred network IP, resolved at startup.
+  // Used to pre-fill the Create Room host IP field independently of the relay URL.
+  const [localHostIp, setLocalHostIp] = useState("");
 
   const [bootstrapUrl, setBootstrapUrl] = useState(defaultBootstrapUrl);
   const [signalingState, setSignalingState] = useState<SignalingConnectionState>("disconnected");
@@ -324,6 +327,10 @@ export default function App(): JSX.Element {
   const relaySignalingRef = useRef<SignalingClient | null>(null);
   const relayUrlRef = useRef<string>("");
   const relayListingReconnectTimerRef = useRef<number | null>(null);
+  // Set to true just before signalingRef intentionally switches servers
+  // (create/join startRoomFlow). Prevents onClose from killing the pending
+  // action and triggering the reconnect loop during the switchover.
+  const intentionalServerSwitchRef = useRef(false);
   const peerWebRtcManagersRef = useRef<Map<string, WebRtcPeerManager>>(new Map());
   const peerFileManagersRef = useRef<Map<string, FileTransferManager>>(new Map());
   const relayListingSignatureRef = useRef<string | null>(null);
@@ -980,6 +987,12 @@ export default function App(): JSX.Element {
     setEditorText("");
     setSessionState(nextStatus);
     setSetupStep(currentUserIdRef.current ? "mode" : "user-id");
+
+    // Reset signalingRef back to the relay so the reconnect loop doesn't
+    // keep retrying the old room server URL after leaving a room.
+    if (relayUrlRef.current) {
+      setBootstrapUrl(relayUrlRef.current);
+    }
   };
 
   const stopLocalHostService = async (): Promise<void> => {
@@ -1139,6 +1152,8 @@ export default function App(): JSX.Element {
         const preferredAddress = pickPreferredHostAddress([networkInfo.preferredAddress, ...networkInfo.addresses]);
         if (preferredAddress) {
           setBootstrapUrl(`ws://${preferredAddress}:${defaultHostPort}`);
+          // Also lock in the machine's own IP for the create-room form.
+          setLocalHostIp(preferredAddress);
         }
       } catch {
         // Leave the current field value and rely on explicit prompt later.
@@ -1517,6 +1532,7 @@ export default function App(): JSX.Element {
       onOpen: () => {
         setSignalingState("connected");
         setSessionState("connected to bootstrap server");
+        intentionalServerSwitchRef.current = false; // clear on any successful open
         addEvent(`connected to bootstrap signaling server: ${bootstrapUrlRef.current}`);
         setConnectedRelayUrl(bootstrapUrlRef.current);
         setRelayConnectedAtMs(Date.now());
@@ -1565,8 +1581,29 @@ export default function App(): JSX.Element {
           window.clearInterval(relayServerStatusPollTimerRef.current);
           relayServerStatusPollTimerRef.current = null;
         }
+        if (intentionalServerSwitchRef.current) {
+          intentionalServerSwitchRef.current = false;
+          addEvent("signaling: switching to room server");
+          return; // preserve pendingActionRef and signalingState during switchover
+        }
         if (handoverReconnectInProgressRef.current) {
-          addEvent("signaling reconnecting for host handover");
+          // TCP-level failure (connection refused) — the new host service may
+          // not be ready yet. Schedule a retry just like ROOM_NOT_FOUND does.
+          const pending = pendingActionRef.current;
+          if (pending && handoverReconnectAttemptsRef.current < 8) {
+            handoverReconnectAttemptsRef.current += 1;
+            const delay = Math.min(1500, 300 * handoverReconnectAttemptsRef.current);
+            addEvent(`handover connect retry ${handoverReconnectAttemptsRef.current}/8 in ${delay}ms`);
+            window.setTimeout(() => {
+              if (handoverReconnectInProgressRef.current) {
+                signalingRef.current?.connect(pending.bootstrapUrl);
+              }
+            }, delay);
+          } else if (handoverReconnectAttemptsRef.current >= 8) {
+            handoverReconnectInProgressRef.current = false;
+            handoverReconnectAttemptsRef.current = 0;
+            addEvent("error: handover failed after 8 attempts");
+          }
           return;
         }
         setSignalingState("disconnected");
@@ -2140,6 +2177,9 @@ export default function App(): JSX.Element {
       setBootstrapUrl(resolvedBootstrapUrl);
     }
 
+    // Signal that we are intentionally switching signalingRef to a new server
+    // so onClose does not clear pendingActionRef or fire the reconnect loop.
+    intentionalServerSwitchRef.current = true;
     signalingRef.current?.connect(resolvedBootstrapUrl);
   };
 
@@ -2431,6 +2471,7 @@ export default function App(): JSX.Element {
                 relayDiscoveryHost={relayDiscoveryStatus?.host ?? null}
                 roomActionDisabled={Boolean(activeRoom)}
                 defaultBootstrapUrl={bootstrapUrlRef.current}
+                localHostIp={localHostIp}
                 onUserIdDraftChange={setUserIdDraft}
                 onSubmitUserId={submitUserId}
                 onChooseCreate={() => setSetupStep("create")}

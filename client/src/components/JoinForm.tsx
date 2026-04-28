@@ -15,6 +15,7 @@ interface JoinFormProps {
   relayDiscoveryHost: string | null;
   roomActionDisabled: boolean;
   defaultBootstrapUrl: string;
+  localHostIp?: string;
   onUserIdDraftChange: (next: string) => void;
   onSubmitUserId: () => void;
   onChooseCreate: () => void;
@@ -58,6 +59,7 @@ export function JoinForm({
   relayDiscoveryHost,
   roomActionDisabled,
   defaultBootstrapUrl,
+  localHostIp,
   onUserIdDraftChange,
   onSubmitUserId,
   onChooseCreate,
@@ -67,7 +69,7 @@ export function JoinForm({
   onCreateRoom,
   onJoinRoom,
 }: JoinFormProps): JSX.Element {
-  const defaultHostIp = extractHostIp(defaultBootstrapUrl);
+  const defaultHostIp = localHostIp || extractHostIp(defaultBootstrapUrl);
   const [createRoomId, setCreateRoomId] = useState(generateRoomId());
   const [createHostIp, setCreateHostIp] = useState(defaultHostIp);
   const [createRoomPassword, setCreateRoomPassword] = useState("");
