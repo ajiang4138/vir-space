@@ -36,8 +36,10 @@ VIR is a desktop collaboration app for creating or joining shared rooms with rea
 - Node.js 20+
 - npm 10+
 ### Executable
+- Go to the releases tab on the right
 - Download either "VIR Space 0.1.0.exe" or "VIR Space Setup 0.1.0.exe"
   - Either will work, but the setup executable will install application files to your disk
+- Note: you do NOT need to download the .zip or tar.gz files. The executables are made for standalone execution!
 
 ## Usage
 ### Join a VPN
@@ -60,7 +62,7 @@ Double-click on the downloaded executable
 - File Transfer: send and receive files from peers in the same room
 - Transfer Ownership: changes the host of the room to another person
 
-## Run it manually in your terminal (dev mode):
+## Run Manually (Terminal Dev Mode):
 
 ### Clone repo
 ```bash
