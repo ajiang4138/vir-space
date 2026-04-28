@@ -1821,6 +1821,7 @@ export default function App(): JSX.Element {
           return;
         }
 
+        intentionalServerSwitchRef.current = true;
         const newRole: ParticipantRole = message.newHostPeerId === room.myPeerId ? "host" : "guest";
         applyRoomState(message.room, room.myPeerId, newRole, room.myDisplayName);
         if (message.newHostBootstrapUrl) {

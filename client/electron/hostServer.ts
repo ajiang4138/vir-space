@@ -422,7 +422,13 @@ export class HostRoomService {
       }
 
       if (client.role === "host") {
-        void this.stop("host-ended");
+        const room = this.activeRoom;
+        if (room && room.participants.size > 1) {
+          this.transferRoomOwnership(client, room);
+          this.leaveGuest(client);
+        } else {
+          void this.stop("host-ended");
+        }
         return;
       }
 
@@ -718,7 +724,13 @@ export class HostRoomService {
     }
 
     if (client.role === "host" || client.id === room.hostPeerId) {
-      void this.stop("host-disconnected");
+      const nextHost = this.getNextHostBySeniority(room, client.id);
+      if (nextHost) {
+        this.transferRoomOwnership(client, room);
+        this.leaveGuest(client);
+      } else {
+        void this.stop("host-disconnected");
+      }
       return;
     }
 
