@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+﻿import { useEffect, useRef, useState } from "react";
 import { ChatPanel } from "./components/ChatPanel";
 import { DebugLog } from "./components/DebugLog";
 import { DebugWindow } from "./components/DebugWindow";
@@ -248,7 +248,7 @@ function RelayStatusBadge({
 }): JSX.Element {
   const isConnected = signalingState === "connected";
   const isScanning = relayDiscoveryPhase === "scanning" && signalingState === "disconnected";
-  const label = isConnected ? "Relay Connected" : isScanning ? "Scanning…" : "Connecting…";
+  const label = isConnected ? "Relay Connected" : isScanning ? "Scanningâ€¦" : "Connectingâ€¦";
   const badgeClass = `relay-status-badge relay-status-badge--${isConnected ? "connected" : "pending"}`;
   return (
     <span className="relay-status-badge-wrap">
@@ -331,6 +331,10 @@ export default function App(): JSX.Element {
   // (create/join startRoomFlow). Prevents onClose from killing the pending
   // action and triggering the reconnect loop during the switchover.
   const intentionalServerSwitchRef = useRef(false);
+  // Set to true after leaving a room so signalingRef stays disconnected until
+  // the user starts a new create/join. Prevents signalingRef from reconnecting
+  // to the relay and receiving relay-broadcast messages it doesn't understand.
+  const signalingIdleRef = useRef(false);
   const peerWebRtcManagersRef = useRef<Map<string, WebRtcPeerManager>>(new Map());
   const peerFileManagersRef = useRef<Map<string, FileTransferManager>>(new Map());
   const relayListingSignatureRef = useRef<string | null>(null);
@@ -909,7 +913,7 @@ export default function App(): JSX.Element {
           },
           onConnectionState: (state) => {
             if (state === "failed") {
-              addEvent(`⚠️ Failed to establish direct P2P connection with ${remotePeer.displayName}`);
+              addEvent(`âš ï¸ Failed to establish direct P2P connection with ${remotePeer.displayName}`);
             }
           },
           onStatusChange: () => {
@@ -988,6 +992,10 @@ export default function App(): JSX.Element {
     setSessionState(nextStatus);
     setSetupStep(currentUserIdRef.current ? "mode" : "user-id");
 
+    // Mark signalingRef as intentionally idle â€” it will not reconnect to the
+    // relay until the user starts a new create/join.
+    signalingIdleRef.current = true;
+
     // Reset signalingRef back to the relay so the reconnect loop doesn't
     // keep retrying the old room server URL after leaving a room.
     if (relayUrlRef.current) {
@@ -999,7 +1007,7 @@ export default function App(): JSX.Element {
     try {
       await window.electronApi.stopHostService();
     } catch {
-      addEvent("⚠️ Failed to stop local room server");
+      addEvent("âš ï¸ Failed to stop local room server");
     }
   };
 
@@ -1038,7 +1046,7 @@ export default function App(): JSX.Element {
 
     lastSelectedRelayLogRef.current = selected;
 
-    // Don't log bootstrap URL changes while already connected — the change
+    // Don't log bootstrap URL changes while already connected â€” the change
     // is recorded for future reconnects but the current connection is fine.
     if (signalingStateRef.current !== "connected") {
       addEvent(`Relay server selected: ${selected}`);
@@ -1202,7 +1210,7 @@ export default function App(): JSX.Element {
           return;
         }
 
-        addEvent(`✅ Found relay server on network: ${discoveredUrl}`);
+        addEvent(`âœ… Found relay server on network: ${discoveredUrl}`);
 
         if (setupStepRef.current !== "join") {
           return;
@@ -1279,12 +1287,12 @@ export default function App(): JSX.Element {
 
         hostIp = pickPreferredHostAddress([networkInfo.preferredAddress, ...networkInfo.addresses]) ?? "";
       } catch {
-        addEvent("⚠️ Could not detect your local IP — room may not appear on relay");
+        addEvent("âš ï¸ Could not detect your local IP â€” room may not appear on relay");
         return;
       }
 
       if (!hostIp || isLoopbackHost(hostIp)) {
-        addEvent("⚠️ Skipping relay listing — no valid network IP detected");
+        addEvent("âš ï¸ Skipping relay listing â€” no valid network IP detected");
         return;
       }
 
@@ -1611,11 +1619,11 @@ export default function App(): JSX.Element {
             handoverReconnectInProgressRef.current = true;
             handoverReconnectAttemptsRef.current = 0;
           }
-          addEvent("Switching connection to room server — waiting for it to open...");
+          addEvent("Switching connection to room server â€” waiting for it to open...");
           return; // Preserve pendingActionRef and signalingState
         }
         if (handoverReconnectInProgressRef.current) {
-          // TCP-level failure (connection refused) — the new host service may
+          // TCP-level failure (connection refused) â€” the new host service may
           // not be ready yet. Schedule a retry just like ROOM_NOT_FOUND does.
           const pending = pendingActionRef.current;
           if (pending && handoverReconnectAttemptsRef.current < 8) {
@@ -1630,7 +1638,7 @@ export default function App(): JSX.Element {
           } else if (handoverReconnectAttemptsRef.current >= 8) {
             handoverReconnectInProgressRef.current = false;
             handoverReconnectAttemptsRef.current = 0;
-            addEvent("⚠️ Room server connection failed after 8 attempts — please try again");
+            addEvent("âš ï¸ Room server connection failed after 8 attempts â€” please try again");
           }
           return;
         }
@@ -1675,7 +1683,7 @@ export default function App(): JSX.Element {
 
         applyRoomState(message.room, message.senderPeerId, message.role, pending.displayName);
         setSessionState("room created");
-        addEvent(`✅ Room created: ${message.roomId}`);
+        addEvent(`âœ… Room created: ${message.roomId}`);
         setTimeout(() => {
           if (activeRoomRef.current?.myRole === "host") {
             setSessionState("waiting for guest");
@@ -1698,7 +1706,7 @@ export default function App(): JSX.Element {
           addEvent("Reconnected to the new host's room server");
         }
         setSessionState("room joined");
-        addEvent(`✅ Joined room: ${message.roomId}`);
+        addEvent(`âœ… Joined room: ${message.roomId}`);
         await tryStartNegotiation();
       },
       onRoomState: async (message) => {
@@ -1820,15 +1828,19 @@ export default function App(): JSX.Element {
         if (message.previousHostPeerId === room.myPeerId) {
           if (leaveAfterOwnershipTransferRef.current) {
             leaveAfterOwnershipTransferRef.current = false;
+            // Stop this machine's room server so the port is freed for future creates.
+            void stopLocalHostService();
             signalingRef.current?.leaveRoom(message.roomId);
             clearRoomState("connected to bootstrap server");
-            addEvent(`Host control given to ${message.newHostDisplayName} — you left the room`);
+            addEvent(`Host control given to ${message.newHostDisplayName} â€” you left the room`);
             return;
           }
 
-          addEvent(`Host control given to ${message.newHostDisplayName} — you are now a participant`);
+          addEvent(`Host control given to ${message.newHostDisplayName} â€” you are now a participant`);
           if (message.newHostBootstrapUrl && message.newHostBootstrapUrl !== bootstrapUrlRef.current) {
             const nextBootstrapUrl = message.newHostBootstrapUrl;
+            // Stop this machine's room server before switching to the new host.
+            void stopLocalHostService();
             window.setTimeout(() => {
               reconnectToTransferredHost(nextBootstrapUrl);
             }, 600);
@@ -1939,7 +1951,7 @@ export default function App(): JSX.Element {
     };
   }, []);
 
-  // ── Relay-listing-only connection ─────────────────────────────────────────
+  // â”€â”€ Relay-listing-only connection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // This second SignalingClient stays permanently connected to the relay URL
   // so relay room subscribe/register/remove messages always reach the relay,
   // even when signalingRef is pointing at a room-host's server.
@@ -2028,7 +2040,12 @@ export default function App(): JSX.Element {
     relayReconnectTimerRef.current = window.setTimeout(() => {
       relayReconnectTimerRef.current = null;
 
-      if (activeRoomRef.current || pendingActionRef.current || (signalingStateRef.current !== "connecting" && signalingStateRef.current !== "disconnected")) {
+      if (
+        signalingIdleRef.current ||
+        activeRoomRef.current ||
+        pendingActionRef.current ||
+        (signalingStateRef.current !== "connecting" && signalingStateRef.current !== "disconnected")
+      ) {
         return;
       }
 
@@ -2089,6 +2106,9 @@ export default function App(): JSX.Element {
       return;
     }
 
+    // Re-enable signalingRef reconnection for this new session.
+    signalingIdleRef.current = false;
+
     if (roomPassword.length < minimumRoomPasswordLength) {
       addEvent(`error: room password must be at least ${minimumRoomPasswordLength} characters`);
       setSessionState("invalid room password");
@@ -2115,7 +2135,7 @@ export default function App(): JSX.Element {
             resolvedBootstrapUrl = parsed.toString();
           }
         } catch {
-          // Fall through — loopback check below will prompt if needed.
+          // Fall through â€” loopback check below will prompt if needed.
         }
       }
     } catch {
@@ -2174,9 +2194,9 @@ export default function App(): JSX.Element {
       const shouldStartLocalHostService = await shouldStartLocalHostServiceForCreate(resolvedBootstrapUrl);
 
       if (bootstrapServerReachable) {
-        addEvent("Found existing server — using it for your room");
+        addEvent("Found existing server â€” using it for your room");
       } else if (!shouldStartLocalHostService) {
-        addEvent("Using external room server — no local server needed");
+        addEvent("Using external room server â€” no local server needed");
       } else {
         try {
           const hostStatus = await window.electronApi.startHostService(requestedPort);
@@ -2185,14 +2205,14 @@ export default function App(): JSX.Element {
             const parsed = new URL(resolvedBootstrapUrl);
             parsed.port = String(actualPort);
             resolvedBootstrapUrl = parsed.toString();
-            addEvent(`Port ${requestedPort} was in use — using port ${actualPort} instead`);
+            addEvent(`Port ${requestedPort} was in use â€” using port ${actualPort} instead`);
           } else {
             addEvent(`Your room server started on port ${requestedPort}`);
           }
         } catch (error) {
           const message = error instanceof Error ? error.message : "failed to start local host signaling service";
           if (isPortInUseError(message)) {
-            addEvent(`Room server already running on port ${requestedPort} — reusing it`);
+            addEvent(`Room server already running on port ${requestedPort} â€” reusing it`);
           } else {
             pendingActionRef.current = null;
             addEvent(`error: ${message}`);
