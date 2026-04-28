@@ -1,4 +1,4 @@
-﻿import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChatPanel } from "./components/ChatPanel";
 import { DebugLog } from "./components/DebugLog";
 import { DebugWindow } from "./components/DebugWindow";
@@ -248,7 +248,7 @@ function RelayStatusBadge({
 }): JSX.Element {
   const isConnected = signalingState === "connected";
   const isScanning = relayDiscoveryPhase === "scanning" && signalingState === "disconnected";
-  const label = isConnected ? "Relay Connected" : isScanning ? "Scanningâ€¦" : "Connectingâ€¦";
+  const label = isConnected ? "Relay Connected" : isScanning ? "Scanning..." : "Connecting...";
   const badgeClass = `relay-status-badge relay-status-badge--${isConnected ? "connected" : "pending"}`;
   return (
     <span className="relay-status-badge-wrap">
@@ -1072,11 +1072,11 @@ export default function App(): JSX.Element {
           const route = manager
             ? await manager.getConnectionRoute()
             : {
-                kind: "unknown" as const,
-                localCandidateType: null,
-                remoteCandidateType: null,
-                protocol: null,
-              };
+              kind: "unknown" as const,
+              localCandidateType: null,
+              remoteCandidateType: null,
+              protocol: null,
+            };
 
           return {
             peerId: peer.peerId,
@@ -1462,6 +1462,7 @@ export default function App(): JSX.Element {
 
   const becomeTransferredHostAndReconnect = async (nextBootstrapUrl: string): Promise<void> => {
     const requestedPort = parsePortFromWsUrl(nextBootstrapUrl);
+    intentionalServerSwitchRef.current = true;
 
     try {
       await window.electronApi.startHostService(requestedPort);
@@ -1820,7 +1821,8 @@ export default function App(): JSX.Element {
           return;
         }
 
-        applyRoomState(message.room, room.myPeerId, room.myRole, room.myDisplayName);
+        const newRole: ParticipantRole = message.newHostPeerId === room.myPeerId ? "host" : "guest";
+        applyRoomState(message.room, room.myPeerId, newRole, room.myDisplayName);
         if (message.newHostBootstrapUrl) {
           setBootstrapUrl(message.newHostBootstrapUrl);
         }
@@ -2033,9 +2035,9 @@ export default function App(): JSX.Element {
     const delayMs = isFirstAttempt
       ? 0
       : Math.min(
-          relayReconnectMaxDelayMs,
-          relayReconnectBaseDelayMs * relayReconnectAttemptsRef.current,
-        );
+        relayReconnectMaxDelayMs,
+        relayReconnectBaseDelayMs * relayReconnectAttemptsRef.current,
+      );
 
     relayReconnectTimerRef.current = window.setTimeout(() => {
       relayReconnectTimerRef.current = null;
@@ -2552,10 +2554,10 @@ export default function App(): JSX.Element {
               />
             </div>
             <div className="setup-debug">
-              <DebugLog 
-                events={events} 
-                isWindowOpen={showDebugWindow} 
-                onToggleWindow={() => setShowDebugWindow(v => !v)} 
+              <DebugLog
+                events={events}
+                isWindowOpen={showDebugWindow}
+                onToggleWindow={() => setShowDebugWindow(v => !v)}
               />
             </div>
           </div>
@@ -2584,35 +2586,35 @@ export default function App(): JSX.Element {
                 <>
                   <RelayStatusBadge signalingState={signalingState} relayDiscoveryPhase={relayDiscoveryStatus?.phase ?? "idle"} />
                   <nav className="left-lane-tabs" aria-label="Workspace tabs">
-                  <button
-                    type="button"
-                    className={`lane-tab${activeWorkspace === "chatroom" ? " active" : ""}`}
-                    onClick={() => setActiveWorkspace("chatroom")}
-                  >
-                    Chatroom
-                  </button>
-                  <button
-                    type="button"
-                    className={`lane-tab${activeWorkspace === "whiteboard" ? " active" : ""}`}
-                    onClick={() => setActiveWorkspace("whiteboard")}
-                  >
-                    Whiteboard
-                  </button>
-                  <button
-                    type="button"
-                    className={`lane-tab${activeWorkspace === "editor" ? " active" : ""}`}
-                    onClick={() => setActiveWorkspace("editor")}
-                  >
-                    Shared Editor
-                  </button>
-                  <button
-                    type="button"
-                    className={`lane-tab${activeWorkspace === "files" ? " active" : ""}`}
-                    onClick={() => setActiveWorkspace("files")}
-                  >
-                    File Sharing
-                  </button>
-                </nav>
+                    <button
+                      type="button"
+                      className={`lane-tab${activeWorkspace === "chatroom" ? " active" : ""}`}
+                      onClick={() => setActiveWorkspace("chatroom")}
+                    >
+                      Chatroom
+                    </button>
+                    <button
+                      type="button"
+                      className={`lane-tab${activeWorkspace === "whiteboard" ? " active" : ""}`}
+                      onClick={() => setActiveWorkspace("whiteboard")}
+                    >
+                      Whiteboard
+                    </button>
+                    <button
+                      type="button"
+                      className={`lane-tab${activeWorkspace === "editor" ? " active" : ""}`}
+                      onClick={() => setActiveWorkspace("editor")}
+                    >
+                      Shared Editor
+                    </button>
+                    <button
+                      type="button"
+                      className={`lane-tab${activeWorkspace === "files" ? " active" : ""}`}
+                      onClick={() => setActiveWorkspace("files")}
+                    >
+                      File Sharing
+                    </button>
+                  </nav>
                 </>
               ) : null}
             </div>
@@ -2636,7 +2638,7 @@ export default function App(): JSX.Element {
                       whiteboardHistory={whiteboardHistory}
                       onSendUpdate={(data, displayName) => {
                         const msg = { type: "whiteboard-update", roomId: activeRoom.roomId, senderPeerId: activeRoom.myPeerId, senderDisplayName: displayName, data };
-                        
+
                         // Save the local update to history
                         try {
                           const parsedData = JSON.parse(data);
@@ -2654,7 +2656,7 @@ export default function App(): JSX.Element {
                         } catch {
                           // If parsing fails, ignore
                         }
-                        
+
                         for (const manager of peerWebRtcManagersRef.current.values()) {
                           manager.sendAppDataMessage(JSON.stringify(msg));
                         }
@@ -2768,10 +2770,10 @@ export default function App(): JSX.Element {
                   )}
                 </section>
                 <div className="setup-debug">
-                  <DebugLog 
-                    events={events} 
-                    isWindowOpen={showDebugWindow} 
-                    onToggleWindow={() => setShowDebugWindow(v => !v)} 
+                  <DebugLog
+                    events={events}
+                    isWindowOpen={showDebugWindow}
+                    onToggleWindow={() => setShowDebugWindow(v => !v)}
                   />
                 </div>
               </div>

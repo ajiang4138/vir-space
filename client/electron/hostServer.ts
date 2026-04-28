@@ -844,6 +844,9 @@ export class HostRoomService {
     this.httpServer = null;
 
     if (wsServer) {
+      for (const socket of wsServer.clients) {
+        socket.terminate();
+      }
       await new Promise<void>((resolve) => {
         wsServer.close(() => resolve());
       });
