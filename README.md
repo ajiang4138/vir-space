@@ -64,7 +64,7 @@ Double-click on the downloaded executable
 
 ## Run Manually (Terminal Dev Mode):
 
-### Clone repo
+### Clone Repo & CD Root
 ```bash
 git clone https://github.com/ajiang4138/vir-space.git
 ```
@@ -73,6 +73,7 @@ git clone https://github.com/ajiang4138/vir-space.git
 cd vir-space
 ```
 
+### NPM Commands
 ```bash
 npm run install:all
 ```
