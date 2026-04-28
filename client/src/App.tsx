@@ -1414,7 +1414,13 @@ export default function App(): JSX.Element {
     }
   };
 
-  const reconnectToTransferredHost = (nextBootstrapUrl: string, intent: RoomIntent = "join"): void => {
+  const reconnectToTransferredHost = (
+    nextBootstrapUrl: string,
+    intent: RoomIntent = "join",
+    // externalBootstrapUrl: the URL others use to reach this host (may differ
+    // from nextBootstrapUrl when nextBootstrapUrl is loopback for self-connection)
+    externalBootstrapUrl?: string,
+  ): void => {
     const room = activeRoomRef.current;
     if (!room || !nextBootstrapUrl) {
       return;
@@ -1426,6 +1432,8 @@ export default function App(): JSX.Element {
       return;
     }
 
+    const candidateUrl = intent === "create" ? (externalBootstrapUrl ?? nextBootstrapUrl) : undefined;
+
     handoverReconnectInProgressRef.current = true;
     handoverReconnectAttemptsRef.current = 0;
     setBootstrapUrl(nextBootstrapUrl);
@@ -1435,15 +1443,11 @@ export default function App(): JSX.Element {
       bootstrapUrl: nextBootstrapUrl,
       displayName: room.myDisplayName,
       roomPassword,
-      hostCandidateBootstrapUrl: intent === "create" ? nextBootstrapUrl : undefined,
+      hostCandidateBootstrapUrl: candidateUrl,
     };
     setSignalingState("connecting");
     setSessionState("connecting to bootstrap server");
-    addEvent(`Connecting room session to: ${nextBootstrapUrl}`);
-    // Use intentionalServerSwitchRef so the old connection's onClose does
-    // not immediately schedule a retry — we are deliberately switching servers.
-    // Retry protection (handoverReconnectInProgressRef) kicks in only if the
-    // NEW connection to nextBootstrapUrl fails afterward.
+    addEvent(`Connecting room session to: ${externalBootstrapUrl ?? nextBootstrapUrl}`);
     intentionalServerSwitchRef.current = true;
     signalingRef.current?.connect(nextBootstrapUrl);
   };
@@ -1461,7 +1465,11 @@ export default function App(): JSX.Element {
       return;
     }
 
-    reconnectToTransferredHost(nextBootstrapUrl, "create");
+    // Connect via loopback so the VPN doesn't need to hairpin back to this machine.
+    // The external URL (nextBootstrapUrl) is passed as externalBootstrapUrl so the
+    // server knows the real address for future host-transfer messages.
+    const localConnectUrl = `ws://127.0.0.1:${requestedPort}`;
+    reconnectToTransferredHost(localConnectUrl, "create", nextBootstrapUrl);
   };
 
   useEffect(() => {
@@ -1538,9 +1546,14 @@ export default function App(): JSX.Element {
         setSignalingState("connected");
         setSessionState("connected to bootstrap server");
         intentionalServerSwitchRef.current = false; // clear on any successful open
-        // Use pending.bootstrapUrl if available — bootstrapUrlRef may lag behind
-        // React state updates and could be stale at the moment onOpen fires.
-        const connectedUrl = pendingActionRef.current?.bootstrapUrl ?? bootstrapUrlRef.current;
+        // For CREATE intent: show the external (VPN) IP in the UI, not the loopback URL
+        // used for the actual signalingRef connection.
+        const connectedUrl = (
+          pendingActionRef.current?.intent === "create" &&
+          pendingActionRef.current.hostCandidateBootstrapUrl
+        )
+          ? pendingActionRef.current.hostCandidateBootstrapUrl
+          : (pendingActionRef.current?.bootstrapUrl ?? bootstrapUrlRef.current);
         addEvent(`Connected to signaling server at ${connectedUrl}`);
         setConnectedRelayUrl(connectedUrl);
         setRelayConnectedAtMs(Date.now());
@@ -2131,7 +2144,8 @@ export default function App(): JSX.Element {
       return;
     }
 
-    setBootstrapUrl(resolvedBootstrapUrl);
+    // NOTE: setBootstrapUrl is intentionally deferred to after all awaits
+    //       so the reconnect loop stays on the relay URL if the relay drops mid-flow.
     roomPasswordRef.current = roomPassword;
     chatHistoryRef.current = [];
     setMessages([]);
@@ -2189,23 +2203,33 @@ export default function App(): JSX.Element {
       }
 
       // Re-stamp pendingActionRef with the final resolved URL (port may have changed).
-      // Preserve hostCandidateBootstrapUrl so the server knows the creator's address
-      // for future host-transfer flows.
+      // Preserve hostCandidateBootstrapUrl for future host-transfer flows.
+      // For CREATE: use loopback as the connect URL so the VPN doesn't need to
+      // hairpin traffic back to this machine. The external URL (resolvedBootstrapUrl)
+      // goes in hostCandidateBootstrapUrl so other peers can reach this room.
+      const connectUrl = `ws://127.0.0.1:${parsePortFromWsUrl(resolvedBootstrapUrl)}`;
       pendingActionRef.current = {
         intent,
         roomId,
-        bootstrapUrl: resolvedBootstrapUrl,
+        bootstrapUrl: connectUrl,
         displayName,
         roomPassword,
-        hostCandidateBootstrapUrl: pendingActionRef.current?.hostCandidateBootstrapUrl,
+        hostCandidateBootstrapUrl: resolvedBootstrapUrl,
       };
+
+      // All async work done. Set bootstrapUrl to loopback connect URL now.
+      setBootstrapUrl(connectUrl);
+      setConnectedRelayUrl(resolvedBootstrapUrl); // show external IP in UI
+    } else {
+      // JOIN: connect directly to the room host's external URL.
       setBootstrapUrl(resolvedBootstrapUrl);
+      setConnectedRelayUrl(resolvedBootstrapUrl);
     }
 
-    // Signal that we are intentionally switching signalingRef to a new server
-    // so onClose does not clear pendingActionRef or fire the reconnect loop.
+    handoverReconnectInProgressRef.current = true;
+    handoverReconnectAttemptsRef.current = 0;
     intentionalServerSwitchRef.current = true;
-    signalingRef.current?.connect(resolvedBootstrapUrl);
+    signalingRef.current?.connect(pendingActionRef.current?.bootstrapUrl ?? resolvedBootstrapUrl);
   };
 
   const createRoom = (payload: { roomId: string; bootstrapUrl: string; roomPassword: string }): void => {
@@ -2679,7 +2703,7 @@ export default function App(): JSX.Element {
                     roomId={activeRoom?.roomId ?? "-"}
                     yourRole={activeRoom?.myRole ?? "guest"}
                     hostDisplayName={activeRoom?.hostDisplayName ?? "-"}
-                    bootstrapUrl={bootstrapUrl}
+                    bootstrapUrl={connectedRelayUrl}
                     inRoom={Boolean(activeRoom)}
                     compact
                     showTitle={false}
