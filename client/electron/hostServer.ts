@@ -280,17 +280,17 @@ export class HostRoomService {
   }
 
   private async waitForPort(httpServer: ReturnType<typeof createServer>, port: number): Promise<void> {
-    const maxRetries = 5;
-    const retryDelay = 200; // ms
+    const maxAttempts = 10;
+    let currentPort = port;
 
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
         await new Promise<void>((resolve, reject) => {
           const onListening = () => {
             httpServer.removeListener("error", onError);
             resolve();
           };
-          const onError = (error: Error) => {
+          const onError = (error: any) => {
             httpServer.removeListener("listening", onListening);
             reject(error);
           };
@@ -298,18 +298,20 @@ export class HostRoomService {
           httpServer.once("listening", onListening);
           httpServer.once("error", onError);
 
-          httpServer.listen(port, "0.0.0.0");
+          httpServer.listen(currentPort, "0.0.0.0");
         });
         return; // Success
-      } catch (error) {
-        if (attempt < maxRetries - 1) {
-          // Wait before retrying
-          await new Promise((resolve) => setTimeout(resolve, retryDelay));
+      } catch (error: any) {
+        const isAddressInUse = error && typeof error === "object" && (error.code === "EADDRINUSE" || error.message?.includes("EADDRINUSE"));
+        if (isAddressInUse) {
+          currentPort++;
         } else {
-          throw error; // Final attempt failed
+          throw error; // Rethrow other unexpected errors
         }
       }
     }
+
+    throw new Error(`Failed to find an available port after ${maxAttempts} attempts starting from ${port}`);
   }
 
   async stop(reason: "host-ended" | "host-disconnected" = "host-disconnected"): Promise<void> {

@@ -1465,20 +1465,21 @@ export default function App(): JSX.Element {
     intentionalServerSwitchRef.current = true;
 
     try {
-      await window.electronApi.startHostService(requestedPort);
-      addEvent(`Room server relocated to new host: ${nextBootstrapUrl}`);
+      const status = await window.electronApi.startHostService(requestedPort);
+      const actualPort = status.port ?? requestedPort;
+      addEvent(`Room server relocated to new host (using port ${actualPort}): ${nextBootstrapUrl}`);
+      
+      // Connect via loopback so the VPN doesn't need to hairpin back to this machine.
+      // The external URL (nextBootstrapUrl) is passed as externalBootstrapUrl so the
+      // server knows the real address for future host-transfer messages.
+      const localConnectUrl = `ws://127.0.0.1:${actualPort}`;
+      reconnectToTransferredHost(localConnectUrl, "create", nextBootstrapUrl);
     } catch (error) {
       const message = error instanceof Error ? error.message : "failed to start new host signaling service";
       addEvent(`error: ${message}`);
       handoverReconnectInProgressRef.current = false;
       return;
     }
-
-    // Connect via loopback so the VPN doesn't need to hairpin back to this machine.
-    // The external URL (nextBootstrapUrl) is passed as externalBootstrapUrl so the
-    // server knows the real address for future host-transfer messages.
-    const localConnectUrl = `ws://127.0.0.1:${requestedPort}`;
-    reconnectToTransferredHost(localConnectUrl, "create", nextBootstrapUrl);
   };
 
   useEffect(() => {
