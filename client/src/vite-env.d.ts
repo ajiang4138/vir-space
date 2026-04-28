@@ -21,7 +21,7 @@ declare global {
       platform: NodeJS.Platform;
       versions: NodeJS.ProcessVersions;
       startHostService: (requestedPort?: number) => Promise<HostServiceInfo>;
-      stopHostService: () => Promise<HostServiceInfo>;
+      stopHostService: (reason?: "host-ended" | "host-disconnected" | "host-migrated") => Promise<HostServiceInfo>;
       getHostServiceStatus: () => Promise<HostServiceInfo>;
       getLocalNetworkInfo: () => Promise<LocalNetworkInfo>;
       startRelayDiscoveryScan: () => Promise<RelayDiscoveryStatus>;

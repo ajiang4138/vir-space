@@ -674,7 +674,7 @@ function getLocalNetworkInfo(): LocalNetworkInfo {
   };
 }
 
-async function stopHostService(reason: "host-ended" | "host-disconnected" = "host-disconnected"): Promise<HostServiceInfo> {
+async function stopHostService(reason: "host-ended" | "host-disconnected" | "host-migrated" = "host-disconnected"): Promise<HostServiceInfo> {
   await hostService.stop(reason);
   return hostService.getStatus();
 }
@@ -683,8 +683,8 @@ ipcMain.handle("host-service:start", async (_event, requestedPort?: number) => {
   return hostService.start(requestedPort);
 });
 
-ipcMain.handle("host-service:stop", async () => {
-  return stopHostService("host-disconnected");
+ipcMain.handle("host-service:stop", async (_event, reason?: "host-ended" | "host-disconnected" | "host-migrated") => {
+  return stopHostService(reason ?? "host-disconnected");
 });
 
 ipcMain.handle("host-service:status", async () => hostService.getStatus());

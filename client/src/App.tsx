@@ -1003,11 +1003,11 @@ export default function App(): JSX.Element {
     }
   };
 
-  const stopLocalHostService = async (): Promise<void> => {
+  const stopLocalHostService = async (reason?: "host-ended" | "host-disconnected" | "host-migrated"): Promise<void> => {
     try {
-      await window.electronApi.stopHostService();
+      await window.electronApi.stopHostService(reason);
     } catch {
-      addEvent("âš ï¸ Failed to stop local room server");
+      addEvent("⚠️ Failed to stop local room server");
     }
   };
 
@@ -1833,7 +1833,7 @@ export default function App(): JSX.Element {
           if (leaveAfterOwnershipTransferRef.current) {
             leaveAfterOwnershipTransferRef.current = false;
             // Stop this machine's room server so the port is freed for future creates.
-            void stopLocalHostService();
+            void stopLocalHostService("host-migrated");
             signalingRef.current?.leaveRoom(message.roomId);
             clearRoomState("connected to bootstrap server");
             addEvent(`Host control given to ${message.newHostDisplayName} â€” you left the room`);
@@ -1844,7 +1844,7 @@ export default function App(): JSX.Element {
           if (message.newHostBootstrapUrl && message.newHostBootstrapUrl !== bootstrapUrlRef.current) {
             const nextBootstrapUrl = message.newHostBootstrapUrl;
             // Stop this machine's room server before switching to the new host.
-            void stopLocalHostService();
+            void stopLocalHostService("host-migrated");
             window.setTimeout(() => {
               reconnectToTransferredHost(nextBootstrapUrl);
             }, 600);

@@ -314,7 +314,7 @@ export class HostRoomService {
     throw new Error(`Failed to find an available port after ${maxAttempts} attempts starting from ${port}`);
   }
 
-  async stop(reason: "host-ended" | "host-disconnected" = "host-disconnected"): Promise<void> {
+  async stop(reason: "host-ended" | "host-disconnected" | "host-migrated" = "host-disconnected"): Promise<void> {
     if (!this.server && !this.activeRoom) {
       this.status = "stopped";
       this.port = null;
@@ -329,7 +329,9 @@ export class HostRoomService {
     this.shutdownInProgress = true;
 
     try {
-      this.closeActiveRoom(reason);
+      if (reason !== "host-migrated") {
+        this.closeActiveRoom(reason);
+      }
       await this.closeServer();
     } finally {
       this.server = null;

@@ -5,7 +5,7 @@ contextBridge.exposeInMainWorld("electronApi", {
   platform: process.platform,
   versions: process.versions,
   startHostService: (requestedPort?: number) => ipcRenderer.invoke("host-service:start", requestedPort),
-  stopHostService: () => ipcRenderer.invoke("host-service:stop"),
+  stopHostService: (reason?: "host-ended" | "host-disconnected" | "host-migrated") => ipcRenderer.invoke("host-service:stop", reason),
   getHostServiceStatus: () => ipcRenderer.invoke("host-service:status"),
   getLocalNetworkInfo: () => ipcRenderer.invoke("host-service:network-info"),
   startRelayDiscoveryScan: () => ipcRenderer.invoke("relay-discovery:start"),
