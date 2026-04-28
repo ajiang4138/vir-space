@@ -696,7 +696,7 @@ export default function App(): JSX.Element {
           },
           onDataChannelOpen: () => {
             setSessionState("peer connected");
-            addEvent(`peer connected via WebRTC data channel: ${remotePeer.displayName}`);
+            addEvent(`Direct P2P connection established with ${remotePeer.displayName}`);
             updateOverallWebRtcStatus();
 
             // Send current whiteboard history to the newly connected peer
@@ -740,7 +740,7 @@ export default function App(): JSX.Element {
             announceLocalSeedSharesToPeer(remotePeer.peerId);
           },
           onDataChannelClose: () => {
-            addEvent(`peer data channel closed: ${remotePeer.displayName}`);
+            addEvent(`Direct connection to ${remotePeer.displayName} was closed`);
             updateOverallWebRtcStatus();
           },
           onDataMessage: (text) => {
@@ -909,7 +909,7 @@ export default function App(): JSX.Element {
           },
           onConnectionState: (state) => {
             if (state === "failed") {
-              addEvent(`peer connection failed: ${remotePeer.displayName}`);
+              addEvent(`⚠️ Failed to establish direct P2P connection with ${remotePeer.displayName}`);
             }
           },
           onStatusChange: () => {
@@ -926,7 +926,7 @@ export default function App(): JSX.Element {
           onEvent: addEvent,
           onSeedableDownloadReady: (preparedShare) => {
             registerLocalSeedShare(preparedShare, remotePeer.peerId);
-            addEvent(`seeding ready: ${preparedShare.manifest.fileName}`);
+            addEvent(`File ready to share: ${preparedShare.manifest.fileName}`);
           },
         });
 
@@ -999,7 +999,7 @@ export default function App(): JSX.Element {
     try {
       await window.electronApi.stopHostService();
     } catch {
-      addEvent("error: failed to stop local host signaling service");
+      addEvent("⚠️ Failed to stop local room server");
     }
   };
 
@@ -1041,7 +1041,7 @@ export default function App(): JSX.Element {
     // Don't log bootstrap URL changes while already connected — the change
     // is recorded for future reconnects but the current connection is fine.
     if (signalingStateRef.current !== "connected") {
-      addEvent(`relay bootstrap selected: ${selected}`);
+      addEvent(`Relay server selected: ${selected}`);
     }
   }, [bootstrapUrl]);
 
@@ -1202,7 +1202,7 @@ export default function App(): JSX.Element {
           return;
         }
 
-        addEvent(`relay discovery found bootstrap server: ${discoveredUrl}`);
+        addEvent(`✅ Found relay server on network: ${discoveredUrl}`);
 
         if (setupStepRef.current !== "join") {
           return;
@@ -1260,7 +1260,7 @@ export default function App(): JSX.Element {
           signaling.removeRelayRoom(listedRoomId);
           relayListedRoomIdRef.current = null;
           relayListingSignatureRef.current = null;
-          addEvent(`relay discovery listing removed: ${listedRoomId}`);
+          addEvent(`Your room (${listedRoomId}) removed from relay bulletin board`);
         }
 
         return;
@@ -1279,12 +1279,12 @@ export default function App(): JSX.Element {
 
         hostIp = pickPreferredHostAddress([networkInfo.preferredAddress, ...networkInfo.addresses]) ?? "";
       } catch {
-        addEvent("error: failed to resolve host IP for relay discovery listing");
+        addEvent("⚠️ Could not detect your local IP — room may not appear on relay");
         return;
       }
 
       if (!hostIp || isLoopbackHost(hostIp)) {
-        addEvent("warning: relay discovery listing skipped because no non-loopback host IP was resolved");
+        addEvent("⚠️ Skipping relay listing — no valid network IP detected");
         return;
       }
 
@@ -1324,7 +1324,7 @@ export default function App(): JSX.Element {
         signaling.updateRelayRoom(listing);
       } else {
         signaling.registerRelayRoom(listing);
-        addEvent(`relay discovery listing active for ${room.roomId} on ${listing.hostIp}:${listing.hostPort}`);
+        addEvent(`Your room is visible on the relay bulletin board at ${listing.hostIp}:${listing.hostPort}`);
       }
 
       relayListedRoomIdRef.current = room.roomId;
@@ -1439,7 +1439,12 @@ export default function App(): JSX.Element {
     };
     setSignalingState("connecting");
     setSessionState("connecting to bootstrap server");
-    addEvent(`switching signaling endpoint to ${nextBootstrapUrl}`);
+    addEvent(`Connecting room session to: ${nextBootstrapUrl}`);
+    // Use intentionalServerSwitchRef so the old connection's onClose does
+    // not immediately schedule a retry — we are deliberately switching servers.
+    // Retry protection (handoverReconnectInProgressRef) kicks in only if the
+    // NEW connection to nextBootstrapUrl fails afterward.
+    intentionalServerSwitchRef.current = true;
     signalingRef.current?.connect(nextBootstrapUrl);
   };
 
@@ -1448,7 +1453,7 @@ export default function App(): JSX.Element {
 
     try {
       await window.electronApi.startHostService(requestedPort);
-      addEvent(`local host signaling service moved to ${nextBootstrapUrl}`);
+      addEvent(`Room server relocated to new host: ${nextBootstrapUrl}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "failed to start new host signaling service";
       addEvent(`error: ${message}`);
@@ -1533,8 +1538,11 @@ export default function App(): JSX.Element {
         setSignalingState("connected");
         setSessionState("connected to bootstrap server");
         intentionalServerSwitchRef.current = false; // clear on any successful open
-        addEvent(`connected to bootstrap signaling server: ${bootstrapUrlRef.current}`);
-        setConnectedRelayUrl(bootstrapUrlRef.current);
+        // Use pending.bootstrapUrl if available — bootstrapUrlRef may lag behind
+        // React state updates and could be stale at the moment onOpen fires.
+        const connectedUrl = pendingActionRef.current?.bootstrapUrl ?? bootstrapUrlRef.current;
+        addEvent(`Connected to signaling server at ${connectedUrl}`);
+        setConnectedRelayUrl(connectedUrl);
         setRelayConnectedAtMs(Date.now());
         signalingRef.current?.requestRelayServerStatus();
         if (relayServerStatusPollTimerRef.current !== null) {
@@ -1583,8 +1591,15 @@ export default function App(): JSX.Element {
         }
         if (intentionalServerSwitchRef.current) {
           intentionalServerSwitchRef.current = false;
-          addEvent("signaling: switching to room server");
-          return; // preserve pendingActionRef and signalingState during switchover
+          // The old connection closed cleanly during an intentional server switch.
+          // Enable handover retry protection so that if the NEW connection fails
+          // (TCP refused, server not ready), onClose will retry instead of resetting.
+          if (!handoverReconnectInProgressRef.current) {
+            handoverReconnectInProgressRef.current = true;
+            handoverReconnectAttemptsRef.current = 0;
+          }
+          addEvent("Switching connection to room server — waiting for it to open...");
+          return; // Preserve pendingActionRef and signalingState
         }
         if (handoverReconnectInProgressRef.current) {
           // TCP-level failure (connection refused) — the new host service may
@@ -1593,7 +1608,7 @@ export default function App(): JSX.Element {
           if (pending && handoverReconnectAttemptsRef.current < 8) {
             handoverReconnectAttemptsRef.current += 1;
             const delay = Math.min(1500, 300 * handoverReconnectAttemptsRef.current);
-            addEvent(`handover connect retry ${handoverReconnectAttemptsRef.current}/8 in ${delay}ms`);
+            addEvent(`Retrying room server connection (attempt ${handoverReconnectAttemptsRef.current}/8) in ${delay}ms...`);
             window.setTimeout(() => {
               if (handoverReconnectInProgressRef.current) {
                 signalingRef.current?.connect(pending.bootstrapUrl);
@@ -1602,12 +1617,12 @@ export default function App(): JSX.Element {
           } else if (handoverReconnectAttemptsRef.current >= 8) {
             handoverReconnectInProgressRef.current = false;
             handoverReconnectAttemptsRef.current = 0;
-            addEvent("error: handover failed after 8 attempts");
+            addEvent("⚠️ Room server connection failed after 8 attempts — please try again");
           }
           return;
         }
         setSignalingState("disconnected");
-        addEvent(`signaling disconnected: ${bootstrapUrlRef.current}`);
+        addEvent(`Disconnected from server at ${bootstrapUrlRef.current}`);
         setRelayConnectedAtMs(null);
         relayListedRoomIdRef.current = null;
         relayListingSignatureRef.current = null;
@@ -1642,12 +1657,12 @@ export default function App(): JSX.Element {
         if (handoverReconnectInProgressRef.current) {
           handoverReconnectInProgressRef.current = false;
           handoverReconnectAttemptsRef.current = 0;
-          addEvent("room migrated to new host signaling endpoint");
+          addEvent("Room successfully migrated to your machine as the new host");
         }
 
         applyRoomState(message.room, message.senderPeerId, message.role, pending.displayName);
         setSessionState("room created");
-        addEvent(`room created: ${message.roomId}`);
+        addEvent(`✅ Room created: ${message.roomId}`);
         setTimeout(() => {
           if (activeRoomRef.current?.myRole === "host") {
             setSessionState("waiting for guest");
@@ -1667,10 +1682,10 @@ export default function App(): JSX.Element {
         if (handoverReconnectInProgressRef.current) {
           handoverReconnectInProgressRef.current = false;
           handoverReconnectAttemptsRef.current = 0;
-          addEvent("reconnected to new host signaling endpoint");
+          addEvent("Reconnected to the new host's room server");
         }
         setSessionState("room joined");
-        addEvent(`room joined: ${message.roomId}`);
+        addEvent(`✅ Joined room: ${message.roomId}`);
         await tryStartNegotiation();
       },
       onRoomState: async (message) => {
@@ -1700,7 +1715,7 @@ export default function App(): JSX.Element {
         } else {
           setSessionState("peer connecting");
         }
-        addEvent(`participant joined: ${message.participant.displayName}`);
+        addEvent(`${message.participant.displayName} joined the room`);
         await tryStartNegotiation();
       },
       onParticipantLeft: (message) => {
@@ -1714,7 +1729,7 @@ export default function App(): JSX.Element {
 
         if (room.myRole === "host") {
           setSessionState("guest left");
-          addEvent("guest left the room");
+          addEvent("A participant left the room");
           return;
         }
 
@@ -1764,7 +1779,7 @@ export default function App(): JSX.Element {
         removePeerControllers(message.peerId);
       },
       onRoomClosed: (message) => {
-        addEvent(`room closed: ${message.reason}`);
+        addEvent(`Room ended: ${message.reason}`);
         if (message.reason === "host-ended") {
           void stopLocalHostService();
         }
@@ -1794,11 +1809,11 @@ export default function App(): JSX.Element {
             leaveAfterOwnershipTransferRef.current = false;
             signalingRef.current?.leaveRoom(message.roomId);
             clearRoomState("connected to bootstrap server");
-            addEvent(`ownership transferred to ${message.newHostDisplayName}; you left the room`);
+            addEvent(`Host control given to ${message.newHostDisplayName} — you left the room`);
             return;
           }
 
-          addEvent(`ownership transferred to ${message.newHostDisplayName}; you are now a guest`);
+          addEvent(`Host control given to ${message.newHostDisplayName} — you are now a participant`);
           if (message.newHostBootstrapUrl && message.newHostBootstrapUrl !== bootstrapUrlRef.current) {
             const nextBootstrapUrl = message.newHostBootstrapUrl;
             window.setTimeout(() => {
@@ -1809,12 +1824,12 @@ export default function App(): JSX.Element {
         }
 
         if (message.newHostPeerId === room.myPeerId) {
-          addEvent("you are now the host");
+          addEvent("You are now the host of this room");
           if (message.newHostBootstrapUrl && message.newHostBootstrapUrl !== bootstrapUrlRef.current) {
             void becomeTransferredHostAndReconnect(message.newHostBootstrapUrl);
           }
         } else {
-          addEvent(`host transferred to ${message.newHostDisplayName}`);
+          addEvent(`Host role transferred to ${message.newHostDisplayName}`);
           if (message.newHostBootstrapUrl && message.newHostBootstrapUrl !== bootstrapUrlRef.current) {
             window.setTimeout(() => {
               reconnectToTransferredHost(message.newHostBootstrapUrl ?? "");
@@ -1823,7 +1838,7 @@ export default function App(): JSX.Element {
         }
       },
       onUserKicked: (message) => {
-        addEvent(`you have been kicked from the room: ${message.message}`);
+        addEvent(`You were removed from the room: ${message.message}`);
         clearRoomState("kicked from room");
         setWasUserKicked(true);
       },
@@ -1838,7 +1853,7 @@ export default function App(): JSX.Element {
           handoverReconnectAttemptsRef.current += 1;
           const attempt = handoverReconnectAttemptsRef.current;
           const retryDelayMs = Math.min(1500, 200 * attempt);
-          addEvent(`handover join retry ${attempt}/8 in ${retryDelayMs}ms`);
+          addEvent(`Retrying room join (attempt ${attempt}/8) in ${retryDelayMs}ms...`);
           setSessionState("connecting to bootstrap server");
           window.setTimeout(() => {
             if (!handoverReconnectInProgressRef.current) {
@@ -2145,9 +2160,9 @@ export default function App(): JSX.Element {
       const shouldStartLocalHostService = await shouldStartLocalHostServiceForCreate(resolvedBootstrapUrl);
 
       if (bootstrapServerReachable) {
-        addEvent("bootstrap signaling server already reachable; skipping local host service startup");
+        addEvent("Found existing server — using it for your room");
       } else if (!shouldStartLocalHostService) {
-        addEvent("using external bootstrap signaling server (skipping local host service startup)");
+        addEvent("Using external room server — no local server needed");
       } else {
         try {
           const hostStatus = await window.electronApi.startHostService(requestedPort);
@@ -2156,14 +2171,14 @@ export default function App(): JSX.Element {
             const parsed = new URL(resolvedBootstrapUrl);
             parsed.port = String(actualPort);
             resolvedBootstrapUrl = parsed.toString();
-            addEvent(`requested port ${requestedPort} was busy; using ${actualPort} automatically`);
+            addEvent(`Port ${requestedPort} was in use — using port ${actualPort} instead`);
           } else {
-            addEvent(`local host signaling service listening on port ${requestedPort}`);
+            addEvent(`Your room server started on port ${requestedPort}`);
           }
         } catch (error) {
           const message = error instanceof Error ? error.message : "failed to start local host signaling service";
           if (isPortInUseError(message)) {
-            addEvent(`port ${requestedPort} already in use; reusing existing signaling server`);
+            addEvent(`Room server already running on port ${requestedPort} — reusing it`);
           } else {
             pendingActionRef.current = null;
             addEvent(`error: ${message}`);
@@ -2173,7 +2188,17 @@ export default function App(): JSX.Element {
         }
       }
 
-      pendingActionRef.current = { intent, roomId, bootstrapUrl: resolvedBootstrapUrl, displayName, roomPassword };
+      // Re-stamp pendingActionRef with the final resolved URL (port may have changed).
+      // Preserve hostCandidateBootstrapUrl so the server knows the creator's address
+      // for future host-transfer flows.
+      pendingActionRef.current = {
+        intent,
+        roomId,
+        bootstrapUrl: resolvedBootstrapUrl,
+        displayName,
+        roomPassword,
+        hostCandidateBootstrapUrl: pendingActionRef.current?.hostCandidateBootstrapUrl,
+      };
       setBootstrapUrl(resolvedBootstrapUrl);
     }
 
